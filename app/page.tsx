@@ -26,7 +26,7 @@ export default function Home() {
         <nav aria-label="เมนูหลัก">
           <a className="active" href="#top">หน้าแรก</a><a href="#features">สำหรับครีเอเตอร์</a><a href="#features">ฟีเจอร์</a><a href="#income">รายได้</a><a href="#contact">ช่วยเหลือ</a>
         </nav>
-        <div className="header-actions"><a className="login" href="/dashboard">เข้าสู่ระบบ</a><a className="button small" href="/creator/apply">สมัครเป็น Creator <span>→</span></a></div>
+        <div className="header-actions"><a className="login" href="/login">เข้าสู่ระบบ</a><a className="button small" href="/creator/apply">สมัครเป็น Creator <span>→</span></a></div>
       </header>
 
       <section className="hero" id="top">
