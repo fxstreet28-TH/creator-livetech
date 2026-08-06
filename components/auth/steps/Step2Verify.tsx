@@ -103,8 +103,10 @@ export function Step2Verify({ state, onBack, onNext }: Props) {
         ← แก้ไขข้อมูล
       </button>
 
-      <h2 className="mt-4 text-xl font-semibold text-white">ยืนยันตัวตน</h2>
-      <p className="mt-2 text-sm text-white/60 leading-relaxed">
+      <h2 className="m-0 mb-2 mt-4 font-bold text-white" style={{ fontSize: '32px' }}>
+        ยืนยันตัวตน
+      </h2>
+      <p className="text-sm text-white/60 leading-relaxed">
         เราได้ส่งรหัส 6 หลักไปยังเบอร์และอีเมลของคุณแล้ว
       </p>
 
@@ -152,7 +154,7 @@ export function Step2Verify({ state, onBack, onNext }: Props) {
         <button
           type="submit"
           disabled={!canSubmit}
-          className="w-full h-12 rounded-xl bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold shadow-lg shadow-purple-500/30 hover:shadow-purple-500/50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-full h-12 rounded-[13px] bg-gradient-to-r from-purple-500 to-pink-500 text-white font-extrabold shadow-lg shadow-purple-500/30 hover:shadow-purple-500/50 transition disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {loading ? 'กำลังยืนยัน...' : 'ยืนยัน'}
         </button>

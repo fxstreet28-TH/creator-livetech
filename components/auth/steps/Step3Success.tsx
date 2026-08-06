@@ -27,7 +27,7 @@ export function Step3Success({ onClose }: Props) {
   }, [router, onClose]);
 
   return (
-    <div className="py-6 text-center">
+    <div className="flex min-h-[440px] flex-col items-center justify-center py-6 text-center">
       <motion.div
         initial={{ scale: 0 }}
         animate={{ scale: 1 }}

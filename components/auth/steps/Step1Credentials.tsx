@@ -86,12 +86,14 @@ export function Step1Credentials({ state, setState, onNext }: Props) {
 
   return (
     <div>
-      <h2 className="text-xl font-semibold text-white">เริ่มต้นเป็น Creator กับ AURUM Live</h2>
-      <p className="mt-2 text-sm text-white/60 leading-relaxed">
+      <h2 className="m-0 mb-2 font-bold text-white" style={{ fontSize: '32px' }}>
+        เริ่มต้นเป็น Creator กับ AURUM Live
+      </h2>
+      <p className="text-sm text-white/60 leading-relaxed">
         สร้างรายได้จากการไลฟ์ คอนเทนต์ และคอมมูนิตี้ของคุณ
       </p>
 
-      <form onSubmit={onSubmit} className="mt-6 space-y-4" noValidate>
+      <form onSubmit={onSubmit} className="mt-6 flex flex-col gap-[18px]" noValidate>
         <Field label="เบอร์โทรศัพท์" error={errors.phone}>
           <PhoneInput
             value={state.phone}
@@ -107,8 +109,8 @@ export function Step1Credentials({ state, setState, onNext }: Props) {
             placeholder="you@example.com"
             value={state.email}
             onChange={(e) => set('email', e.target.value)}
-            className={`w-full h-12 rounded-xl bg-[#0a0a15]/60 border px-3 text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-purple-500 transition text-[15px] ${
-              errors.email ? 'border-red-500' : 'border-white/10'
+            className={`w-full rounded-[13px] bg-[#0a0a12] border px-[15px] py-[14px] text-[15px] text-white placeholder:text-white/30 focus:outline-none focus:border-[#8b5cf6] focus:ring-2 focus:ring-[#7c3aed33] transition ${
+              errors.email ? 'border-red-500' : 'border-[#353145]'
             }`}
           />
         </Field>
@@ -141,7 +143,7 @@ export function Step1Credentials({ state, setState, onNext }: Props) {
         <button
           type="submit"
           disabled={loading}
-          className="w-full h-12 rounded-xl bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold shadow-lg shadow-purple-500/30 hover:shadow-purple-500/50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-full h-12 rounded-[13px] bg-gradient-to-r from-purple-500 to-pink-500 text-white font-extrabold shadow-lg shadow-purple-500/30 hover:shadow-purple-500/50 transition disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {loading ? 'กำลังส่ง...' : 'ส่งรหัสยืนยัน'}
         </button>

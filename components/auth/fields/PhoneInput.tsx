@@ -19,8 +19,8 @@ function formatDisplay(digits: string): string {
 export function PhoneInput({ value, onChange, onBlur, error, id }: PhoneInputProps) {
   return (
     <div
-      className={`flex items-center gap-2 h-12 rounded-xl bg-[#0a0a15]/60 border px-3 transition focus-within:ring-2 focus-within:ring-purple-500 ${
-        error ? 'border-red-500' : 'border-white/10'
+      className={`flex items-center gap-2 rounded-[13px] bg-[#0a0a12] border px-[15px] py-[14px] transition focus-within:border-[#8b5cf6] focus-within:ring-2 focus-within:ring-[#7c3aed33] ${
+        error ? 'border-red-500' : 'border-[#353145]'
       }`}
     >
       <span className="text-white/60 text-sm font-medium select-none border-r border-white/10 pr-2">

@@ -14,3 +14,26 @@
 /* Auth pages (login) */
 .auth-page{min-height:100vh;display:grid;place-items:center;padding:40px 20px;position:relative;overflow:hidden;background:radial-gradient(circle at 78% 12%,rgba(116,46,232,.18),transparent 32%),radial-gradient(circle at 15% 88%,rgba(34,211,238,.12),transparent 32%),#05060b}.auth-glow{position:absolute;width:420px;height:420px;border-radius:50%;filter:blur(140px);opacity:.16;pointer-events:none}.auth-glow.one{background:#7c3aed;left:-200px;top:-120px}.auth-glow.two{background:#1cd5ef;right:-200px;bottom:-140px}.auth-card{position:relative;z-index:2;width:100%;max-width:440px;border:1px solid #2a3144;border-radius:22px;background:rgba(13,17,28,.92);padding:40px 36px;box-shadow:0 30px 90px rgba(0,0,0,.5)}.auth-logo{display:block;margin:0 auto 6px;width:190px;height:70px;object-fit:contain}.auth-head{text-align:center;margin-bottom:26px}.auth-head small{color:#35d9ef;letter-spacing:.2em;font-size:11px}.auth-head h1{font-size:30px;margin:10px 0 8px;letter-spacing:-.02em}.auth-head h1 span{color:transparent;background:linear-gradient(100deg,#a33fff,#2edbec);-webkit-background-clip:text}.auth-head p{margin:0;color:#8b95a8;font-size:14px}.auth-form label{display:block;margin-top:18px;color:#aeb6c5;font-size:12px}.auth-form input{width:100%;height:50px;margin-top:8px;border:1px solid #30384c;border-radius:10px;background:#090c14;color:#eef2f8;padding:0 14px;font-size:14px;transition:.2s}.auth-form input::placeholder{color:#5c657a}.auth-form input:focus{outline:0;border-color:#7c3aed;box-shadow:0 0 0 3px rgba(124,58,237,.2)}.auth-row{display:flex;justify-content:flex-end;margin-top:12px}.auth-row a{color:#a976ff;font-size:12px}.auth-form .button{width:100%;margin-top:24px}.auth-alt{text-align:center;margin-top:22px;color:#8b95a8;font-size:13px}.auth-alt a{color:#b987ff;font-weight:600}.auth-back{display:block;text-align:center;margin-top:16px;color:#7e889a;font-size:13px}
 @media(max-width:480px){.auth-card{padding:32px 22px}.auth-logo{width:160px;height:60px}.auth-head h1{font-size:26px}}
+
+/* AURUM Live — signup modal falling-stars ambient effect (left aside only) */
+@keyframes aurum-star-fall {
+  0%   { top: -20px; opacity: 0; transform: translateX(0); }
+  12%  { opacity: var(--star-op, 0.8); }
+  88%  { opacity: var(--star-op, 0.8); }
+  100% { top: 110%; opacity: 0; transform: translateX(var(--star-drift, 0px)); }
+}
+.aurum-star {
+  position: absolute;
+  top: -20px;
+  border-radius: 9999px;
+  background: #fff;
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.8);
+  animation-name: aurum-star-fall;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  will-change: top, opacity, transform;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .aurum-star { animation: none; opacity: 0; }
+}

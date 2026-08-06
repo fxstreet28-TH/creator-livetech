@@ -53,8 +53,8 @@ export function OtpInput({ value, onChange, length = 6, autoFocus, error }: OtpI
           onPaste={onPaste}
           autoFocus={autoFocus && i === 0}
           aria-label={`หลักที่ ${i + 1}`}
-          className={`w-12 h-14 text-center text-2xl font-semibold bg-[#0a0a15]/60 border rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-purple-500 transition ${
-            error ? 'border-red-500' : 'border-white/10'
+          className={`w-12 h-14 text-center text-2xl font-semibold bg-[#0a0a12] border rounded-[13px] text-white focus:outline-none focus:border-[#8b5cf6] focus:ring-2 focus:ring-[#7c3aed33] transition ${
+            error ? 'border-red-500' : 'border-[#353145]'
           }`}
         />
       ))}
