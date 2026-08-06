@@ -1,3 +1,5 @@
+import { SignupTrigger } from "@/components/auth/SignupTrigger";
+
 const creators = [
   { name: "Mild Studio", topic: "คุยเรื่องคอนเทนต์", color: "#ff74b8", viewers: "1.6K" },
   { name: "Krit Creator", topic: "เทคนิคถ่ายวิดีโอ", color: "#33d8ff", viewers: "987" },
@@ -26,7 +28,7 @@ export default function Home() {
         <nav aria-label="เมนูหลัก">
           <a className="active" href="#top">หน้าแรก</a><a href="#features">สำหรับครีเอเตอร์</a><a href="#features">ฟีเจอร์</a><a href="#income">รายได้</a><a href="#contact">ช่วยเหลือ</a>
         </nav>
-        <div className="header-actions"><a className="login" href="/login">เข้าสู่ระบบ</a><a className="button small" href="/creator/apply">สมัครเป็น Creator <span>→</span></a></div>
+        <div className="header-actions"><a className="login" href="/login">เข้าสู่ระบบ</a><SignupTrigger className="button small">สมัครเป็น Creator <span>→</span></SignupTrigger></div>
       </header>
 
       <section className="hero" id="top">
@@ -35,7 +37,7 @@ export default function Home() {
           <div className="eyebrow"><span /> แพลตฟอร์มไลฟ์สำหรับครีเอเตอร์ยุคใหม่</div>
           <h1>เปลี่ยนทุกไลฟ์<br />ให้เป็น<span>พลัง</span><br />สร้างแบรนด์</h1>
           <p>เปลี่ยนผู้ติดตามให้เป็นสมาชิกประจำ<br />พร้อมจัดการ Subscription ได้ในที่เดียว</p>
-          <div className="hero-actions"><a className="button" href="/creator/apply">สร้างพื้นที่ของคุณ <span>→</span></a><a className="ghost-button" href="/explore">ค้นหา Creator <i>⌕</i></a></div>
+          <div className="hero-actions"><SignupTrigger className="button">สร้างพื้นที่ของคุณ <span>→</span></SignupTrigger><a className="ghost-button" href="/explore">ค้นหา Creator <i>⌕</i></a></div>
           <div className="trust-row"><span>ϟ ตั้งค่าไว</span><b>•</b><span>▣ เครื่องมือครบ</span><b>•</b><span>♢ ดูแลตลอด 24 ชม.</span></div>
         </div>
 
