@@ -93,7 +93,12 @@ function ModalContent({ onClose }: { onClose: () => void }) {
         {/* Left aside — brand identity (desktop only) */}
         <aside className="relative hidden overflow-hidden bg-[radial-gradient(circle_at_20%_10%,#7c3aed66,transparent_42%),linear-gradient(145deg,#18102e,#0c0b17)] p-12 md:flex md:flex-col md:justify-center md:p-13">
           <StarField />
-          <AnimatedLogo />
+          {/* Logo card: overflow-hidden + padding so the mascot's baked-in glow
+              and orbital-ring artwork stay inside the card instead of bleeding
+              past its edges while the logo floats. */}
+          <div className="relative z-10 mb-16 inline-block overflow-hidden rounded-2xl border border-white/10 bg-white/[0.03] p-8">
+            <AnimatedLogo width={160} />
+          </div>
           <h2
             className="relative z-10 font-black leading-[1.04] text-white"
             style={{ fontSize: 'clamp(36px, 5vw, 58px)' }}

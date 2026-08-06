@@ -1,4 +1,5 @@
 import { SignupTrigger } from "@/components/auth/SignupTrigger";
+import { SignupQueryOpener } from "@/components/auth/SignupQueryOpener";
 
 const creators = [
   { name: "Mild Studio", topic: "คุยเรื่องคอนเทนต์", color: "#ff74b8", viewers: "1.6K" },
@@ -23,6 +24,7 @@ function MiniAvatar({ color, label }: { color: string; label: string }) {
 export default function Home() {
   return (
     <main>
+      <SignupQueryOpener />
       <header className="site-header">
         <a href="#top" aria-label="Aurum Live หน้าหลัก"><Logo /></a>
         <nav aria-label="เมนูหลัก">
