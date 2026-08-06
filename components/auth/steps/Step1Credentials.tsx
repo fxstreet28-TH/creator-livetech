@@ -4,7 +4,7 @@ import type { SignupState } from '../SignupModal';
 import { PhoneInput } from '../fields/PhoneInput';
 import { PasswordInput } from '../fields/PasswordInput';
 import { useSignupFlow } from '../hooks/useSignupFlow';
-import { formatThaiPhoneE164 } from '@/lib/phone';
+import { formatPhoneE164 } from '@/lib/phone';
 import { isValidEmail, validatePassword } from '@/lib/validation';
 
 interface Props {
@@ -35,7 +35,7 @@ export function Step1Credentials({ state, setState, onNext }: Props) {
 
   const validate = (): FieldErrors => {
     const next: FieldErrors = {};
-    if (!formatThaiPhoneE164(state.phone)) next.phone = 'กรุณากรอกเบอร์มือถือไทยให้ถูกต้อง';
+    if (!formatPhoneE164(state.phone)) next.phone = 'เบอร์โทรศัพท์ไม่ถูกต้อง';
     if (!isValidEmail(state.email.trim())) next.email = 'กรุณากรอกอีเมลให้ถูกต้อง';
     const pw = validatePassword(state.password);
     if (!pw.ok) {

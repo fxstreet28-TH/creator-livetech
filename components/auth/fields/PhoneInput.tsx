@@ -1,42 +1,57 @@
 'use client';
+import { PhoneInput as IntlPhoneInput } from 'react-international-phone';
+import 'react-international-phone/style.css';
 
 interface PhoneInputProps {
-  value: string; // raw local digits, e.g. "0812345678"
-  onChange: (v: string) => void;
-  onBlur?: () => void;
+  value: string; // E.164 format from state, e.g. '+66994247994'
+  onChange: (e164: string) => void; // callback with new E.164
   error?: boolean;
-  id?: string;
+  // Default country stays Thailand (bulk of users); extend as we expand.
+  defaultCountry?: 'th' | 'us' | 'gb' | 'sg' | 'my' | 'id' | 'ph' | 'vn' | 'jp' | 'kr';
 }
 
-/** Format local Thai digits as "08X XXX XXXX" for display. */
-function formatDisplay(digits: string): string {
-  const d = digits.replace(/\D/g, '').slice(0, 10);
-  if (d.length <= 3) return d;
-  if (d.length <= 6) return `${d.slice(0, 3)} ${d.slice(3)}`;
-  return `${d.slice(0, 3)} ${d.slice(3, 6)} ${d.slice(6)}`;
-}
+// Match the modal's redesigned input treatment (bg #0a0a12, border #353145,
+// rounded 13). The purple focus ring is applied via globals.css (:focus can't
+// be expressed inline).
+const FIELD_BG = '#0a0a12';
+const FIELD_BORDER = '1px solid #353145';
+const FIELD_RADIUS = '13px';
 
-export function PhoneInput({ value, onChange, onBlur, error, id }: PhoneInputProps) {
+export function PhoneInput({ value, onChange, error, defaultCountry = 'th' }: PhoneInputProps) {
   return (
-    <div
-      className={`flex items-center gap-2 rounded-[13px] bg-[#0a0a12] border px-[15px] py-[14px] transition focus-within:border-[#8b5cf6] focus-within:ring-2 focus-within:ring-[#7c3aed33] ${
-        error ? 'border-red-500' : 'border-[#353145]'
-      }`}
-    >
-      <span className="text-white/60 text-sm font-medium select-none border-r border-white/10 pr-2">
-        +66
-      </span>
-      <input
-        id={id}
-        type="tel"
-        inputMode="numeric"
-        autoComplete="tel-national"
-        dir="ltr"
-        placeholder="08X XXX XXXX"
-        value={formatDisplay(value)}
-        onChange={(e) => onChange(e.target.value.replace(/\D/g, '').slice(0, 10))}
-        onBlur={onBlur}
-        className="flex-1 bg-transparent text-white placeholder:text-white/30 focus:outline-none text-[15px]"
+    <div className={`intl-phone-wrapper ${error ? 'intl-phone-wrapper-error' : ''}`}>
+      <IntlPhoneInput
+        defaultCountry={defaultCountry}
+        value={value}
+        onChange={(phone) => onChange(phone)}
+        preferredCountries={['th', 'sg', 'my', 'id', 'ph', 'vn', 'us', 'gb', 'jp', 'kr']}
+        inputStyle={{
+          width: '100%',
+          background: FIELD_BG,
+          color: '#fff',
+          border: FIELD_BORDER,
+          borderRadius: FIELD_RADIUS,
+          padding: '14px 15px',
+          fontSize: '15px',
+          outline: 'none',
+        }}
+        countrySelectorStyleProps={{
+          buttonStyle: {
+            background: FIELD_BG,
+            border: FIELD_BORDER,
+            borderRadius: FIELD_RADIUS,
+            height: 'auto',
+            padding: '0 8px',
+          },
+          dropdownStyleProps: {
+            style: {
+              background: '#14142b',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              borderRadius: '13px',
+              color: '#fff',
+            },
+          },
+        }}
       />
     </div>
   );
