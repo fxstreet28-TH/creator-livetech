@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceSupabase } from '@/lib/supabase-server';
-import { formatThaiPhoneE164, sendSms } from '@/lib/movider';
+import { sendSms } from '@/lib/movider';
+import { formatPhoneE164 } from '@/lib/phone';
 import { sendEmailVerificationCode } from '@/lib/email';
 import { generateOtp, hashOtp, encryptPassword } from '@/lib/otp';
 import { checkRateLimit } from '@/lib/rateLimit';
@@ -20,8 +21,9 @@ export async function POST(req: NextRequest) {
   }
 
   // 1. Phone
+  // Frontend already sends E.164; this is a server-side sanity check.
   const e164 =
-    typeof body.phone === 'string' ? formatThaiPhoneE164(body.phone) : null;
+    typeof body.phone === 'string' ? formatPhoneE164(body.phone) : null;
   if (!e164) {
     return NextResponse.json({ error: 'invalid_phone' }, { status: 400 });
   }

@@ -6,6 +6,7 @@ import { OtpInput } from '../fields/OtpInput';
 import { useSignupFlow } from '../hooks/useSignupFlow';
 import { useCountdown } from '../hooks/useCountdown';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
+import { maskPhoneDisplay } from '@/lib/phone';
 
 interface Props {
   state: SignupState;
@@ -127,7 +128,7 @@ export function Step2Verify({ state, onBack, onNext }: Props) {
           <label className="block text-sm font-medium text-white/80 mb-3">รหัสจาก SMS</label>
           <OtpInput value={smsCode} onChange={setSmsCode} error={smsError} autoFocus />
           <div className="mt-2 flex items-center justify-between text-xs text-white/50">
-            <span>ส่งไปที่ {state.phoneMasked || '+66 8X-XXX-XXXX'}</span>
+            <span>ส่งไปที่ {state.phone ? maskPhoneDisplay(state.phone) : state.phoneMasked || 'เบอร์ของคุณ'}</span>
             <ResendButton timer={smsTimer} onClick={() => doResend('sms')} />
           </div>
         </motion.div>

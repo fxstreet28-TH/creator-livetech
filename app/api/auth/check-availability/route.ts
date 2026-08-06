@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceSupabase } from '@/lib/supabase-server';
-import { formatThaiPhoneE164 } from '@/lib/movider';
+import { formatPhoneE164 } from '@/lib/phone';
 import { isValidEmail } from '@/lib/validation';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { getClientIp } from '@/lib/http';
@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
   const result: { phone_available?: boolean; email_available?: boolean } = {};
 
   if (typeof body.phone === 'string') {
-    const e164 = formatThaiPhoneE164(body.phone);
+    const e164 = formatPhoneE164(body.phone);
     if (!e164) {
       result.phone_available = false;
     } else {
