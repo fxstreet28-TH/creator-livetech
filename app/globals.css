@@ -45,3 +45,16 @@
 }
 
 }
+
+/* react-international-phone — match AURUM purple focus ring + error state.
+   Unlayered + !important so :focus reliably overrides the library's inline
+   styles (inline styles set the resting border; these win on focus). */
+.intl-phone-wrapper input:focus,
+.intl-phone-wrapper button:focus {
+  border-color: #8b5cf6 !important;
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.2) !important;
+}
+.intl-phone-wrapper-error input,
+.intl-phone-wrapper-error button {
+  border-color: #f87171 !important;
+}
