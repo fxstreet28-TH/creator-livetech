@@ -3,8 +3,14 @@ import { useEffect } from 'react';
 import Image from 'next/image';
 import { motion, useAnimationControls, useReducedMotion } from 'framer-motion';
 
-const LOGO_W = 200;
-const LOGO_H = 135; // 1526×1030 source → 200px wide keeps the aspect ratio
+const RATIO = 1030 / 1526; // source PNG is 1526×1030
+const DEFAULT_W = 160;
+
+interface AnimatedLogoProps {
+  /** Rendered width in px; height is derived from the source aspect ratio. */
+  width?: number;
+  className?: string;
+}
 
 /**
  * The AURUM Live mascot logo, animated as one unit:
@@ -13,9 +19,11 @@ const LOGO_H = 135; // 1526×1030 source → 200px wide keeps the aspect ratio
  *  - a soft spring scale + tilt on hover (desktop pointers only)
  *
  * Float + blink are disabled under prefers-reduced-motion. The box is a fixed
- * 200×135 so the float never reflows the surrounding aside content.
+ * width×height so the float never reflows surrounding content, and it clips
+ * itself with overflow-hidden. Reused across the signup modal and dashboard.
  */
-export function AnimatedLogo() {
+export function AnimatedLogo({ width = DEFAULT_W, className = '' }: AnimatedLogoProps) {
+  const height = Math.round(width * RATIO);
   const reduceMotion = useReducedMotion();
   const blink = useAnimationControls();
 
@@ -45,8 +53,8 @@ export function AnimatedLogo() {
 
   return (
     <motion.div
-      className="relative z-10 mb-16 inline-block"
-      style={{ width: LOGO_W, height: LOGO_H }}
+      className={`relative inline-block overflow-hidden ${className}`}
+      style={{ width, height }}
       animate={reduceMotion ? undefined : { y: [-6, 6] }}
       transition={
         reduceMotion
@@ -56,8 +64,6 @@ export function AnimatedLogo() {
       whileHover={{
         scale: 1.04,
         rotate: 2,
-        // Spring only applies to the hover-driven props; the float keeps its
-        // own tween on the top-level `transition` prop above.
         transition: { type: 'spring', stiffness: 300, damping: 18 },
       }}
     >
@@ -65,11 +71,11 @@ export function AnimatedLogo() {
         <Image
           src="/aurum-live-logo.png"
           alt="AURUM Live"
-          width={LOGO_W}
-          height={LOGO_H}
+          width={width}
+          height={height}
           priority
           className="drop-shadow-lg"
-          style={{ width: LOGO_W, height: 'auto' }}
+          style={{ width, height: 'auto' }}
         />
       </motion.div>
     </motion.div>
