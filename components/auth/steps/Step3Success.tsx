@@ -20,7 +20,7 @@ export function Step3Success({ onClose }: Props) {
     });
 
     const t = setTimeout(() => {
-      router.push('/onboarding');
+      router.push('/dashboard');
       onClose();
     }, 2000);
     return () => clearTimeout(t);
