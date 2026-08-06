@@ -26,7 +26,7 @@ interface SendSmsResult {
 export async function sendSms(input: SendSmsInput): Promise<SendSmsResult> {
   const apiKey = process.env.MOVIDER_API_KEY;
   const apiSecret = process.env.MOVIDER_API_SECRET;
-  const senderName = input.from ?? process.env.MOVIDER_SENDER_NAME ?? 'AURUM';
+  const senderName = input.from ?? process.env.MOVIDER_SENDER_NAME;
 
   if (!apiKey || !apiSecret) {
     console.error('[movider] MOVIDER_API_KEY or MOVIDER_API_SECRET not set');
@@ -41,7 +41,12 @@ export async function sendSms(input: SendSmsInput): Promise<SendSmsResult> {
   body.set('api_secret', apiSecret);
   body.set('to', toStripped);
   body.set('text', input.text);
-  body.set('from', senderName);
+  // Only send an alphanumeric sender name when one is configured. While the
+  // "AURUM" sender ID is unapproved for TH, omitting `from` lets Movider fall
+  // back to a generic numeric sender so SMS still deliver.
+  if (senderName && senderName.trim().length > 0) {
+    body.set('from', senderName);
+  }
 
   try {
     const res = await fetch(MOVIDER_API_URL, {
