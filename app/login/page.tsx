@@ -1,9 +1,8 @@
 "use client";
 
-import { Suspense, useMemo, useState } from "react";
+import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { createBrowserClient } from "@supabase/ssr";
 
 function LoginForm() {
   const router = useRouter();
@@ -12,38 +11,38 @@ function LoginForm() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  // Cookie-based client so the session is readable by the route middleware
-  // (server-side) that guards /dashboard and other protected routes.
-  const supabase = useMemo(
-    () =>
-      createBrowserClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      ),
-    [],
-  );
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setError(null);
-    setLoading(true);
+    setErrorMsg(null);
+    setIsSubmitting(true);
 
-    const { error: signInError } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password,
-    });
-
-    setLoading(false);
-
-    if (signInError) {
-      setError("อีเมลหรือรหัสผ่านไม่ถูกต้อง กรุณาลองใหม่");
+    let res: Response;
+    try {
+      res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim(), password }),
+      });
+    } catch {
+      setErrorMsg("เกิดข้อผิดพลาด กรุณาลองใหม่");
+      setIsSubmitting(false);
       return;
     }
 
-    router.push(redirectTo);
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      setErrorMsg(data?.error ?? "เกิดข้อผิดพลาด กรุณาลองใหม่");
+      setIsSubmitting(false);
+      return;
+    }
+
+    // Session cookies are now set by the server. Use `replace` (not `push`) so
+    // the browser back button does not return the user to /login. Keep
+    // isSubmitting true through the redirect to avoid a button flash.
+    router.replace(redirectTo);
     router.refresh();
   }
 
@@ -98,11 +97,15 @@ function LoginForm() {
             </a>
           </div>
 
-          {error && (
+          <button type="submit" className="button" disabled={isSubmitting}>
+            {isSubmitting ? "กำลังเข้าสู่ระบบ..." : "เข้าสู่ระบบ"} <span>→</span>
+          </button>
+
+          {errorMsg && (
             <p
               role="alert"
               style={{
-                margin: "4px 0 0",
+                margin: "12px 0 0",
                 padding: "10px 14px",
                 borderRadius: 10,
                 background: "rgba(239,68,68,.1)",
@@ -111,13 +114,9 @@ function LoginForm() {
                 fontSize: 13,
               }}
             >
-              {error}
+              {errorMsg}
             </p>
           )}
-
-          <button type="submit" className="button" disabled={loading}>
-            {loading ? "กำลังเข้าสู่ระบบ..." : "เข้าสู่ระบบ"} <span>→</span>
-          </button>
         </form>
 
         <p className="auth-alt">
