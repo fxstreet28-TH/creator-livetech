@@ -1,0 +1,53 @@
+name: Mirror to GitLab
+
+# Fires on every push to any branch, plus manual trigger from Actions UI.
+# Requires:
+#   - Repository secret  database         = GitLab PAT with write_repository scope
+#   - Env var below      GITLAB_REPO      = target repo path on GitLab (owner/name)
+#
+# The job force-pushes every branch and every tag to GitLab, so GitHub is the
+# single source of truth. Any direct commits to GitLab will be overwritten on
+# next GitHub push — treat GitLab as read-only backup.
+
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+concurrency:
+  group: mirror-to-gitlab
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push branches and tags to GitLab
+        env:
+          GITLAB_TOKEN: ${{ secrets.database }}
+          # ==========================================================
+          # EDIT THIS LINE for each repo — the target path on GitLab
+          # Format: <gitlab-user-or-group>/<gitlab-repo-name>
+          # ==========================================================
+          GITLAB_REPO: porforex599/creator-livetech
+          # ==========================================================
+        run: |
+          if [ -z "$GITLAB_TOKEN" ]; then
+            echo "::error::Missing 'database' secret. Add it under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+
+          git remote add gitlab "https://oauth2:${GITLAB_TOKEN}@gitlab.com/${GITLAB_REPO}.git"
+
+          echo "→ Pushing all branches..."
+          git push gitlab --all --force
+
+          echo "→ Pushing all tags..."
+          git push gitlab --tags --force
+
+          echo "✅ Mirror sync complete → gitlab.com/${GITLAB_REPO}"
