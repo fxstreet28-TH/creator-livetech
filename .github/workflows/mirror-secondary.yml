@@ -1,0 +1,37 @@
+name: Secondary Mirror Sync
+
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+concurrency:
+  group: mirror-secondary
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync to secondary
+        env:
+          MIRROR_TOKEN: ${{ secrets.database02 }}
+          MIRROR_HOST: ${{ secrets.MIRROR_HOST }}
+          MIRROR_USER: ${{ secrets.MIRROR_USER }}
+          MIRROR_REPO: creator-livetech
+        run: |
+          if [ -z "$MIRROR_TOKEN" ]; then
+            echo "::error::Missing 'database02' secret."
+            exit 1
+          fi
+          echo "machine ${MIRROR_HOST} login ${MIRROR_USER} password ${MIRROR_TOKEN}" > ~/.netrc
+          chmod 600 ~/.netrc
+          git remote add secondary "https://${MIRROR_HOST}/aurumworkspace/${MIRROR_REPO}.git"
+          git push secondary --all --force
+          git push secondary --tags --force
+          echo "✅ Sync complete"
