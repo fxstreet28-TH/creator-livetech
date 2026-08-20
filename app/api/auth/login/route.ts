@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
   }
 
   const supabase = await getRouteHandlerSupabase();
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
   if (error) {
     console.error('[login] failed', { supabaseError: error, email });
@@ -59,5 +59,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'เกิดข้อผิดพลาด กรุณาลองใหม่' }, { status: 500 });
   }
 
-  return NextResponse.json({ success: true }, { status: 200 });
+  return NextResponse.json(
+    {
+      success: true,
+      session: {
+        access_token: data.session!.access_token,
+        refresh_token: data.session!.refresh_token,
+      },
+    },
+    { status: 200 },
+  );
 }

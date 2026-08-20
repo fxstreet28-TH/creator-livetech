@@ -4,6 +4,7 @@ import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { apiUrl } from "@/lib/config";
+import { getBrowserSupabase } from "@/lib/supabase-browser";
 
 function LoginForm() {
   const router = useRouter();
@@ -38,6 +39,23 @@ function LoginForm() {
       setErrorMsg(data?.error ?? "เกิดข้อผิดพลาด กรุณาลองใหม่");
       setIsSubmitting(false);
       return;
+    }
+
+    const body = await res.json().catch(() => null);
+
+    if (body?.session) {
+      const supabase = getBrowserSupabase();
+      const { error: syncError } = await supabase.auth.setSession({
+        access_token: body.session.access_token,
+        refresh_token: body.session.refresh_token,
+      });
+      if (syncError) {
+        // Cookie is set on the server but localStorage sync failed. Redirect
+        // anyway — middleware will let the user in on the next request, and
+        // the next auth-state-change event will resync. We surface no error
+        // to the user because they *are* signed in on the server.
+        console.warn("Login localStorage sync failed:", syncError);
+      }
     }
 
     // Session cookies are now set by the server. Use `replace` (not `push`) so
