@@ -55,7 +55,7 @@ export function DashboardShell({ displayName, email, avatarUrl, children }: Dash
                 type="button"
                 onClick={() => setDrawerOpen(false)}
                 aria-label="ปิดเมนู"
-                className="grid h-9 w-9 place-items-center rounded-lg text-white/60 hover:bg-white/5 hover:text-white"
+                className="grid h-11 w-11 place-items-center rounded-lg text-white/60 hover:bg-white/5 hover:text-white"
               >
                 <X size={20} />
               </button>

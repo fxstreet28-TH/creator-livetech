@@ -50,7 +50,7 @@ export function TopBar({ displayName, email, avatarUrl, onOpenDrawer }: TopBarPr
         type="button"
         onClick={onOpenDrawer}
         aria-label="เปิดเมนู"
-        className="grid h-9 w-9 place-items-center rounded-lg text-white/70 hover:bg-white/5 hover:text-white md:hidden"
+        className="grid h-11 w-11 place-items-center rounded-lg text-white/70 hover:bg-white/5 hover:text-white md:hidden"
       >
         <Menu size={22} />
       </button>
@@ -80,7 +80,7 @@ export function TopBar({ displayName, email, avatarUrl, onOpenDrawer }: TopBarPr
         <button
           type="button"
           aria-label="การแจ้งเตือน"
-          className="relative hidden h-9 w-9 place-items-center rounded-lg text-white/70 hover:bg-white/5 hover:text-white sm:grid"
+          className="relative hidden h-11 w-11 place-items-center rounded-lg text-white/70 hover:bg-white/5 hover:text-white sm:grid"
         >
           <Bell size={20} />
           <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-red-500" />
@@ -121,7 +121,7 @@ export function TopBar({ displayName, email, avatarUrl, onOpenDrawer }: TopBarPr
                 type="button"
                 role="menuitem"
                 onClick={logout}
-                className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-red-300 transition hover:bg-white/5"
+                className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm text-red-300 transition hover:bg-white/5"
               >
                 <LogOut size={16} />
                 ออกจากระบบ
@@ -150,7 +150,7 @@ function MenuLink({
       href={href}
       role="menuitem"
       onClick={onClick}
-      className="flex items-center gap-3 px-4 py-2.5 text-sm text-white/80 transition hover:bg-white/5 hover:text-white"
+      className="flex items-center gap-3 px-4 py-3 text-sm text-white/80 transition hover:bg-white/5 hover:text-white"
     >
       {icon}
       {children}

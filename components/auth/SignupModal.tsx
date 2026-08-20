@@ -118,7 +118,7 @@ function ModalContent({ onClose }: { onClose: () => void }) {
           {step !== 3 && (
             <button
               onClick={onClose}
-              className="absolute right-5 top-5 z-10 text-white/40 transition hover:text-white"
+              className="absolute right-5 top-5 z-10 flex h-11 w-11 items-center justify-center text-white/40 transition hover:text-white"
               aria-label="ปิด"
             >
               ✕
