@@ -5,6 +5,8 @@
  * discriminated result so step components can drive their own loading/error UI.
  */
 
+import { apiUrl } from '@/lib/config';
+
 export interface InitResult {
   ok: boolean;
   status: number;
@@ -49,7 +51,7 @@ export function useSignupFlow() {
     email: string;
     password: string;
   }): Promise<InitResult> => {
-    const res = await fetch('/api/auth/init-signup', {
+    const res = await fetch(apiUrl('/api/auth/init-signup'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
@@ -74,7 +76,7 @@ export function useSignupFlow() {
     smsCode: string;
     emailCode: string;
   }): Promise<CompleteResult> => {
-    const res = await fetch('/api/auth/complete-signup', {
+    const res = await fetch(apiUrl('/api/auth/complete-signup'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -99,7 +101,7 @@ export function useSignupFlow() {
     sessionId: string,
     channel: 'sms' | 'email',
   ): Promise<ResendResult> => {
-    const res = await fetch('/api/auth/resend-code', {
+    const res = await fetch(apiUrl('/api/auth/resend-code'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: sessionId, channel }),
