@@ -3,8 +3,8 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { createBrowserClient } from '@supabase/ssr';
 import { Bell, Search, Menu, User, Settings, LogOut } from 'lucide-react';
+import { getBrowserSupabase } from '@/lib/supabase-browser';
 import { Avatar } from './Avatar';
 
 interface TopBarProps {
@@ -31,16 +31,12 @@ export function TopBar({ displayName, email, avatarUrl, onOpenDrawer }: TopBarPr
   async function logout() {
     setMenuOpen(false);
     try {
-      const supabase = createBrowserClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      );
+      const supabase = getBrowserSupabase();
       await supabase.auth.signOut();
     } catch {
       // best-effort; still send the user to /login
     }
-    router.push('/login');
-    router.refresh();
+    router.replace('/login');
   }
 
   return (
