@@ -1,5 +1,28 @@
 @import "tailwindcss";
 
+/* Self-hosted Noto Sans Thai — added in PR 7.
+   Android WebView has this as a system font; iOS WKWebView does not, so every
+   Thai glyph used to fall back to Arial on iPhone. Subset to Latin basic, the
+   Thai block and general punctuation (see public/fonts/noto-sans-thai/README.md);
+   ~14 KB per weight. Must sit after the @import above — an @import is only
+   valid at the top of the sheet, so putting these first would drop Tailwind. */
+@font-face {
+  font-family: 'Noto Sans Thai';
+  src: url('/fonts/noto-sans-thai/NotoSansThai-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0020-007E, U+00A0, U+0E00-0E7F, U+2000-206F, U+25CC;
+}
+@font-face {
+  font-family: 'Noto Sans Thai';
+  src: url('/fonts/noto-sans-thai/NotoSansThai-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0020-007E, U+00A0, U+0E00-0E7F, U+2000-206F, U+25CC;
+}
+
 /* Legacy landing-page styles live in @layer base so Tailwind utility
    classes (in @layer utilities) reliably win on Tailwind-based pages such as
    the dashboard. The landing page uses only these class/element selectors and
