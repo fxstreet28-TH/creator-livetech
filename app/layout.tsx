@@ -1,4 +1,5 @@
-import type { Metadata } from "next";
+import ReactDOM from "react-dom";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -13,11 +14,33 @@ export const metadata: Metadata = {
   },
 };
 
+/**
+ * viewportFit: 'cover' lets the page paint under the iOS notch / Dynamic Island
+ * and home indicator, which is what makes env(safe-area-inset-*) resolve to
+ * real values instead of 0px. The .safe-* utilities in globals.css and the
+ * inset-aware paddings on the dashboard chrome depend on this being set.
+ */
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#000000",
+};
+
 export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // The body font is Thai-first, so the regular weight is on the critical path
+  // for every screen. ReactDOM.preload emits the <link> into <head> once; a
+  // literal <link> in the tree gets hoisted *and* kept, which duplicates it.
+  ReactDOM.preload("/fonts/noto-sans-thai/NotoSansThai-Regular.woff2", {
+    as: "font",
+    type: "font/woff2",
+    crossOrigin: "anonymous",
+  });
+
   return (
     <html lang="th">
       <body>{children}</body>

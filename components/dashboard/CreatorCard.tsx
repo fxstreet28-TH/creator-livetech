@@ -19,7 +19,7 @@ export function CreatorCard({ creator }: { creator: MockCreator }) {
       <button
         type="button"
         onClick={() => setFollowing((v) => !v)}
-        className={`mt-4 w-full rounded-xl py-2 text-sm font-semibold transition ${
+        className={`mt-4 w-full rounded-xl py-3 text-sm font-semibold transition ${
           following
             ? 'border border-white/15 bg-white/5 text-white/70'
             : 'bg-gradient-to-r from-purple-500 to-pink-500 text-white hover:shadow-lg hover:shadow-purple-500/30'

@@ -26,7 +26,7 @@ export function PopularCategories() {
           <button
             key={label}
             type="button"
-            className="flex items-center gap-2 rounded-full border border-white/10 px-4 py-2 text-sm text-white/80 transition hover:border-purple-500/40 hover:bg-purple-500/20"
+            className="flex items-center gap-2 rounded-full border border-white/10 px-4 py-3 text-sm text-white/80 transition hover:border-purple-500/40 hover:bg-purple-500/20"
           >
             <Icon size={16} />
             {label}

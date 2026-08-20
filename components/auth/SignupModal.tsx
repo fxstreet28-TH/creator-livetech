@@ -71,7 +71,7 @@ function ModalContent({ onClose }: { onClose: () => void }) {
 
   return (
     <motion.div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pl-[calc(1rem+env(safe-area-inset-left))] pr-[calc(1rem+env(safe-area-inset-right))] pt-[calc(1rem+env(safe-area-inset-top))]"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -88,7 +88,7 @@ function ModalContent({ onClose }: { onClose: () => void }) {
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
         transition={{ duration: 0.2 }}
-        className="relative grid w-full max-w-4xl max-h-[92vh] grid-cols-1 overflow-hidden rounded-[28px] border border-[#29263d] bg-[#10101b] shadow-2xl md:grid-cols-2"
+        className="relative grid w-full max-w-4xl max-h-[92dvh] grid-cols-1 overflow-hidden rounded-[28px] border border-[#29263d] bg-[#10101b] shadow-2xl md:grid-cols-2"
       >
         {/* Left aside — brand identity (desktop only) */}
         <aside className="relative hidden overflow-hidden bg-[radial-gradient(circle_at_20%_10%,#7c3aed66,transparent_42%),linear-gradient(145deg,#18102e,#0c0b17)] p-12 md:flex md:flex-col md:justify-center md:p-13">
@@ -118,7 +118,7 @@ function ModalContent({ onClose }: { onClose: () => void }) {
           {step !== 3 && (
             <button
               onClick={onClose}
-              className="absolute right-5 top-5 z-10 text-white/40 transition hover:text-white"
+              className="absolute right-5 top-5 z-10 flex h-11 w-11 items-center justify-center text-white/40 transition hover:text-white"
               aria-label="ปิด"
             >
               ✕

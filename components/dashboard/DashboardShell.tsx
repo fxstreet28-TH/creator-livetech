@@ -20,7 +20,7 @@ export function DashboardShell({ displayName, email, avatarUrl, children }: Dash
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   return (
-    <div className="min-h-screen bg-[#0a0a15] text-white">
+    <div className="min-h-dvh bg-[#0a0a15] text-white">
       <TopBar
         displayName={displayName}
         email={email}
@@ -30,12 +30,12 @@ export function DashboardShell({ displayName, email, avatarUrl, children }: Dash
 
       <div className="flex">
         {/* Desktop sidebar */}
-        <aside className="sticky top-16 hidden h-[calc(100vh-4rem)] w-60 shrink-0 overflow-y-auto border-r border-white/6 bg-[#0a0a15] md:block">
+        <aside className="sticky top-16 hidden h-[calc(100dvh-4rem)] w-60 shrink-0 overflow-y-auto border-r border-white/6 bg-[#0a0a15] md:block">
           <Sidebar />
         </aside>
 
         {/* Main content */}
-        <main className="min-w-0 flex-1 px-4 pb-24 pt-6 md:px-8 md:pb-8">{children}</main>
+        <main className="min-w-0 flex-1 px-4 pb-20 pb-[calc(5rem+env(safe-area-inset-bottom))] pt-6 md:px-8 md:pb-8">{children}</main>
       </div>
 
       <MobileBottomNav />
@@ -49,13 +49,13 @@ export function DashboardShell({ displayName, email, avatarUrl, children }: Dash
             aria-hidden
           />
           <div className="absolute left-0 top-0 h-full w-72 overflow-y-auto border-r border-white/8 bg-[#0a0a15] shadow-2xl">
-            <div className="flex h-16 items-center justify-between border-b border-white/6 px-4">
+            <div className="safe-top flex h-[calc(4rem+env(safe-area-inset-top))] items-center justify-between border-b border-white/6 px-4">
               <span className="text-sm font-semibold text-white/70">เมนู</span>
               <button
                 type="button"
                 onClick={() => setDrawerOpen(false)}
                 aria-label="ปิดเมนู"
-                className="grid h-9 w-9 place-items-center rounded-lg text-white/60 hover:bg-white/5 hover:text-white"
+                className="grid h-11 w-11 place-items-center rounded-lg text-white/60 hover:bg-white/5 hover:text-white"
               >
                 <X size={20} />
               </button>

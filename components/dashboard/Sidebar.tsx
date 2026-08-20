@@ -22,7 +22,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
             key={item.href}
             href={item.href}
             onClick={onNavigate}
-            className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition ${
+            className={`flex items-center gap-3 rounded-xl px-3 py-3 text-sm transition ${
               active
                 ? 'bg-purple-500/15 font-medium text-purple-200'
                 : 'text-white/60 hover:bg-white/5 hover:text-white'
@@ -52,7 +52,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
             onNavigate?.();
             router.push('/creator/apply');
           }}
-          className="mt-3 w-full rounded-xl bg-gradient-to-r from-purple-500 to-pink-500 py-2.5 text-sm font-extrabold text-white transition hover:shadow-lg hover:shadow-purple-500/40"
+          className="mt-3 w-full rounded-xl bg-gradient-to-r from-purple-500 to-pink-500 py-3 text-sm font-extrabold text-white transition hover:shadow-lg hover:shadow-purple-500/40"
         >
           สมัครเป็น Creator →
         </button>
