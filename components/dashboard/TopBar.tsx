@@ -30,12 +30,16 @@ export function TopBar({ displayName, email, avatarUrl, onOpenDrawer }: TopBarPr
 
   async function logout() {
     setMenuOpen(false);
-    try {
-      const supabase = getBrowserSupabase();
-      await supabase.auth.signOut();
-    } catch {
-      // best-effort; still send the user to /login
-    }
+    // Two stores to clear until the cookie path goes away: the browser client's
+    // own storage, and the cookie /api/auth/login writes server-side. Dropping
+    // either one leaves the user still signed in. Both are best-effort — the
+    // redirect happens regardless.
+    await Promise.allSettled([
+      // getBrowserSupabase() throws synchronously when env is missing; the
+      // wrapper turns that into a rejection allSettled can absorb.
+      Promise.resolve().then(() => getBrowserSupabase().auth.signOut()),
+      fetch('/api/auth/logout', { method: 'POST' }),
+    ]);
     router.replace('/login');
   }
 
