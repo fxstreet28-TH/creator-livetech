@@ -9,7 +9,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint . --ignore-pattern .next"
+    "lint": "eslint . --ignore-pattern .next",
+    "build:mobile": "NEXT_PUBLIC_CAPACITOR_BUILD=true next build",
+    "cap:copy": "npm run build:mobile && npx cap copy"
   },
   "dependencies": {
     "@capacitor/browser": "^8.0.4",
