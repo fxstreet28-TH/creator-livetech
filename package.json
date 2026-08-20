@@ -12,6 +12,9 @@
     "lint": "eslint . --ignore-pattern .next"
   },
   "dependencies": {
+    "@capacitor/browser": "^8.0.4",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/preferences": "^8.0.1",
     "@supabase/ssr": "^0.12.4",
     "@supabase/supabase-js": "^2.112.1",
     "canvas-confetti": "^1.9.4",
@@ -25,6 +28,7 @@
     "resend": "^6.18.1"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.5.0",
     "@tailwindcss/postcss": "4.2.1",
     "@types/canvas-confetti": "^1.9.0",
     "@types/node": "22.19.19",
