@@ -1,12 +1,18 @@
 /**
  * Supabase Auth storage adapter.
  *
- * Today: wraps window.localStorage.
- * Later (PR after Capacitor scaffold): detect native runtime and route to
- * @capacitor/preferences (Keychain on iOS, EncryptedSharedPreferences on Android).
+ * Runtime detection:
+ * - Native Capacitor shell → @capacitor/preferences (Keychain on iOS,
+ *   EncryptedSharedPreferences on Android).
+ * - Browser (Vercel web build) → window.localStorage.
+ * - SSR / build-time → no-op returning null.
  *
- * Consumers must not import localStorage directly — always go through this.
+ * Consumers must not import localStorage or Preferences directly — always
+ * go through getAuthStorage().
  */
+
+import { Preferences } from '@capacitor/preferences';
+import { Capacitor } from '@capacitor/core';
 
 // Matches the shape Supabase Auth expects (SupportedStorage).
 export interface AuthStorage {
@@ -16,6 +22,7 @@ export interface AuthStorage {
 }
 
 const isBrowser = typeof window !== 'undefined';
+const isNative = () => isBrowser && Capacitor.isNativePlatform();
 
 /**
  * SSR-safe localStorage wrapper. Returns null / no-ops during SSR so that
@@ -48,7 +55,19 @@ const localStorageAdapter: AuthStorage = {
   },
 };
 
+const capacitorPreferencesAdapter: AuthStorage = {
+  async getItem(key) {
+    const { value } = await Preferences.get({ key });
+    return value ?? null;
+  },
+  async setItem(key, value) {
+    await Preferences.set({ key, value });
+  },
+  async removeItem(key) {
+    await Preferences.remove({ key });
+  },
+};
+
 export function getAuthStorage(): AuthStorage {
-  // Later: if (isNative()) return capacitorPreferencesAdapter;
-  return localStorageAdapter;
+  return isNative() ? capacitorPreferencesAdapter : localStorageAdapter;
 }

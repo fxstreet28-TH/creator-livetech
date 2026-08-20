@@ -1,3 +1,4 @@
+import 'server-only';
 import crypto from 'node:crypto';
 
 export function generateOtp(length = 6): string {
