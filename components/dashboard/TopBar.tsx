@@ -44,7 +44,7 @@ export function TopBar({ displayName, email, avatarUrl, onOpenDrawer }: TopBarPr
   }
 
   return (
-    <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-white/6 bg-[#0a0a15]/85 px-4 backdrop-blur-md md:px-6">
+    <header className="safe-top sticky top-0 z-30 flex h-[calc(4rem+env(safe-area-inset-top))] items-center gap-3 border-b border-white/6 bg-[#0a0a15]/85 px-4 backdrop-blur-md md:px-6">
       {/* Mobile hamburger */}
       <button
         type="button"

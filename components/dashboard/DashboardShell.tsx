@@ -35,7 +35,7 @@ export function DashboardShell({ displayName, email, avatarUrl, children }: Dash
         </aside>
 
         {/* Main content */}
-        <main className="min-w-0 flex-1 px-4 pb-24 pt-6 md:px-8 md:pb-8">{children}</main>
+        <main className="min-w-0 flex-1 px-4 pb-20 pb-[calc(5rem+env(safe-area-inset-bottom))] pt-6 md:px-8 md:pb-8">{children}</main>
       </div>
 
       <MobileBottomNav />
@@ -49,7 +49,7 @@ export function DashboardShell({ displayName, email, avatarUrl, children }: Dash
             aria-hidden
           />
           <div className="absolute left-0 top-0 h-full w-72 overflow-y-auto border-r border-white/8 bg-[#0a0a15] shadow-2xl">
-            <div className="flex h-16 items-center justify-between border-b border-white/6 px-4">
+            <div className="safe-top flex h-[calc(4rem+env(safe-area-inset-top))] items-center justify-between border-b border-white/6 px-4">
               <span className="text-sm font-semibold text-white/70">เมนู</span>
               <button
                 type="button"
