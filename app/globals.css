@@ -46,6 +46,26 @@
 
 }
 
+/* Safe-area utility classes — added in PR 7.
+   Used by fixed/sticky elements to account for the iOS notch, Dynamic Island
+   and home indicator. env() values are 0 on Android and on the web, so these
+   are no-ops everywhere except a notched iPhone.
+
+   Unlayered (like the rules below) so they are not outranked by Tailwind
+   utilities — a dropped safety inset is a bug you only see on a real phone.
+   The flip side: they SET padding rather than add to it, so on an element that
+   already carries a Tailwind padding utility for the same side, write the
+   inset into that utility instead — e.g.
+   pb-[calc(5rem+env(safe-area-inset-bottom))]. */
+.safe-top    { padding-top:    env(safe-area-inset-top); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+.safe-x      { padding-left:   env(safe-area-inset-left);
+               padding-right:  env(safe-area-inset-right); }
+
+/* For elements that need the OFFSET (margin) rather than padding. */
+.safe-mt { margin-top:    env(safe-area-inset-top); }
+.safe-mb { margin-bottom: env(safe-area-inset-bottom); }
+
 /* react-international-phone — match AURUM purple focus ring + error state.
    Unlayered + !important so :focus reliably overrides the library's inline
    styles (inline styles set the resting border; these win on focus). */
