@@ -20,7 +20,7 @@ export function DashboardShell({ displayName, email, avatarUrl, children }: Dash
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   return (
-    <div className="min-h-screen bg-[#0a0a15] text-white">
+    <div className="min-h-dvh bg-[#0a0a15] text-white">
       <TopBar
         displayName={displayName}
         email={email}
@@ -30,7 +30,7 @@ export function DashboardShell({ displayName, email, avatarUrl, children }: Dash
 
       <div className="flex">
         {/* Desktop sidebar */}
-        <aside className="sticky top-16 hidden h-[calc(100vh-4rem)] w-60 shrink-0 overflow-y-auto border-r border-white/6 bg-[#0a0a15] md:block">
+        <aside className="sticky top-16 hidden h-[calc(100dvh-4rem)] w-60 shrink-0 overflow-y-auto border-r border-white/6 bg-[#0a0a15] md:block">
           <Sidebar />
         </aside>
 

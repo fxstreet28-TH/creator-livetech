@@ -88,7 +88,7 @@ function ModalContent({ onClose }: { onClose: () => void }) {
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
         transition={{ duration: 0.2 }}
-        className="relative grid w-full max-w-4xl max-h-[92vh] grid-cols-1 overflow-hidden rounded-[28px] border border-[#29263d] bg-[#10101b] shadow-2xl md:grid-cols-2"
+        className="relative grid w-full max-w-4xl max-h-[92dvh] grid-cols-1 overflow-hidden rounded-[28px] border border-[#29263d] bg-[#10101b] shadow-2xl md:grid-cols-2"
       >
         {/* Left aside — brand identity (desktop only) */}
         <aside className="relative hidden overflow-hidden bg-[radial-gradient(circle_at_20%_10%,#7c3aed66,transparent_42%),linear-gradient(145deg,#18102e,#0c0b17)] p-12 md:flex md:flex-col md:justify-center md:p-13">

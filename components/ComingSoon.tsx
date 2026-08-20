@@ -2,7 +2,7 @@ import Link from 'next/link';
 
 export function ComingSoon({ title }: { title: string }) {
   return (
-    <main className="grid min-h-screen place-items-center bg-[#0a0a15] px-6 text-center text-white">
+    <main className="grid min-h-dvh place-items-center bg-[#0a0a15] px-6 text-center text-white">
       <div>
         <p className="text-sm tracking-[0.2em] text-purple-300">AURUM LIVE</p>
         <h1 className="mt-3 text-3xl font-bold">{title}</h1>
