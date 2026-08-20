@@ -3,8 +3,8 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { createBrowserClient } from '@supabase/ssr';
 import { Bell, Search, Menu, User, Settings, LogOut } from 'lucide-react';
+import { getBrowserSupabase } from '@/lib/supabase-browser';
 import { Avatar } from './Avatar';
 
 interface TopBarProps {
@@ -30,17 +30,17 @@ export function TopBar({ displayName, email, avatarUrl, onOpenDrawer }: TopBarPr
 
   async function logout() {
     setMenuOpen(false);
-    try {
-      const supabase = createBrowserClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      );
-      await supabase.auth.signOut();
-    } catch {
-      // best-effort; still send the user to /login
-    }
-    router.push('/login');
-    router.refresh();
+    // Two stores to clear until the cookie path goes away: the browser client's
+    // own storage, and the cookie /api/auth/login writes server-side. Dropping
+    // either one leaves the user still signed in. Both are best-effort — the
+    // redirect happens regardless.
+    await Promise.allSettled([
+      // getBrowserSupabase() throws synchronously when env is missing; the
+      // wrapper turns that into a rejection allSettled can absorb.
+      Promise.resolve().then(() => getBrowserSupabase().auth.signOut()),
+      fetch('/api/auth/logout', { method: 'POST' }),
+    ]);
+    router.replace('/login');
   }
 
   return (
