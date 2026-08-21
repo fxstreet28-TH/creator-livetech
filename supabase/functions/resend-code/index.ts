@@ -1,31 +1,60 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { getServiceSupabase } from '@/lib/supabase-server';
-import { sendSms } from '@/lib/movider';
-import { sendEmailVerificationCode } from '@/lib/email';
-import { generateOtp, hashOtp } from '@/lib/otp';
-import { checkRateLimit } from '@/lib/rateLimit';
-import { getClientIp } from '@/lib/http';
+/**
+ * resend-code — Deno port of app/api/auth/resend-code/route.ts.
+ *
+ * Re-issues one channel's verification code for an existing signup session:
+ * same rate-limit policy as init-signup, plus a 60s per-channel cooldown, plus
+ * invalidation of the previous unverified codes.
+ *
+ * As in init-signup, responses are built with successResponse() so the error
+ * codes and statuses stay byte-equivalent to the Next.js route — Step2Verify
+ * branches on `status === 429` and `retry_after_seconds`. _shared stays
+ * untouched.
+ */
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
+import { preflightResponse } from '../_shared/cors.ts';
+import { successResponse } from '../_shared/errors.ts';
+import { serviceClient } from '../_shared/supabase.ts';
+import { checkRateLimit } from '../_shared/rate-limit.ts';
+import { generateOtp, hashOtp } from '../_shared/otp.ts';
+import { sendSms } from '../_shared/movider.ts';
+import { sendEmailVerificationCode } from '../_shared/resend.ts';
 
 const RESEND_COOLDOWN_SECONDS = 60;
 
-export async function POST(req: NextRequest) {
+/** Port of lib/http.ts getClientIp — Supabase's edge proxy sets x-forwarded-for. */
+function getClientIp(req: Request): string {
+  const xff = req.headers.get('x-forwarded-for');
+  if (xff) {
+    const first = xff.split(',')[0]?.trim();
+    if (first) return first;
+  }
+  return req.headers.get('x-real-ip')?.trim() || 'unknown';
+}
+
+Deno.serve(async (req) => {
+  const preflight = preflightResponse(req);
+  if (preflight) return preflight;
+
+  const origin = req.headers.get('origin');
+
+  if (req.method !== 'POST') {
+    return successResponse({ error: 'method_not_allowed' }, origin, 405);
+  }
+
   let body: { session_id?: unknown; channel?: unknown };
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: 'invalid_body' }, { status: 400 });
+    return successResponse({ error: 'invalid_body' }, origin, 400);
   }
 
   const sessionId = typeof body.session_id === 'string' ? body.session_id : null;
   const channel = body.channel === 'sms' || body.channel === 'email' ? body.channel : null;
   if (!sessionId || !channel) {
-    return NextResponse.json({ error: 'invalid_body' }, { status: 400 });
+    return successResponse({ error: 'invalid_body' }, origin, 400);
   }
 
-  const supabase = getServiceSupabase();
+  const supabase = serviceClient();
 
   // 1. Load session
   const { data: session } = await supabase
@@ -35,7 +64,7 @@ export async function POST(req: NextRequest) {
     .maybeSingle();
 
   if (!session || new Date(session.expires_at) < new Date()) {
-    return NextResponse.json({ error: 'session_not_found' }, { status: 404 });
+    return successResponse({ error: 'session_not_found' }, origin, 404);
   }
 
   // 2. Rate limit (same policy as init)
@@ -52,9 +81,10 @@ export async function POST(req: NextRequest) {
         ]);
   const tripped = limits.find((l) => !l.ok);
   if (tripped) {
-    return NextResponse.json(
+    return successResponse(
       { error: 'rate_limited', retry_after_seconds: tripped.retryAfterSeconds },
-      { status: 429 },
+      origin,
+      429,
     );
   }
 
@@ -72,9 +102,10 @@ export async function POST(req: NextRequest) {
   if (last) {
     const elapsed = (Date.now() - new Date(last.created_at).getTime()) / 1000;
     if (elapsed < RESEND_COOLDOWN_SECONDS) {
-      return NextResponse.json(
+      return successResponse(
         { error: 'cooldown', retry_after_seconds: Math.ceil(RESEND_COOLDOWN_SECONDS - elapsed) },
-        { status: 429 },
+        origin,
+        429,
       );
     }
   }
@@ -90,28 +121,29 @@ export async function POST(req: NextRequest) {
 
   // 5. Generate + send new
   const code = generateOtp(6);
+  const codeHash = await hashOtp(code);
   if (channel === 'sms') {
     const { error } = await supabase
       .from('phone_otps')
-      .insert({ session_id: sessionId, phone: session.phone, code_hash: hashOtp(code) });
+      .insert({ session_id: sessionId, phone: session.phone, code_hash: codeHash });
     if (error) {
       console.error('[resend-code] insert failed', error);
-      return NextResponse.json({ error: 'server_error' }, { status: 500 });
+      return successResponse({ error: 'server_error' }, origin, 500);
     }
     const text = `รหัสยืนยัน AURUM Live ของคุณคือ ${code} (หมดอายุใน 5 นาที) อย่าเปิดเผยรหัสนี้ให้ผู้อื่น`;
     const res = await sendSms({ to: session.phone, text });
-    if (!res.ok) return NextResponse.json({ error: 'sms_send_failed' }, { status: 502 });
+    if (!res.ok) return successResponse({ error: 'sms_send_failed' }, origin, 502);
   } else {
     const { error } = await supabase
       .from('email_codes')
-      .insert({ session_id: sessionId, email: session.email, code_hash: hashOtp(code) });
+      .insert({ session_id: sessionId, email: session.email, code_hash: codeHash });
     if (error) {
       console.error('[resend-code] insert failed', error);
-      return NextResponse.json({ error: 'server_error' }, { status: 500 });
+      return successResponse({ error: 'server_error' }, origin, 500);
     }
     const res = await sendEmailVerificationCode({ to: session.email, code });
-    if (!res.ok) return NextResponse.json({ error: 'email_send_failed' }, { status: 502 });
+    if (!res.ok) return successResponse({ error: 'email_send_failed' }, origin, 502);
   }
 
-  return NextResponse.json({ ok: true }, { status: 200 });
-}
+  return successResponse({ ok: true }, origin);
+});
