@@ -1,11 +1,14 @@
 'use client';
 
 /**
- * Thin client-side wrapper around the /api/auth/* routes. Each method returns a
- * discriminated result so step components can drive their own loading/error UI.
+ * Thin client-side wrapper around the signup backend. `initSignup` and `resend`
+ * call Supabase Edge Functions; `completeSignup` is still the Vercel route
+ * until PR 5c. Each method returns a discriminated result so step components
+ * can drive their own loading/error UI.
  */
 
 import { apiUrl } from '@/lib/config';
+import { getBrowserSupabase } from '@/lib/supabase-browser';
 
 export interface InitResult {
   ok: boolean;
@@ -45,21 +48,43 @@ async function readJson(res: Response): Promise<Record<string, unknown>> {
   }
 }
 
+/**
+ * Calls an Edge Function and flattens the result back into the `{ status, data }`
+ * pair the callers below were written against.
+ *
+ * `functions.invoke()` throws a `FunctionsHttpError` for any non-2xx reply, so
+ * the status and the JSON error body — which Step1Credentials maps to Thai copy
+ * and Step2Verify branches on (429 -> cooldown countdown) — have to be read off
+ * the raw `response` it hands back. On success the SDK has already consumed the
+ * body, so `data` is used there instead. A network failure has no HTTP status;
+ * status 0 keeps callers on their generic-error path.
+ */
+async function invokeFunction(
+  name: string,
+  body: Record<string, unknown>,
+): Promise<{ status: number; data: Record<string, unknown> }> {
+  const supabase = getBrowserSupabase();
+  const { data, error, response } = await supabase.functions.invoke(name, { body });
+
+  if (!error) {
+    return { status: response?.status ?? 200, data: (data ?? {}) as Record<string, unknown> };
+  }
+  if (response) {
+    return { status: response.status, data: await readJson(response) };
+  }
+  return { status: 0, data: {} };
+}
+
 export function useSignupFlow() {
   const initSignup = async (input: {
     phone: string;
     email: string;
     password: string;
   }): Promise<InitResult> => {
-    const res = await fetch(apiUrl('/api/auth/init-signup'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
-    });
-    const data = await readJson(res);
+    const { status, data } = await invokeFunction('init-signup', { ...input });
     return {
-      ok: res.ok,
-      status: res.status,
+      ok: status >= 200 && status < 300,
+      status,
       sessionId: data.session_id as string | undefined,
       phoneMasked: data.phone_masked as string | undefined,
       emailMasked: data.email_masked as string | undefined,
@@ -101,15 +126,13 @@ export function useSignupFlow() {
     sessionId: string,
     channel: 'sms' | 'email',
   ): Promise<ResendResult> => {
-    const res = await fetch(apiUrl('/api/auth/resend-code'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, channel }),
+    const { status, data } = await invokeFunction('resend-code', {
+      session_id: sessionId,
+      channel,
     });
-    const data = await readJson(res);
     return {
-      ok: res.ok,
-      status: res.status,
+      ok: status >= 200 && status < 300,
+      status,
       error: data.error as string | undefined,
       retryAfterSeconds: data.retry_after_seconds as number | undefined,
     };
