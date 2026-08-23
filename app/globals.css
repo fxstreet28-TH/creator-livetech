@@ -354,6 +354,162 @@
   opacity: 0.5;
 }
 
+/* Success flash — shown on /login?reset=success after a password change. */
+.aurum-auth__flash {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 18px 0 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(52, 211, 153, 0.28);
+  border-radius: 12px;
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--aurum-success);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: left;
+}
+.aurum-auth__flash svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+/* --- Forgot-password modal -------------------------------------------------
+   The scrim's backdrop-filter is what blurs the login card behind it, so the
+   modal reads as the one thing in focus. */
+.aurum-modal__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(5, 2, 15, 0.6);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.aurum-modal {
+  position: relative;
+  width: 100%;
+  max-width: 380px;
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
+  padding: 30px 26px 24px;
+  border: 1px solid var(--aurum-glass-border);
+  border-radius: 20px;
+  background: rgba(20, 12, 40, 0.92);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  box-shadow:
+    0 30px 90px rgba(0, 0, 0, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  text-align: center;
+}
+
+.aurum-modal__close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+.aurum-modal__close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.aurum-modal__icon {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 14px;
+  border: 1px solid rgba(6, 182, 212, 0.28);
+  border-radius: 16px;
+  background: rgba(6, 182, 212, 0.12);
+  color: var(--aurum-cyan-light);
+}
+.aurum-modal__icon.is-success {
+  border-color: rgba(52, 211, 153, 0.3);
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--aurum-success);
+}
+
+.aurum-modal__title {
+  margin: 0 0 8px;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: #f4f2ff;
+}
+
+.aurum-modal__text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.75;
+  color: rgba(255, 255, 255, 0.55);
+}
+.aurum-modal__text strong {
+  color: var(--aurum-cyan-light);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.aurum-modal__form {
+  margin-top: 20px;
+  text-align: left;
+}
+
+.aurum-modal__hint {
+  margin: 14px 0 0;
+  font-size: 11px;
+  line-height: 1.7;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.aurum-modal__link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--aurum-cyan-light);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.aurum-modal__link:hover {
+  color: #a5f3fc;
+}
+
+.aurum-modal__ghost {
+  width: 100%;
+  margin-top: 20px;
+  padding: 13px;
+  border: 1px solid var(--aurum-input-border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.75);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.18s ease, color 0.18s ease;
+}
+.aurum-modal__ghost:hover {
+  border-color: rgba(139, 92, 246, 0.45);
+  color: #fff;
+}
+
 /* AURUM Live — signup modal falling-stars ambient effect (left aside only) */
 @keyframes aurum-star-fall {
   0%   { top: -20px; opacity: 0; transform: translateX(0); }

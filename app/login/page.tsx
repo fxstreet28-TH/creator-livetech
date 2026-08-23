@@ -8,18 +8,23 @@ import { getBrowserSupabase } from "@/lib/supabase-browser";
 import {
   AlertCircleIcon,
   ArrowRightIcon,
+  CheckIcon,
   Spinner,
 } from "@/components/auth/AuthIcons";
+import { ForgotPasswordModal } from "@/components/auth/ForgotPasswordModal";
 
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirectTo = searchParams.get("redirect") || "/dashboard";
+  // Set by /reset-password after a successful password change.
+  const justReset = searchParams.get("reset") === "success";
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [forgotOpen, setForgotOpen] = useState(false);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -92,6 +97,13 @@ function LoginForm() {
         <h1 className="aurum-auth__title">เข้าสู่ระบบ</h1>
         <p className="aurum-auth__subtitle">ยินดีต้อนรับกลับสู่ AURUM Live</p>
 
+        {justReset && (
+          <p className="aurum-auth__flash" role="status">
+            <CheckIcon size={14} />
+            <span>เปลี่ยนรหัสผ่านสำเร็จ กรุณาเข้าสู่ระบบด้วยรหัสผ่านใหม่</span>
+          </p>
+        )}
+
         <form className="aurum-auth__form" onSubmit={handleSubmit}>
           <label className="aurum-auth__field" htmlFor="email">
             <span className="aurum-auth__label">อีเมล</span>
@@ -130,12 +142,13 @@ function LoginForm() {
           </label>
 
           <div className="aurum-auth__forgot-row">
-            {/* A <button>, not an <a>: it opens a modal (wired up in the
-                forgot-password commit) and must never navigate. */}
+            {/* A <button>, not an <a>: it opens the modal and must never
+                navigate. */}
             <button
               type="button"
               className="aurum-auth__forgot"
               disabled={isSubmitting}
+              onClick={() => setForgotOpen(true)}
             >
               ลืมรหัสผ่าน?
             </button>
@@ -182,6 +195,11 @@ function LoginForm() {
           ← กลับหน้าเว็บไซต์
         </Link>
       </div>
+
+      <ForgotPasswordModal
+        open={forgotOpen}
+        onClose={() => setForgotOpen(false)}
+      />
     </main>
   );
 }
