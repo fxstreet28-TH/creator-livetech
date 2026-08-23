@@ -283,6 +283,40 @@
   box-shadow: 0 8px 24px rgba(139, 92, 246, 0.22);
 }
 
+/* Submit spinner. 18px so it optically matches the 22px line-height of the
+   button label sitting next to it. */
+.aurum-spinner {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: aurum-spin 0.7s linear infinite;
+}
+@keyframes aurum-spin {
+  to { transform: rotate(360deg); }
+}
+/* Reduced motion still needs *some* motion here — a frozen spinner reads as a
+   hung request — so slow it down rather than stopping it. */
+@media (prefers-reduced-motion: reduce) {
+  .aurum-spinner { animation-duration: 2.4s; }
+}
+
+.aurum-auth__error {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 14px 0 0;
+  color: var(--aurum-danger);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.aurum-auth__error svg {
+  flex: none;
+  margin-top: 2px;
+}
+
 .aurum-auth__alt {
   margin: 20px 0 0;
   font-size: 13px;

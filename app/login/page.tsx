@@ -5,6 +5,11 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { apiUrl } from "@/lib/config";
 import { getBrowserSupabase } from "@/lib/supabase-browser";
+import {
+  AlertCircleIcon,
+  ArrowRightIcon,
+  Spinner,
+} from "@/components/auth/AuthIcons";
 
 function LoginForm() {
   const router = useRouter();
@@ -18,6 +23,9 @@ function LoginForm() {
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    // Belt to the button's `disabled` braces: a double Enter press can queue a
+    // second submit before React has re-rendered the disabled button.
+    if (isSubmitting) return;
     setErrorMsg(null);
     setIsSubmitting(true);
 
@@ -59,8 +67,9 @@ function LoginForm() {
     }
 
     // Session cookies are now set by the server. Use `replace` (not `push`) so
-    // the browser back button does not return the user to /login. Keep
-    // isSubmitting true through the redirect to avoid a button flash.
+    // the browser back button does not return the user to /login. Deliberately
+    // no setIsSubmitting(false) here: the spinner has to stay up through the
+    // redirect, otherwise the button flashes back to its enabled state.
     router.replace(redirectTo);
     router.refresh();
   }
@@ -94,7 +103,11 @@ function LoginForm() {
               autoComplete="email"
               placeholder="you@example.com"
               value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              disabled={isSubmitting}
+              onChange={(event) => {
+                setErrorMsg(null);
+                setEmail(event.target.value);
+              }}
             />
           </label>
 
@@ -108,69 +121,68 @@ function LoginForm() {
               autoComplete="current-password"
               placeholder="••••••••"
               value={password}
-              onChange={(event) => setPassword(event.target.value)}
+              disabled={isSubmitting}
+              onChange={(event) => {
+                setErrorMsg(null);
+                setPassword(event.target.value);
+              }}
             />
           </label>
 
           <div className="aurum-auth__forgot-row">
             {/* A <button>, not an <a>: it opens a modal (wired up in the
                 forgot-password commit) and must never navigate. */}
-            <button type="button" className="aurum-auth__forgot">
+            <button
+              type="button"
+              className="aurum-auth__forgot"
+              disabled={isSubmitting}
+            >
               ลืมรหัสผ่าน?
             </button>
           </div>
 
           {errorMsg && (
-            <p
-              role="alert"
-              style={{
-                margin: "12px 0 0",
-                padding: "10px 14px",
-                borderRadius: 10,
-                background: "rgba(239,68,68,.1)",
-                border: "1px solid rgba(239,68,68,.25)",
-                color: "#fca5a5",
-                fontSize: 13,
-              }}
-            >
-              {errorMsg}
+            <p className="aurum-auth__error" role="alert">
+              <AlertCircleIcon />
+              <span>{errorMsg}</span>
             </p>
           )}
 
-          <button type="submit" className="aurum-auth__submit" disabled={isSubmitting}>
-            {isSubmitting ? "กำลังเข้าสู่ระบบ..." : "เข้าสู่ระบบ"}
-            <ArrowRightIcon />
+          <button
+            type="submit"
+            className="aurum-auth__submit"
+            disabled={isSubmitting}
+          >
+            {isSubmitting ? (
+              <>
+                <Spinner />
+                กำลังเข้าสู่ระบบ...
+              </>
+            ) : (
+              <>
+                เข้าสู่ระบบ
+                <ArrowRightIcon />
+              </>
+            )}
           </button>
         </form>
 
-        <p className="aurum-auth__alt">
+        {/* Links cannot be `disabled`, so they get the inert treatment instead:
+            no pointer events, dimmed, for as long as the request is in flight. */}
+        <p
+          className={`aurum-auth__alt${isSubmitting ? " aurum-auth__inert" : ""}`}
+        >
           ยังไม่มีบัญชี? <Link href="/?signup=open">สมัครสมาชิก</Link>
         </p>
         <p className="aurum-auth__trust">เข้ารหัส TLS · Supabase Auth</p>
-        <Link className="aurum-auth__back" href="/">
+        <Link
+          className={`aurum-auth__back${isSubmitting ? " aurum-auth__inert" : ""}`}
+          href="/"
+        >
           ← กลับหน้าเว็บไซต์
         </Link>
       </div>
     </main>
-  );
-}
-
-function ArrowRightIcon() {
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <path d="M5 12h14" />
-      <path d="m12 5 7 7-7 7" />
-    </svg>
   );
 }
 
