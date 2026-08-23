@@ -48,6 +48,278 @@
 .auth-page{min-height:100dvh;display:grid;place-items:center;padding:40px 20px;position:relative;overflow:hidden;background:radial-gradient(circle at 78% 12%,rgba(116,46,232,.18),transparent 32%),radial-gradient(circle at 15% 88%,rgba(34,211,238,.12),transparent 32%),#05060b}.auth-glow{position:absolute;width:420px;height:420px;border-radius:50%;filter:blur(140px);opacity:.16;pointer-events:none}.auth-glow.one{background:#7c3aed;left:-200px;top:-120px}.auth-glow.two{background:#1cd5ef;right:-200px;bottom:-140px}.auth-card{position:relative;z-index:2;width:100%;max-width:440px;border:1px solid #2a3144;border-radius:22px;background:rgba(13,17,28,.92);padding:40px 36px;box-shadow:0 30px 90px rgba(0,0,0,.5)}.auth-logo{display:block;margin:0 auto 6px;width:190px;height:70px;object-fit:contain}.auth-head{text-align:center;margin-bottom:26px}.auth-head small{color:#35d9ef;letter-spacing:.2em;font-size:11px}.auth-head h1{font-size:30px;margin:10px 0 8px;letter-spacing:-.02em}.auth-head h1 span{color:transparent;background:linear-gradient(100deg,#a33fff,#2edbec);-webkit-background-clip:text}.auth-head p{margin:0;color:#8b95a8;font-size:14px}.auth-form label{display:block;margin-top:18px;color:#aeb6c5;font-size:12px}.auth-form input{width:100%;height:50px;margin-top:8px;border:1px solid #30384c;border-radius:10px;background:#090c14;color:#eef2f8;padding:0 14px;font-size:14px;transition:.2s}.auth-form input::placeholder{color:#5c657a}.auth-form input:focus{outline:0;border-color:#7c3aed;box-shadow:0 0 0 3px rgba(124,58,237,.2)}.auth-row{display:flex;justify-content:flex-end;margin-top:12px}.auth-row a{color:#a976ff;font-size:12px}.auth-form .button{width:100%;margin-top:24px}.auth-alt{text-align:center;margin-top:22px;color:#8b95a8;font-size:13px}.auth-alt a{color:#b987ff;font-weight:600}.auth-back{display:block;text-align:center;margin-top:16px;color:#7e889a;font-size:13px}
 @media(max-width:480px){.auth-card{padding:32px 22px}.auth-logo{width:160px;height:60px}.auth-head h1{font-size:26px}}
 
+/* ---------------------------------------------------------------------------
+   AURUM Live auth surfaces — /login and /reset-password.
+
+   Namespaced `.aurum-*` on purpose: the legacy `.auth-*` block above still
+   dresses /onboarding, so redesigning the login page must not touch it.
+   Design tokens live on :root as CSS vars, which is also what the modal
+   (rendered inside the page, position:fixed) inherits.
+--------------------------------------------------------------------------- */
+:root {
+  --aurum-bg: #0a0517;
+  --aurum-purple: #8b5cf6;
+  --aurum-purple-light: #a78bfa;
+  --aurum-cyan: #06b6d4;
+  --aurum-cyan-light: #67e8f9;
+  --aurum-pink: #ec4899;
+  --aurum-glass-bg: rgba(20, 12, 40, 0.6);
+  --aurum-glass-border: rgba(139, 92, 246, 0.18);
+  --aurum-input-bg: rgba(255, 255, 255, 0.04);
+  --aurum-input-border: rgba(139, 92, 246, 0.22);
+  --aurum-focus-ring: rgba(6, 182, 212, 0.14);
+  --aurum-danger: #f87171;
+  --aurum-success: #6ee7b7;
+}
+
+.aurum-auth {
+  position: relative;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 40px 16px;
+  overflow: hidden;
+  background: var(--aurum-bg);
+}
+
+/* Aurora glow — purple top-left, cyan bottom-right, a whisper of pink through
+   the middle. Deliberately static: one paint, then it never touches the main
+   thread again. Inset is negative so the blurred edges bleed off-screen
+   instead of showing a seam. */
+.aurum-auth__aurora {
+  position: absolute;
+  inset: -25%;
+  pointer-events: none;
+  filter: blur(40px);
+  background:
+    radial-gradient(38% 32% at 20% 18%, rgba(139, 92, 246, 0.45), transparent 70%),
+    radial-gradient(40% 34% at 82% 84%, rgba(6, 182, 212, 0.32), transparent 70%),
+    radial-gradient(32% 26% at 52% 50%, rgba(236, 72, 153, 0.14), transparent 70%);
+}
+
+.aurum-auth__card {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  max-width: 380px;
+  padding: 32px 28px 28px;
+  border-radius: 20px;
+  border: 1px solid var(--aurum-glass-border);
+  background: var(--aurum-glass-bg);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  box-shadow:
+    0 30px 90px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  text-align: center;
+}
+
+/* Without backdrop-filter the frosted card would sit as a flat translucent
+   panel over the aurora and lose contrast, so opt into a near-opaque fill. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .aurum-auth__card {
+    background: rgba(16, 10, 32, 0.94);
+  }
+}
+
+/* Halo wrapper around the EXISTING logo asset — the image itself is untouched,
+   the container supplies the radius and the purple glow. */
+.aurum-auth__logo {
+  display: grid;
+  place-items: center;
+  width: 60px;
+  height: 60px;
+  margin: 0 auto 18px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.03);
+  box-shadow:
+    0 0 40px rgba(139, 92, 246, 0.5),
+    0 8px 16px rgba(0, 0, 0, 0.4);
+}
+.aurum-auth__logo img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 5px;
+  object-fit: contain;
+}
+
+.aurum-auth__badge {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--aurum-cyan-light);
+}
+
+.aurum-auth__title {
+  margin: 10px 0 6px;
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+  background: linear-gradient(100deg, var(--aurum-purple-light), var(--aurum-cyan-light));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.aurum-auth__subtitle {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.aurum-auth__form {
+  margin-top: 22px;
+  text-align: left;
+}
+
+.aurum-auth__field {
+  display: block;
+  margin-top: 16px;
+}
+.aurum-auth__field:first-child {
+  margin-top: 0;
+}
+
+.aurum-auth__label {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.aurum-auth__input {
+  width: 100%;
+  height: 48px;
+  padding: 0 14px;
+  border: 1px solid var(--aurum-input-border);
+  border-radius: 12px;
+  background: var(--aurum-input-bg);
+  color: #f4f2ff;
+  font-family: inherit;
+  /* 16px is the threshold below which iOS Safari zooms the page on focus. */
+  font-size: 16px;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+.aurum-auth__input::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+.aurum-auth__input:hover:not(:disabled) {
+  border-color: rgba(139, 92, 246, 0.36);
+}
+.aurum-auth__input:focus {
+  outline: 0;
+  border-color: var(--aurum-cyan);
+  box-shadow: 0 0 0 3px var(--aurum-focus-ring);
+  background: rgba(255, 255, 255, 0.06);
+}
+/* Filled but not focused — a purple tint marks the fields already answered. */
+.aurum-auth__input:not(:placeholder-shown):not(:focus) {
+  border-color: rgba(139, 92, 246, 0.45);
+}
+.aurum-auth__input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.aurum-auth__forgot-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+.aurum-auth__forgot {
+  padding: 4px 2px;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--aurum-cyan-light);
+  cursor: pointer;
+  transition: color 0.18s ease, opacity 0.18s ease;
+}
+.aurum-auth__forgot:hover:not(:disabled) {
+  color: #a5f3fc;
+  text-decoration: underline;
+}
+.aurum-auth__forgot:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.aurum-auth__submit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  margin-top: 20px;
+  padding: 14px 18px;
+  border: 0;
+  border-radius: 12px;
+  background: linear-gradient(100deg, var(--aurum-purple), var(--aurum-cyan));
+  color: #fff;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 22px;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(139, 92, 246, 0.35);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
+}
+.aurum-auth__submit:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 32px rgba(139, 92, 246, 0.5);
+}
+.aurum-auth__submit:disabled {
+  cursor: wait;
+  opacity: 0.88;
+  transform: none;
+  box-shadow: 0 8px 24px rgba(139, 92, 246, 0.22);
+}
+
+.aurum-auth__alt {
+  margin: 20px 0 0;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.5);
+}
+.aurum-auth__alt a {
+  color: var(--aurum-purple-light);
+  font-weight: 600;
+}
+.aurum-auth__alt a:hover {
+  color: var(--aurum-cyan-light);
+}
+
+.aurum-auth__trust {
+  margin: 14px 0 0;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.aurum-auth__back {
+  display: block;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+}
+.aurum-auth__back:hover {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+/* Applied to links (which cannot be `disabled`) while a submit is in flight. */
+.aurum-auth__inert {
+  pointer-events: none;
+  opacity: 0.5;
+}
+
 /* AURUM Live — signup modal falling-stars ambient effect (left aside only) */
 @keyframes aurum-star-fall {
   0%   { top: -20px; opacity: 0; transform: translateX(0); }

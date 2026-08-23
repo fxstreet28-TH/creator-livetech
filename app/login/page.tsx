@@ -66,27 +66,29 @@ function LoginForm() {
   }
 
   return (
-    <main className="auth-page">
-      <div className="auth-glow one" aria-hidden />
-      <div className="auth-glow two" aria-hidden />
+    <main className="aurum-auth">
+      <div className="aurum-auth__aurora" aria-hidden />
 
-      <div className="auth-card">
-        <Link href="/" aria-label="AURUM LIVE หน้าหลัก">
+      <div className="aurum-auth__card">
+        <Link
+          className="aurum-auth__logo"
+          href="/"
+          aria-label="AURUM Live หน้าหลัก"
+        >
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img className="auth-logo" src="/aurum-live-logo.png" alt="Aurum Live" />
+          <img src="/aurum-live-logo.png" alt="AURUM Live" />
         </Link>
 
-        <div className="auth-head">
-          <small>WELCOME BACK</small>
-          <h1>เข้าสู่<span>ระบบ</span></h1>
-          <p>ยินดีต้อนรับกลับสู่ AURUM LIVE</p>
-        </div>
+        <small className="aurum-auth__badge">Welcome back</small>
+        <h1 className="aurum-auth__title">เข้าสู่ระบบ</h1>
+        <p className="aurum-auth__subtitle">ยินดีต้อนรับกลับสู่ AURUM Live</p>
 
-        <form className="auth-form" onSubmit={handleSubmit}>
-          <label htmlFor="email">
-            อีเมล
+        <form className="aurum-auth__form" onSubmit={handleSubmit}>
+          <label className="aurum-auth__field" htmlFor="email">
+            <span className="aurum-auth__label">อีเมล</span>
             <input
               id="email"
+              className="aurum-auth__input"
               type="email"
               required
               autoComplete="email"
@@ -96,10 +98,11 @@ function LoginForm() {
             />
           </label>
 
-          <label htmlFor="password">
-            รหัสผ่าน
+          <label className="aurum-auth__field" htmlFor="password">
+            <span className="aurum-auth__label">รหัสผ่าน</span>
             <input
               id="password"
+              className="aurum-auth__input"
               type="password"
               required
               autoComplete="current-password"
@@ -109,16 +112,13 @@ function LoginForm() {
             />
           </label>
 
-          <div className="auth-row">
-            {/* ยังไม่ทำงานจริง — จะเชื่อมในภายหลัง */}
-            <a href="#" onClick={(event) => event.preventDefault()}>
+          <div className="aurum-auth__forgot-row">
+            {/* A <button>, not an <a>: it opens a modal (wired up in the
+                forgot-password commit) and must never navigate. */}
+            <button type="button" className="aurum-auth__forgot">
               ลืมรหัสผ่าน?
-            </a>
+            </button>
           </div>
-
-          <button type="submit" className="button" disabled={isSubmitting}>
-            {isSubmitting ? "กำลังเข้าสู่ระบบ..." : "เข้าสู่ระบบ"} <span>→</span>
-          </button>
 
           {errorMsg && (
             <p
@@ -136,14 +136,41 @@ function LoginForm() {
               {errorMsg}
             </p>
           )}
+
+          <button type="submit" className="aurum-auth__submit" disabled={isSubmitting}>
+            {isSubmitting ? "กำลังเข้าสู่ระบบ..." : "เข้าสู่ระบบ"}
+            <ArrowRightIcon />
+          </button>
         </form>
 
-        <p className="auth-alt">
+        <p className="aurum-auth__alt">
           ยังไม่มีบัญชี? <Link href="/?signup=open">สมัครสมาชิก</Link>
         </p>
-        <Link className="auth-back" href="/">← กลับหน้าเว็บไซต์</Link>
+        <p className="aurum-auth__trust">เข้ารหัส TLS · Supabase Auth</p>
+        <Link className="aurum-auth__back" href="/">
+          ← กลับหน้าเว็บไซต์
+        </Link>
       </div>
     </main>
+  );
+}
+
+function ArrowRightIcon() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M5 12h14" />
+      <path d="m12 5 7 7-7 7" />
+    </svg>
   );
 }
 
