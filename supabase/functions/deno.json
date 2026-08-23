@@ -5,9 +5,10 @@
   },
   "imports": {
     "std/": "https://deno.land/std@0.208.0/",
-    "@supabase/supabase-js": "npm:@supabase/supabase-js@^2.45.0"
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@^2.45.0",
+    "libphonenumber-js": "npm:libphonenumber-js@^1.13.10"
   },
   "tasks": {
-    "check": "deno check _shared/*.ts"
+    "check": "deno check _shared/*.ts init-signup/index.ts resend-code/index.ts"
   }
 }
