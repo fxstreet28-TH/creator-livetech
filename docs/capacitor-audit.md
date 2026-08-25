@@ -411,6 +411,9 @@ Sequenced so the build is never broken for more than one PR at a time, and so no
 - **Risk:** Medium — touches live auth. Ship behind a manual QA pass: signup → session persists → reload → still signed in → logout → actually signed out, on web *and* in a dev shell. Worth landing early: it's a genuine web bug fix, not just Capacitor prep.
 
 ### PR 4 — Client-side route guard, replacing middleware
+> **Superseded by PR 6.** `<RouteGuard>` shipped and has since been deleted: the check now lives
+> per route in `lib/hooks/useRequireAuth.tsx`, so there is no wrapper component any more.
+
 - **Scope:** Convert `app/dashboard/layout.tsx` to `'use client'`. Add `<RouteGuard>` reading `supabase.auth.getSession()`, redirecting to `/login?redirect=<path>` — same contract as `middleware.ts:43-47`, so `app/login/page.tsx:10` needs no change. Delete `lib/session.ts`; replace `getDashboardUser()` with a `useDashboardUser()` client hook. **Do not delete `middleware.ts` yet** — keep it for the web build as defence in depth.
 - **Files touched:** `app/dashboard/layout.tsx`, `app/dashboard/page.tsx`, `lib/session.ts` (deleted), `lib/hooks/useDashboardUser.ts` (new)
 - **Estimated size:** M (~180 LoC)
@@ -433,8 +436,13 @@ The long pole. Split so each piece is independently reviewable and the client ca
 - **Estimated size:** M/L (~300 LoC + a migration) · **Risk:** **High.** This is account provisioning. Do not merge without an end-to-end signup test on a staging Supabase project, and keep the old routes deployed on web for one release as a rollback path.
 
 ### PR 6 — Delete middleware, green the export build
+> **Shipped, wider than scoped here.** Both layers went: `middleware.ts` *and* `<RouteGuard>`.
+> All seven matcher paths now run `useRequireAuth()` in the page (or, for `/dashboard/*`, in
+> `DashboardChrome`). Server-Component cookie auth was rejected — see the rationale in
+> `lib/hooks/useRequireAuth.tsx`.
+
 - **Scope:** Delete `middleware.ts`. Confirm `npm run build:mobile` succeeds. Flip the PR 1 CI job to required.
-- **Files touched:** `middleware.ts` (deleted), CI config
+- **Files touched:** `middleware.ts` (deleted), `components/dashboard/RouteGuard.tsx` (deleted), the seven protected routes, CI config
 - **Estimated size:** S (~20 LoC) · **Risk:** Low *if* PR 4's guard and the RLS audit both landed. **This PR is the point of no return for server-side auth** — verify RLS one more time before merging.
 
 ### PR 7 — Mobile UX: safe areas, touch targets, viewport
