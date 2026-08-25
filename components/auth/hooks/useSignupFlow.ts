@@ -1,13 +1,12 @@
 'use client';
 
 /**
- * Thin client-side wrapper around the signup backend. `initSignup` and `resend`
- * call Supabase Edge Functions; `completeSignup` is still the Vercel route
- * until PR 5c. Each method returns a discriminated result so step components
- * can drive their own loading/error UI.
+ * Thin client-side wrapper around the signup backend. All three methods now
+ * call Supabase Edge Functions — `completeSignup` was the last one on a Vercel
+ * route, and moved in PR 5c. Each method returns a discriminated result so step
+ * components can drive their own loading/error UI.
  */
 
-import { apiUrl } from '@/lib/config';
 import { normalizePhoneE164 } from '@/lib/phone';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
 
@@ -111,19 +110,19 @@ export function useSignupFlow() {
     smsCode: string;
     emailCode: string;
   }): Promise<CompleteResult> => {
-    const res = await fetch(apiUrl('/api/auth/complete-signup'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        session_id: input.sessionId,
-        sms_code: input.smsCode,
-        email_code: input.emailCode,
-      }),
+    const { status, data } = await invokeFunction('complete-signup', {
+      session_id: input.sessionId,
+      sms_code: input.smsCode,
+      email_code: input.emailCode,
     });
-    const data = await readJson(res);
+    // `ok` still requires a token rather than just a 2xx: the function mirrors
+    // the route's `signin_after_signup_failed` case, which replies 200 with no
+    // tokens because the account exists but the sign-in that mints them did
+    // not. Step2Verify must fall through to its error branch there, not
+    // redirect to a dashboard it has no session for.
     return {
-      ok: res.ok && typeof data.access_token === 'string',
-      status: res.status,
+      ok: status >= 200 && status < 300 && typeof data.access_token === 'string',
+      status,
       accessToken: data.access_token as string | undefined,
       refreshToken: data.refresh_token as string | undefined,
       smsInvalid: data.sms_invalid as boolean | undefined,

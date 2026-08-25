@@ -8,10 +8,13 @@ static mobile bundle has nowhere to put one. See
 
 ## What is here right now
 
-Only `_shared/` — a set of utilities that the real functions will import. There
-are **no deployed functions yet**, and nothing in the app calls any of this
-code. The Next.js routes are still serving every request in production exactly
-as before.
+`_shared/` — a set of utilities the functions import — plus three deployed
+functions: `init-signup` and `resend-code` (PR 5b) and `complete-signup`
+(PR 5c). The signup flow calls all three. `app/api/auth/complete-signup/` is
+still deployed on Vercel but no longer referenced by anything: it is the
+one-`git revert`-away fallback for the 24h soak, and PR 5c part 2 deletes it.
+`app/api/auth/login/` and `app/api/auth/check-availability/` are untouched and
+still serving.
 
 | File | What it does |
 | --- | --- |
@@ -23,6 +26,17 @@ as before.
 | `_shared/otp.ts` | OTP hashing (HMAC-SHA256) and AES-256-GCM password crypto for signup sessions. |
 | `_shared/movider.ts` | `sendSms()` — SMS OTP via Movider. |
 | `_shared/resend.ts` | `sendEmailVerificationCode()` — email OTP via Resend. |
+
+| Function | What it does |
+| --- | --- |
+| `init-signup/` | Creates the signup session, issues + sends both codes. |
+| `resend-code/` | Re-issues one channel's code for an existing session. |
+| `complete-signup/` | Verifies both codes, creates the `auth.users` row, seeds `customers` + `creators`, mints session tokens, deletes the session. |
+
+All three keep the request/response shapes, error codes and HTTP statuses of
+the Next.js routes they replace byte-for-byte — `components/auth/steps/` maps
+those codes to Thai copy, and an unchanged wire format is what makes a revert
+of the frontend commit a clean fallback to the still-deployed Vercel route.
 
 Each of these is a port of its `lib/*.ts` counterpart, kept deliberately
 close to the original so the two implementations can run side by side during
@@ -93,6 +107,7 @@ needs it goes live:
 | --- | --- | --- |
 | `OTP_HMAC_SECRET` | `_shared/otp.ts` | Must be byte-identical to the Vercel value, or codes issued by the old routes stop verifying. |
 | `SESSION_ENCRYPTION_KEY` | `_shared/otp.ts` | Same — 64 hex chars. A mismatch makes in-flight signup sessions undecryptable. |
+| `SUPABASE_ANON_KEY` | `_shared/supabase.ts` `anonClient()` | Injected by the runtime like the two above — never set it by hand. `complete-signup` signs the new user in with it to mint session tokens. |
 | `MOVIDER_API_KEY`, `MOVIDER_API_SECRET` | `_shared/movider.ts` | Form-encoded credentials, not a Bearer token. |
 | `MOVIDER_SENDER_NAME` | `_shared/movider.ts` | Optional. Leave unset while the "AURUM" sender ID is unapproved for Thailand — Movider then falls back to a numeric sender and the SMS still arrive. |
 | `RESEND_API_KEY` | `_shared/resend.ts` | |
@@ -122,6 +137,8 @@ when the file was written; re-check it if you touch the crypto.
 
 ## What comes next
 
-PR 5b builds `init-signup` and `resend-code` on top of these utilities and
-deploys them. PR 5c does `complete-signup` and `check-availability`, and deletes
-`app/api/auth/login/`. Until then, everything here is dormant.
+PR 5c part 2 deletes `app/api/auth/complete-signup/route.ts` once the Edge
+Function has soaked on production for 24h. PR 5d migrates `/api/auth/login`
+using the same phase A/B/C structure — it was deliberately kept out of PR 5c so
+a login regression and a signup regression could never be in flight together.
+`check-availability` becomes a `SECURITY DEFINER` RPC rather than a function.
