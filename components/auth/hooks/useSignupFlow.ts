@@ -8,6 +8,7 @@
  */
 
 import { apiUrl } from '@/lib/config';
+import { normalizePhoneE164 } from '@/lib/phone';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
 
 export interface InitResult {
@@ -81,7 +82,16 @@ export function useSignupFlow() {
     email: string;
     password: string;
   }): Promise<InitResult> => {
-    const { status, data } = await invokeFunction('init-signup', { ...input });
+    // The country picker hands back '+66' + whatever was typed, so a Thai user
+    // entering the local '0614929599' would put a trunk 0 on the wire
+    // ('+660614929599'). Normalising here — the one place a phone number leaves
+    // the client — keeps the stored number canonical instead of relying on the
+    // Edge Function's parser to absorb it. resend-code takes only a session id,
+    // so it has no phone value to normalise.
+    const { status, data } = await invokeFunction('init-signup', {
+      ...input,
+      phone: normalizePhoneE164(input.phone),
+    });
     return {
       ok: status >= 200 && status < 300,
       status,
