@@ -10,7 +10,7 @@ import { RecentActivity } from '@/components/dashboard/RecentActivity';
 export default function DashboardPage() {
   const { displayName, loading } = useDashboardUser();
 
-  // RouteGuard in the layout already proved a session exists before this
+  // The layout's DashboardChrome already proved a session exists before this
   // mounts, but this hook instance resolves its own first read. Returning null
   // for that tick avoids rendering "สวัสดี, " before the name arrives; the
   // layout's skeleton is what the user sees.

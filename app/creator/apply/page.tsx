@@ -1,6 +1,16 @@
+'use client';
+
+import { AuthPending, useRequireAuth } from '@/lib/hooks/useRequireAuth';
+
 const steps = ["ข้อมูลบัญชี", "ข้อมูลช่อง", "ยืนยันตัวตน", "ส่งให้ตรวจสอบ"];
 
 export default function CreatorApplyPage() {
+  // Kept protected to match the deleted middleware matcher exactly. The audit
+  // (docs/capacitor-audit.md, open question 4) flags whether this page should
+  // be public at all — that is a product call, not part of this cleanup.
+  const { ready } = useRequireAuth();
+  if (!ready) return <AuthPending />;
+
   return (
     <main className="portal-page">
       <header className="portal-nav">
