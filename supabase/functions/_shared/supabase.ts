@@ -45,3 +45,30 @@ export function anonClient(): SupabaseClient {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 }
+
+/**
+ * Caller-scoped client: the anon key plus the request's own Authorization
+ * header, so PostgREST runs every query as that signed-in user and RLS
+ * applies.
+ *
+ * Read endpoints use this rather than serviceClient() on purpose. A
+ * service-role read bypasses RLS entirely, which makes a forgotten
+ * `.eq('user_id', ...)` filter a cross-user data leak. Going through the
+ * user's own JWT means the Phase B policies are enforced by the database
+ * even if the query is wrong — the filters in those endpoints are then a
+ * second layer rather than the only one.
+ *
+ * Not for writes to Star tables: those RPCs are revoked from
+ * `authenticated` and need serviceClient().
+ */
+export function userClient(req: Request): SupabaseClient {
+  const url = Deno.env.get('SUPABASE_URL');
+  const key = Deno.env.get('SUPABASE_ANON_KEY');
+  if (!url || !key) {
+    throw new Error('SUPABASE_URL and SUPABASE_ANON_KEY must be set');
+  }
+  return createClient(url, key, {
+    auth: { autoRefreshToken: false, persistSession: false },
+    global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } },
+  });
+}
