@@ -1,7 +1,10 @@
 {
   "compilerOptions": {
     "strict": true,
-    "lib": ["deno.window", "deno.ns"]
+    "lib": [
+      "deno.window",
+      "deno.ns"
+    ]
   },
   "imports": {
     "std/": "https://deno.land/std@0.208.0/",
@@ -9,6 +12,6 @@
     "libphonenumber-js": "npm:libphonenumber-js@^1.13.10"
   },
   "tasks": {
-    "check": "deno check _shared/*.ts init-signup/index.ts resend-code/index.ts complete-signup/index.ts"
+    "check": "deno check _shared/*.ts init-signup/index.ts resend-code/index.ts complete-signup/index.ts wallet-get/index.ts wallet-transactions/index.ts wallet-expirations/index.ts admin-credit-stars/index.ts cron-star-expirations/index.ts"
   }
 }
