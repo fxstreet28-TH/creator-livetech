@@ -6,6 +6,7 @@ export type ErrorCode =
   | 'invalid_otp'
   | 'otp_expired'
   | 'rate_limited'
+  | 'forbidden'
   | 'not_found'
   | 'internal_error';
 
@@ -20,6 +21,7 @@ const ERROR_MAP: Record<ErrorCode, ErrorMap> = {
   invalid_otp: { status: 400, message_th: 'รหัสยืนยันไม่ถูกต้อง' },
   otp_expired: { status: 400, message_th: 'รหัสยืนยันหมดอายุ' },
   rate_limited: { status: 429, message_th: 'คำขอมากเกินไป กรุณารอสักครู่' },
+  forbidden: { status: 403, message_th: 'ไม่มีสิทธิ์เข้าถึง' },
   not_found: { status: 404, message_th: 'ไม่พบข้อมูล' },
   internal_error: { status: 500, message_th: 'เกิดข้อผิดพลาด กรุณาลองใหม่' },
 };
