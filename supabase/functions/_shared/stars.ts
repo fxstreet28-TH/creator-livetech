@@ -27,9 +27,21 @@ export const THB_PER_STAR = 10;
 /** Section 5.1: anti-money-laundering wallet ceiling. Enforced in-database. */
 export const MAX_WALLET_STARS = 50_000;
 
-/** Section 5.1 purchase bounds, mirrored by star_purchases' CHECK constraint. */
-export const MIN_PURCHASE_STARS = 100;
-export const MAX_PURCHASE_STARS = 10_000;
+/**
+ * Purchase bounds, mirrored by star_purchases' CHECK constraint.
+ *
+ * Widened from the 100-10000 of Section 5.1 by the Week 3 migration: the
+ * smallest PromptPay QR worth showing is 10 stars (110 THB at launch
+ * pricing), and the old floor rejected it at credit time — after the buyer
+ * had already paid.
+ *
+ * The upper bound is a ceiling on one purchase, not on what a wallet can
+ * hold: MAX_WALLET_STARS still applies, and create-payment-intent checks a
+ * purchase against it before Stripe is involved so nobody pays for stars
+ * the credit path would refuse.
+ */
+export const MIN_PURCHASE_STARS = 10;
+export const MAX_PURCHASE_STARS = 100_000;
 
 export interface FIFODeductionResult {
   success: boolean;
@@ -38,7 +50,12 @@ export interface FIFODeductionResult {
   error?: string;
 }
 
-export type StarPaymentMethod = 'stripe' | 'oxapay' | 'manual_admin';
+export type StarPaymentMethod =
+  /** Week 3 PromptPay QR — the only live purchase path. */
+  | 'stripe_promptpay'
+  | 'stripe'
+  | 'oxapay'
+  | 'manual_admin';
 
 /**
  * Transaction types written to star_transactions.transaction_type.
@@ -108,6 +125,14 @@ export interface AddStarsResult {
   /** True when payment_provider_id had already been credited. */
   idempotent_replay?: boolean;
   error?: string;
+  /**
+   * True when the RPC call itself failed (database unreachable, permission
+   * denied, an unexpected exception) rather than the RPC deciding not to
+   * credit. The distinction matters to stripe-webhook: a business rejection
+   * will reject identically forever and wants a human, while a transport
+   * failure is exactly what Stripe's redelivery schedule exists to fix.
+   */
+  transport_error?: boolean;
 }
 
 /**
@@ -149,7 +174,7 @@ export async function addStarsToWallet(
     p_metadata: metadata ?? {},
   });
 
-  if (error) return { success: false, error: error.message };
+  if (error) return { success: false, error: error.message, transport_error: true };
 
   return data as AddStarsResult;
 }
@@ -177,4 +202,60 @@ export async function expireStarBatches(
   const { data, error } = await supabase.rpc('expire_star_batches');
   if (error) return { success: false, error: error.message };
   return { success: true, result: data as ExpireBatchesResult };
+}
+
+export interface ActivePricing {
+  id: string;
+  retail_thb_per_star: number;
+  internal_thb_per_star: number;
+  label: string;
+}
+
+/**
+ * The live retail price of a star, from star_pricing_config.
+ *
+ * A partial unique index allows at most one row with is_active = true, so
+ * this cannot return an ambiguous answer — but it can return none, if a
+ * price switch left no row active. Callers must treat null as "cannot
+ * sell right now" (no_active_pricing) rather than falling back to a
+ * hardcoded number: a wrong price here is a wrong charge.
+ */
+export async function getActivePricing(
+  supabase: SupabaseClient,
+): Promise<{ pricing?: ActivePricing; error?: string }> {
+  const { data, error } = await supabase
+    .from('star_pricing_config')
+    .select('id, retail_thb_per_star, internal_thb_per_star, label')
+    .eq('is_active', true)
+    .maybeSingle();
+
+  if (error) return { error: error.message };
+  if (!data) return { error: 'no active pricing row' };
+
+  return { pricing: data as ActivePricing };
+}
+
+/**
+ * Price a purchase, in satang.
+ *
+ * Stripe charges in minor units and THB has two of them, so this is the
+ * number the buyer is actually charged.
+ *
+ * The arithmetic runs in integers from the start: the per-star price is
+ * converted to satang once, then multiplied by a whole number of stars, so
+ * nothing passes through a fractional intermediate. Rounding at the end
+ * instead — Math.round(stars * retail * 100) — happens to give the same
+ * answer everywhere in the legal price range (10.00-20.00, checked
+ * exhaustively against every satang of it), but it gives it because the
+ * rounding conceals the representation error rather than because there is
+ * none. That is a property of the current bounds and of the rounding mode,
+ * and neither is something this function should depend on.
+ */
+export function priceInSatang(stars: number, retailThbPerStar: number): {
+  amountSatang: number;
+  amountThb: number;
+} {
+  const retailSatang = Math.round(retailThbPerStar * 100);
+  const amountSatang = retailSatang * stars;
+  return { amountSatang, amountThb: amountSatang / 100 };
 }
