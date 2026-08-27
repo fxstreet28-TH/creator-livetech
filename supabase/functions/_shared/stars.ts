@@ -125,6 +125,14 @@ export interface AddStarsResult {
   /** True when payment_provider_id had already been credited. */
   idempotent_replay?: boolean;
   error?: string;
+  /**
+   * True when the RPC call itself failed (database unreachable, permission
+   * denied, an unexpected exception) rather than the RPC deciding not to
+   * credit. The distinction matters to stripe-webhook: a business rejection
+   * will reject identically forever and wants a human, while a transport
+   * failure is exactly what Stripe's redelivery schedule exists to fix.
+   */
+  transport_error?: boolean;
 }
 
 /**
@@ -166,7 +174,7 @@ export async function addStarsToWallet(
     p_metadata: metadata ?? {},
   });
 
-  if (error) return { success: false, error: error.message };
+  if (error) return { success: false, error: error.message, transport_error: true };
 
   return data as AddStarsResult;
 }
