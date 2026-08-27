@@ -238,11 +238,18 @@ export async function getActivePricing(
 /**
  * Price a purchase, in satang.
  *
- * Stripe charges in minor units, and THB has two of them. The arithmetic
- * runs in integers from the start — retail is converted to satang once,
- * then multiplied — because 11.10 * 500 * 100 in binary floating point is
- * 554999.9999999999, and rounding that at the end is a satang lost on
- * arbitrary amounts.
+ * Stripe charges in minor units and THB has two of them, so this is the
+ * number the buyer is actually charged.
+ *
+ * The arithmetic runs in integers from the start: the per-star price is
+ * converted to satang once, then multiplied by a whole number of stars, so
+ * nothing passes through a fractional intermediate. Rounding at the end
+ * instead — Math.round(stars * retail * 100) — happens to give the same
+ * answer everywhere in the legal price range (10.00-20.00, checked
+ * exhaustively against every satang of it), but it gives it because the
+ * rounding conceals the representation error rather than because there is
+ * none. That is a property of the current bounds and of the rounding mode,
+ * and neither is something this function should depend on.
  */
 export function priceInSatang(stars: number, retailThbPerStar: number): {
   amountSatang: number;

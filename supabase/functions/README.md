@@ -26,12 +26,17 @@ still serving.
 | `_shared/otp.ts` | OTP hashing (HMAC-SHA256) and AES-256-GCM password crypto for signup sessions. |
 | `_shared/movider.ts` | `sendSms()` — SMS OTP via Movider. |
 | `_shared/resend.ts` | `sendEmailVerificationCode()` — email OTP via Resend. |
+| `_shared/stars.ts` | Star wallet helpers over the money RPCs, plus `getActivePricing()` and `priceInSatang()`. |
+| `_shared/stripe.ts` | Stripe client on the SDK's `worker` build, PaymentIntent metadata parsing. |
 
 | Function | What it does |
 | --- | --- |
 | `init-signup/` | Creates the signup session, issues + sends both codes. |
 | `resend-code/` | Re-issues one channel's code for an existing session. |
 | `complete-signup/` | Verifies both codes, creates the `auth.users` row, seeds `customers` + `creators`, mints session tokens, deletes the session. |
+| `create-payment-intent/` | Prices a star purchase off `star_pricing_config` and opens a Stripe PromptPay PaymentIntent. Credits nothing. |
+| `stripe-webhook/` | The only path that credits stars for money. Verifies Stripe's signature, records the delivery in `stripe_events`, calls `credit_stars_purchase`. **Deploy with `--no-verify-jwt`.** |
+| `buyback-request/` | Star cashout at a flat 3.00 THB/star. Deducts now, pays by hand later. |
 
 All three keep the request/response shapes, error codes and HTTP statuses of
 the Next.js routes they replace byte-for-byte — `components/auth/steps/` maps
@@ -80,6 +85,22 @@ reads. Copy the values you need out of Vercel.
 supabase functions deploy <name>
 ```
 
+`stripe-webhook` is the one exception to that line, and forgetting it is the
+whole difference between a working endpoint and one that 401s every delivery:
+
+```bash
+supabase functions deploy stripe-webhook --no-verify-jwt
+```
+
+Stripe signs its requests with `stripe-signature`, not with a Supabase JWT, so
+the platform's JWT gate would reject every event before the function ran. What
+takes its place is inside the function: the signature is verified before
+anything is read out of the body, and every delivery is claimed in
+`stripe_events` under Stripe's own event id, so a redelivery cannot credit a
+payment twice. There is no `config.toml` in this repo, so the flag lives here
+and on the command line rather than in a file — check it before every deploy of
+that function.
+
 Deployment is **manual, from your machine**. There is no GitHub Action for it
 and that is on purpose: this Supabase project is deliberately not
 GitHub-integrated, so nothing deploys to it as a side effect of merging a PR.
@@ -112,6 +133,8 @@ needs it goes live:
 | `MOVIDER_SENDER_NAME` | `_shared/movider.ts` | Optional. Leave unset while the "AURUM" sender ID is unapproved for Thailand — Movider then falls back to a numeric sender and the SMS still arrive. |
 | `RESEND_API_KEY` | `_shared/resend.ts` | |
 | `RESEND_FROM_EMAIL` | `_shared/resend.ts` | Includes the display name: `AURUM Live <no-reply@creatorlivetech.com>`. |
+| `STRIPE_SECRET_KEY` | `_shared/stripe.ts` | `sk_live_...`, LIVE mode. Week 3 sells real stars for real THB; a test key here makes every QR unpayable. |
+| `STRIPE_WEBHOOK_SECRET` | `stripe-webhook/` | `whsec_...`, from the webhook endpoint's own page in the Stripe dashboard — not the API key, and specific to that one endpoint. Rotating the endpoint changes it. |
 
 ## Working on this code
 
@@ -126,6 +149,13 @@ Type-check before committing:
 
 ```bash
 cd supabase/functions && deno task check
+```
+
+And run the unit tests, which cover the parts of the money path that need no
+database or Stripe key — what a buyer is charged, and who a webhook credits:
+
+```bash
+cd supabase/functions && deno task test
 ```
 
 `_shared/otp.ts` deserves particular care. It has to produce the same HMAC
