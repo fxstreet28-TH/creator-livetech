@@ -52,13 +52,6 @@
   .animated .waveB {
     animation: prism-wave 2.8s 0.38s ease-out infinite;
   }
-
-  .animated .chargeCore {
-    transform-origin: 100px 100px;
-    transform-box: fill-box;
-    stroke-dasharray: 10 12;
-    animation: prism-core 2.8s ease-in-out infinite;
-  }
 }
 
 @keyframes prism-spin {
@@ -88,10 +81,4 @@
   0%, 30% { opacity: 0; transform: scale(0.55); }
   42% { opacity: 0.9; }
   72%, 100% { opacity: 0; transform: scale(1.38); }
-}
-@keyframes prism-core {
-  0%, 20% { opacity: 0.18; transform: scale(0.78) rotate(0); }
-  48% { opacity: 1; transform: scale(1.02) rotate(90deg); }
-  76% { opacity: 1; transform: scale(1.08) rotate(210deg); }
-  100% { opacity: 0.18; transform: scale(0.78) rotate(360deg); }
 }
