@@ -81,21 +81,6 @@ export function PrismStar({
       {/* Halo (breathing) */}
       <circle className={styles.halo} cx="100" cy="100" r="90" fill={`url(#${gHalo})`} />
 
-      {/* Luxury orbit (counter-rotating dashed ellipse with satellite) */}
-      <g className={styles.luxuryOrbit}>
-        <ellipse
-          cx="100"
-          cy="100"
-          rx="91"
-          ry="48"
-          fill="none"
-          stroke="#B98BFF"
-          strokeWidth="1.2"
-          strokeDasharray="1 9"
-        />
-        <circle cx="10" cy="100" r="3.5" fill="#fff" />
-      </g>
-
       {/* Super charge: expanding waves + lightning bolts + rotating core */}
       {showChargeEffects && (
         <g className={styles.superCharge} fill="none" strokeLinecap="round">
