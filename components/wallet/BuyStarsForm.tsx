@@ -36,12 +36,13 @@ import { invokeEdge, type EdgeError } from '@/lib/wallet/invoke';
 import { useActivePricing } from '@/lib/hooks/useActivePricing';
 import { useWalletSummary } from '@/lib/hooks/useWalletSummary';
 import {
+  BUYBACK_THB_PER_STAR,
   MAX_PURCHASE_STARS,
   MAX_WALLET_STARS,
   MIN_PURCHASE_STARS,
   STAR_PRESETS,
 } from '@/lib/constants/stars';
-import { formatStars, formatThbWithUnit } from '@/lib/wallet/format';
+import { formatStars, formatThbRate, formatThbWithUnit } from '@/lib/wallet/format';
 import { StarAmountSelector, type AmountSource } from './StarAmountSelector';
 import { PromptPayQR } from './PromptPayQR';
 
@@ -439,7 +440,7 @@ export function BuyStarsForm() {
       <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
         <div className="flex items-center justify-between text-sm">
           <span className="text-white/60">ราคาต่อ Star</span>
-          <span className="font-medium text-white">{formatThbWithUnit(retail)}</span>
+          <span className="font-medium text-white">{formatThbRate(retail)}</span>
         </div>
         <div className="mt-3 flex items-center justify-between border-t border-white/8 pt-3">
           <span className="text-sm text-white/60">ยอดชำระทั้งหมด</span>
@@ -473,7 +474,7 @@ export function BuyStarsForm() {
 
       <p className="text-center text-xs leading-relaxed text-white/35">
         ชำระผ่าน PromptPay QR เท่านั้น · Stars ที่ซื้อแล้วไม่สามารถขอคืนเงินได้
-        แต่สามารถขาย buyback ได้ที่ {formatThbWithUnit(3)} ต่อ Star
+        แต่สามารถขาย buyback ได้ที่ {formatThbRate(BUYBACK_THB_PER_STAR)} ต่อ Star
       </p>
     </form>
   );

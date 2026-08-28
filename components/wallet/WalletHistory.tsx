@@ -10,7 +10,7 @@
  * report one purchase twice. See DUPLICATED_LEDGER_TYPES in useWalletHistory.
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { ArrowDownLeft, ArrowUpRight, Clock, Sparkles } from 'lucide-react';
 import {
   useWalletHistory,
@@ -81,6 +81,32 @@ interface WalletHistoryProps {
 export function WalletHistory({ initialTab = 'all' }: WalletHistoryProps) {
   const [tab, setTab] = useState<HistoryTab>(initialTab);
   const history = useWalletHistory();
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
+  /**
+   * Arrow-key navigation across the tablist, per the ARIA tabs pattern.
+   *
+   * Without it a keyboard user can reach the first tab and then nothing:
+   * roving tabindex takes the other two out of the tab order (which is the
+   * point — Tab should move past the whole tablist to the panel, not step
+   * through every tab), so the arrow keys have to be what moves between
+   * them. Selection follows focus, which is the right choice here because
+   * switching panels is instant and has no cost.
+   */
+  function handleTabKeyDown(event: React.KeyboardEvent<HTMLButtonElement>, index: number) {
+    const lastIndex = TABS.length - 1;
+    let nextIndex: number | null = null;
+
+    if (event.key === 'ArrowRight') nextIndex = index === lastIndex ? 0 : index + 1;
+    else if (event.key === 'ArrowLeft') nextIndex = index === 0 ? lastIndex : index - 1;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = lastIndex;
+
+    if (nextIndex === null) return;
+    event.preventDefault();
+    setTab(TABS[nextIndex].id);
+    tabRefs.current[nextIndex]?.focus();
+  }
 
   /**
    * One list, newest first. Purchases and buybacks keep their own row
@@ -112,7 +138,7 @@ export function WalletHistory({ initialTab = 'all' }: WalletHistoryProps) {
       <h2 className="sr-only">ประวัติกระเป๋าเงิน</h2>
 
       <div role="tablist" aria-label="ประวัติกระเป๋าเงิน" className="flex gap-2 overflow-x-auto pb-1">
-        {TABS.map((item) => {
+        {TABS.map((item, index) => {
           const active = tab === item.id;
           return (
             <button
@@ -120,8 +146,14 @@ export function WalletHistory({ initialTab = 'all' }: WalletHistoryProps) {
               type="button"
               role="tab"
               id={`wallet-tab-${item.id}`}
+              ref={(node) => {
+                tabRefs.current[index] = node;
+              }}
               aria-selected={active}
               aria-controls={`wallet-panel-${item.id}`}
+              // Roving tabindex: one stop for the whole tablist.
+              tabIndex={active ? 0 : -1}
+              onKeyDown={(event) => handleTabKeyDown(event, index)}
               onClick={() => setTab(item.id)}
               className={`min-h-11 shrink-0 rounded-xl border px-4 py-2.5 text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 ${
                 active
@@ -145,7 +177,10 @@ export function WalletHistory({ initialTab = 'all' }: WalletHistoryProps) {
         role="tabpanel"
         id={`wallet-panel-${tab}`}
         aria-labelledby={`wallet-tab-${tab}`}
-        className="mt-4"
+        // Focusable so Tab out of the tablist lands on the panel it just
+        // selected, rather than skipping past the content entirely.
+        tabIndex={0}
+        className="mt-4 rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
       >
         {history.loading ? (
           <HistorySkeleton />

@@ -24,7 +24,7 @@ import { invokeEdge, isRetryable, type EdgeError } from '@/lib/wallet/invoke';
 import { useWalletSummary } from '@/lib/hooks/useWalletSummary';
 import { BUYBACK_THB_PER_STAR, MIN_BUYBACK_STARS } from '@/lib/constants/stars';
 import { MAX_ACCOUNT_DIGITS, MIN_ACCOUNT_DIGITS } from '@/lib/constants/thaiBanks';
-import { formatStars, formatThbWithUnit } from '@/lib/wallet/format';
+import { formatStars, formatThbRate, formatThbWithUnit } from '@/lib/wallet/format';
 import { BankAccountFields, type BankDetails, type BankFieldErrors } from './BankAccountFields';
 
 interface BuybackResponse {
@@ -244,7 +244,7 @@ export function BuybackForm() {
         <div className="flex items-center justify-between text-sm">
           <span className="text-white/60">อัตรารับซื้อคืน</span>
           <span className="font-medium text-white">
-            {formatThbWithUnit(BUYBACK_THB_PER_STAR)} ต่อ Star
+            {formatThbRate(BUYBACK_THB_PER_STAR)} ต่อ Star
           </span>
         </div>
         <div className="mt-3 flex items-center justify-between border-t border-white/8 pt-3">
@@ -260,7 +260,7 @@ export function BuybackForm() {
           </span>
         </div>
         <p className="mt-3 text-xs leading-relaxed text-white/40">
-          อัตรารับซื้อคืนคงที่ที่ {formatThbWithUnit(BUYBACK_THB_PER_STAR)} ต่อ Star
+          อัตรารับซื้อคืนคงที่ที่ {formatThbRate(BUYBACK_THB_PER_STAR)} ต่อ Star
           และไม่สามารถต่อรองได้ Stars จะถูกหักออกจากกระเป๋าทันทีเมื่อส่งคำขอ
         </p>
       </div>

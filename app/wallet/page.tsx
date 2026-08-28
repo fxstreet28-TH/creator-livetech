@@ -20,6 +20,13 @@ import { MIN_BUYBACK_STARS } from '@/lib/constants/stars';
 const VALID_TABS: HistoryTab[] = ['all', 'purchases', 'buyback'];
 
 /**
+ * Ties the unavailable Buyback button to the sentence explaining why. A
+ * literal rather than useId() because it is referenced across two sibling
+ * branches of the same render and only ever appears once on the page.
+ */
+const BUYBACK_HINT_ID = 'wallet-buyback-hint';
+
+/**
  * Reads ?tab= so the buyback confirmation's "ดูประวัติ buyback" link lands on
  * the right tab. useSearchParams suspends during prerender, so this is split
  * out and wrapped below — without the boundary the whole page would have to
@@ -88,9 +95,16 @@ export default function WalletPage() {
             ซื้อ Stars
           </Link>
 
-          {/* A link when there is something to sell, a disabled-looking button
-              when there is not: routing to a form that can only reject the
-              user is worse than saying so here. */}
+          {/* A link when there is something to sell, an inert button when
+              there is not: routing to a form that can only reject the user is
+              worse than saying so here.
+
+              aria-disabled rather than the `disabled` attribute, and a button
+              rather than a span, so the control stays in the tab order — a
+              screen reader user should be able to reach it and hear both that
+              it is unavailable and, via aria-describedby, why. A `disabled`
+              button would simply vanish from the tab order with no
+              explanation. */}
           {canBuyback ? (
             <Link
               href="/wallet/buyback"
@@ -100,19 +114,21 @@ export default function WalletPage() {
               Buyback
             </Link>
           ) : (
-            <span
-              className="inline-flex min-h-[3.25rem] flex-1 cursor-not-allowed items-center justify-center gap-2 rounded-2xl border border-white/8 px-5 py-4 text-base font-bold text-white/30"
+            <button
+              type="button"
               aria-disabled="true"
-              title={`ต้องมีอย่างน้อย ${formatStars(MIN_BUYBACK_STARS)} Stars`}
+              aria-describedby={BUYBACK_HINT_ID}
+              onClick={(event) => event.preventDefault()}
+              className="inline-flex min-h-[3.25rem] flex-1 cursor-not-allowed items-center justify-center gap-2 rounded-2xl border border-white/8 px-5 py-4 text-base font-bold text-white/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
             >
               <ArrowUpRight size={18} aria-hidden />
               Buyback
-            </span>
+            </button>
           )}
         </div>
 
         {!wallet.loading && !canBuyback && (
-          <p className="mt-2 text-center text-xs text-white/35">
+          <p id={BUYBACK_HINT_ID} className="mt-2 text-center text-xs text-white/35">
             ต้องมีอย่างน้อย {formatStars(MIN_BUYBACK_STARS)} Stars จึงจะขาย buyback ได้
           </p>
         )}

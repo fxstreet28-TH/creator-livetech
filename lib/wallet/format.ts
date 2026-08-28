@@ -10,12 +10,24 @@
 const NUMBER_FORMAT = new Intl.NumberFormat('th-TH');
 
 /**
- * THB with 2 decimals only when they carry information: a 110 THB total
- * reads better as "110" than "110.00", but a 3.00 THB/star rate that rounded
- * to "3" would look like a different number from the one in the copy.
+ * Amounts: decimals only when they carry information. A 110 THB total reads
+ * better as "110" than "110.00", and every purchase total is a whole number
+ * of baht at any sane per-star price.
  */
 const THB_FORMAT = new Intl.NumberFormat('th-TH', {
   minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+});
+
+/**
+ * Rates: always two decimals. A per-star price is quoted to the satang in
+ * star_pricing_config (11.00) and in buyback_requests' CHECK (3.00), and a
+ * screen that renders those as "11" and "3" is quoting a rate in a different
+ * shape from the one the money is denominated in. Totals use THB_FORMAT
+ * above; only the "per Star" figures use this.
+ */
+const THB_RATE_FORMAT = new Intl.NumberFormat('th-TH', {
+  minimumFractionDigits: 2,
   maximumFractionDigits: 2,
 });
 
@@ -47,6 +59,11 @@ export function formatThb(amount: number): string {
 /** 110 -> "110 บาท" */
 export function formatThbWithUnit(amount: number): string {
   return `${formatThb(amount)} บาท`;
+}
+
+/** A per-star rate, always to the satang: 3 -> "3.00 บาท", 11 -> "11.00 บาท". */
+export function formatThbRate(amount: number): string {
+  return `${THB_RATE_FORMAT.format(amount)} บาท`;
 }
 
 /**

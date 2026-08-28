@@ -60,6 +60,7 @@ export function PromptPayQR({
   // paint — a stale "9:58" under a freshly issued QR is a wrong number, not a
   // late one. Adjusted during render for that reason (and because doing it in
   // the effect below is a cascading-render lint error).
+  const [imageFailed, setImageFailed] = useState(false);
   const [deadline, setDeadline] = useState(expiresAt);
   if (deadline !== expiresAt) {
     setDeadline(expiresAt);
@@ -139,16 +140,36 @@ export function PromptPayQR({
         <p className="mt-1 text-sm text-white/50">สำหรับ {formatStars(stars)} Stars</p>
       </div>
 
-      <div className="rounded-3xl bg-white p-4 shadow-xl shadow-purple-900/20">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={imageUrlPng}
-          alt={`PromptPay QR code สำหรับชำระเงิน ${formatThbWithUnit(amountThb)}`}
-          width={240}
-          height={240}
-          className={`h-60 w-60 transition ${expired ? 'opacity-25 grayscale' : ''}`}
-        />
-      </div>
+      {/* If Stripe's PNG does not load, the white panel would otherwise sit
+          there empty — a dead end in the middle of a payment, with no hint
+          that anything is wrong. The hosted payment page is the same
+          transaction and is still reachable from the buttons below, so the
+          fallback says so rather than leaving a blank square. */}
+      {imageFailed ? (
+        <div
+          role="alert"
+          className="flex h-68 w-full max-w-[17rem] flex-col items-center justify-center gap-3 rounded-3xl border border-amber-400/30 bg-amber-400/10 p-6 text-center"
+        >
+          <p className="text-sm text-amber-100">ไม่สามารถโหลดรูป QR ได้</p>
+          <p className="text-xs leading-relaxed text-amber-100/70">
+            {hostedInstructionsUrl
+              ? 'กรุณาใช้ปุ่ม "เปิดในแอปธนาคาร" ด้านล่างเพื่อชำระเงิน'
+              : 'กรุณายกเลิกและสร้างรายการใหม่อีกครั้ง'}
+          </p>
+        </div>
+      ) : (
+        <div className="rounded-3xl bg-white p-4 shadow-xl shadow-purple-900/20">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={imageUrlPng}
+            alt={`PromptPay QR code สำหรับชำระเงิน ${formatThbWithUnit(amountThb)}`}
+            width={240}
+            height={240}
+            onError={() => setImageFailed(true)}
+            className={`h-60 w-60 transition ${expired ? 'opacity-25 grayscale' : ''}`}
+          />
+        </div>
+      )}
 
       <p
         className={`text-sm font-medium tabular-nums ${
