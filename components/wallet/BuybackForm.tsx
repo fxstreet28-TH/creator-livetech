@@ -20,7 +20,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { CheckCircle2, Loader2 } from 'lucide-react';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
-import { invokeEdge, isRetryable, type EdgeError } from '@/lib/wallet/invoke';
+import { invokeEdge, isOutcomeUnknown, type EdgeError } from '@/lib/wallet/invoke';
 import { useWalletSummary } from '@/lib/hooks/useWalletSummary';
 import { BUYBACK_THB_PER_STAR, MIN_BUYBACK_STARS } from '@/lib/constants/stars';
 import { MAX_ACCOUNT_DIGITS, MIN_ACCOUNT_DIGITS } from '@/lib/constants/thaiBanks';
@@ -50,9 +50,16 @@ export function BuybackForm() {
   const [result, setResult] = useState<BuybackResponse | null>(null);
   /** Errors are only rendered once the user has tried to submit. */
   const [showErrors, setShowErrors] = useState(false);
+  /**
+   * Set when a submission failed in a way that leaves the outcome unknown.
+   * The form locks: request_buyback has no idempotency key, so pressing
+   * submit again could deduct a second time for one intended sale.
+   */
+  const [outcomeUnknown, setOutcomeUnknown] = useState(false);
 
   const stars = starsText === '' ? 0 : Number(starsText);
   const payoutThb = stars * BUYBACK_THB_PER_STAR;
+  const balanceKnown = wallet.balanceKnown;
 
   /**
    * Client-side mirror of buyback-request's validation. Wording is copied
@@ -64,7 +71,12 @@ export function BuybackForm() {
     if (stars < MIN_BUYBACK_STARS) {
       return `ต้องขาย buyback อย่างน้อย ${formatStars(MIN_BUYBACK_STARS)} stars`;
     }
-    if (stars > wallet.balance) return 'จำนวน stars ไม่พอ';
+    // Only checked against a balance we actually have. When wallet-get fails
+    // it reports 0, and comparing against that rejected every valid amount as
+    // insufficient with no error shown and no way to retry — a user with 500
+    // stars simply could not sell any of them. buyback-request re-checks the
+    // balance under a row lock regardless, and is the authority.
+    if (balanceKnown && stars > wallet.balance) return 'จำนวน stars ไม่พอ';
     return null;
   }
 
@@ -116,11 +128,14 @@ export function BuybackForm() {
     setSubmitting(false);
 
     if (submitError || !data) {
-      // No automatic retry in either direction. A 4xx is the user's input or
-      // their balance and would fail identically; a 5xx is offered as a
-      // button below, because request_buyback is not idempotent and a
-      // silent retry could deduct twice if the first call actually committed.
-      setError(submitError ?? { code: 'internal_error', message: 'เกิดข้อผิดพลาด กรุณาลองใหม่' });
+      const failure = submitError ?? { code: 'internal_error', message: 'เกิดข้อผิดพลาด กรุณาลองใหม่' };
+      setError(failure);
+      // A 4xx is a refusal: nothing happened, and the user can correct their
+      // input and submit again. Anything else may have committed before the
+      // response was lost, and request_buyback is not idempotent — so the
+      // form locks and sends them to their wallet to check rather than
+      // offering a retry that could sell their stars twice.
+      if (isOutcomeUnknown(failure)) setOutcomeUnknown(true);
       return;
     }
 
@@ -185,14 +200,20 @@ export function BuybackForm() {
           className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-100"
         >
           <p>{error.message}</p>
-          {isRetryable(error) && (
-            <button
-              type="button"
-              onClick={() => setError(null)}
-              className="mt-3 min-h-11 rounded-xl border border-red-300/40 px-4 py-2 text-sm font-semibold text-red-100 transition hover:bg-red-500/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
-            >
-              ลองใหม่อีกครั้ง
-            </button>
+          {outcomeUnknown && (
+            <>
+              <p className="mt-2 text-xs leading-relaxed text-red-100/80">
+                ไม่สามารถยืนยันได้ว่าคำขอถูกบันทึกหรือไม่
+                กรุณาตรวจสอบยอดคงเหลือและประวัติ buyback ก่อนส่งคำขอใหม่
+                เพื่อไม่ให้ถูกหัก Stars ซ้ำ
+              </p>
+              <Link
+                href="/wallet?tab=buyback"
+                className="mt-3 inline-flex min-h-11 items-center rounded-xl border border-red-300/40 px-4 py-2 text-sm font-semibold text-red-100 transition hover:bg-red-500/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+              >
+                ตรวจสอบประวัติ buyback
+              </Link>
+            </>
           )}
         </div>
       )}
@@ -201,9 +222,21 @@ export function BuybackForm() {
         <div className="flex items-baseline justify-between">
           <span className="text-sm text-white/60">ยอดคงเหลือ</span>
           <span className="text-lg font-bold text-white">
-            {formatStars(wallet.balance)} Stars
+            {balanceKnown ? `${formatStars(wallet.balance)} Stars` : '—'}
           </span>
         </div>
+        {!balanceKnown && (
+          <div className="mt-3 border-t border-white/8 pt-3">
+            <p className="text-xs text-amber-200">โหลดยอดคงเหลือไม่สำเร็จ</p>
+            <button
+              type="button"
+              onClick={wallet.refresh}
+              className="mt-2 min-h-11 rounded-xl border border-amber-300/40 px-4 py-2 text-sm font-semibold text-amber-100 transition hover:bg-amber-400/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+            >
+              ลองโหลดใหม่
+            </button>
+          </div>
+        )}
       </div>
 
       <div>
@@ -277,7 +310,7 @@ export function BuybackForm() {
 
       <button
         type="submit"
-        disabled={submitting}
+        disabled={submitting || outcomeUnknown}
         className="inline-flex min-h-[3.25rem] w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-purple-500 to-pink-500 px-6 py-4 text-base font-extrabold text-white transition hover:shadow-lg hover:shadow-purple-500/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:shadow-none"
       >
         {submitting ? (

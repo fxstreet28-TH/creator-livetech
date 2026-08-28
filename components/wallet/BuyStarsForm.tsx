@@ -62,6 +62,8 @@ interface QrState {
   expiresAt: number;
   stars: number;
   amountThb: number;
+  /** Which purchase this QR is for. The only handle on "did THIS one land". */
+  paymentIntentId: string;
 }
 
 type Phase = 'form' | 'creating' | 'awaiting_payment' | 'success';
@@ -75,6 +77,9 @@ type Phase = 'form' | 'creating' | 'awaiting_payment' | 'success';
  * usually seconds, so a minute of nothing means something is worth checking.
  */
 const REALTIME_GRACE_MS = 60_000;
+
+/** How often the QR screen re-reads its own PaymentIntent. See the poll effect. */
+const INTENT_POLL_MS = 5_000;
 
 /** Default preset the form opens on: the highlighted tile. */
 const DEFAULT_STARS = STAR_PRESETS.find((preset) => preset.highlighted)?.stars ?? MIN_PURCHASE_STARS;
@@ -92,16 +97,11 @@ export function BuyStarsForm() {
   const [refreshing, setRefreshing] = useState(false);
   const [creditedBalance, setCreditedBalance] = useState<number | null>(null);
 
-  /**
-   * The balance at the moment the QR was shown. Success is "the balance went
-   * above this", not "an UPDATE arrived": stars_wallet is also written by
-   * spends and expirations, and updated_at changes on every one of them.
-   */
-  const baselineBalanceRef = useRef<number>(0);
   const channelRef = useRef<RealtimeChannel | null>(null);
 
   const retail = pricing.retailThbPerStar;
   const totalThb = retail === null ? null : stars * retail;
+  const balanceKnown = wallet.balanceKnown;
 
   /**
    * Client-side gate on the amount. Every rule here is re-checked by
@@ -109,50 +109,65 @@ export function BuyStarsForm() {
    * a rejection the backend would issue reads identically whether it was
    * caught here or there.
    */
-  function validate(amount: number, balance: number): string | null {
+  function validate(amount: number, balance: number, knownBalance: boolean): string | null {
     if (!Number.isInteger(amount) || amount <= 0) return 'กรุณากรอกจำนวน Stars';
     if (amount < MIN_PURCHASE_STARS || amount > MAX_PURCHASE_STARS) {
       return `จำนวน stars ต้องอยู่ระหว่าง ${formatStars(MIN_PURCHASE_STARS)}-${formatStars(MAX_PURCHASE_STARS)}`;
     }
-    if (balance + amount > MAX_WALLET_STARS) {
+    // Only meaningful against a balance we actually have. If wallet-get
+    // failed, this arm would be comparing the purchase against a placeholder
+    // zero and would wave through an amount that breaches the cap;
+    // create-payment-intent re-checks it either way and is the authority.
+    if (knownBalance && balance + amount > MAX_WALLET_STARS) {
       return 'ยอด stars ในกระเป๋าจะเกินขีดจำกัด';
     }
     return null;
   }
 
-  const validationError = validate(stars, wallet.balance);
+  const validationError = validate(stars, wallet.balance, balanceKnown);
 
   /** Tear the Realtime channel down. Safe to call more than once. */
   const closeChannel = useCallback(() => {
     const channel = channelRef.current;
     if (!channel) return;
     channelRef.current = null;
-    // removeChannel, not unsubscribe: unsubscribe leaves the channel on the
-    // client's registry, so a remount would find a stale entry under the same
-    // topic name and silently reuse a dead socket.
+    // removeChannel is async — it awaits a leave round trip before dropping
+    // the channel from the client's registry — and it is deliberately not
+    // awaited here, because every caller is a synchronous cleanup path. That
+    // is exactly why the topic below carries the PaymentIntent id: while this
+    // removal is in flight the old topic is still registered, and
+    // supabase.channel() returns an EXISTING channel for a topic it already
+    // holds rather than making a new one. A fixed topic would hand the next
+    // attempt the dying channel, whose subscribe() is a no-op once it is not
+    // closed — a QR that silently never confirms.
     getBrowserSupabase().removeChannel(channel);
   }, []);
 
-  // Unmount cleanup. Navigating away mid-payment must not leave a WebSocket
-  // subscription open — Gate 4 checks exactly this.
-  useEffect(() => closeChannel, [closeChannel]);
+  /**
+   * Whether this component is still mounted.
+   *
+   * handleSubmit awaits four round trips before it subscribes, and the user
+   * can leave during them — that is a normal thing to do while a payment is
+   * being set up. Without this, the unmount cleanup runs while channelRef is
+   * still null, then the continuation resumes and opens a subscription that
+   * no cleanup path can ever reach: a WebSocket leak for the life of the SPA
+   * session, one per abandoned attempt.
+   */
+  const mountedRef = useRef(true);
 
-  /** Move to the success state and stop listening. */
-  const settleSuccess = useCallback(
-    (newBalance: number) => {
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
       closeChannel();
-      setCreditedBalance(newBalance);
-      setWaitingForConfirmation(false);
-      setPhase('success');
-    },
-    [closeChannel],
-  );
+    };
+  }, [closeChannel]);
 
   /**
    * The 60-second grace period, armed only while a QR is on screen.
    *
    * The effect only arms the timer; the flag is cleared by whoever leaves
-   * this phase (handleSubmit on the way in, reset() and settleSuccess on the
+   * this phase (handleSubmit on the way in, reset() and finishSuccess on the
    * way out). Clearing it here instead would be a setState in an effect body,
    * and would re-arm on every unrelated re-render.
    */
@@ -162,29 +177,92 @@ export function BuyStarsForm() {
     return () => window.clearTimeout(timer);
   }, [phase, qr?.expiresAt]);
 
-  /** Manual re-check: ask wallet-get whether the credit already landed. */
-  async function handleManualRefresh() {
-    setRefreshing(true);
-    const supabase = getBrowserSupabase();
+  /**
+   * Has THIS PaymentIntent been paid?
+   *
+   * A rising balance is not the answer, and using it as the answer was a real
+   * bug: stars_wallet goes up for any credit, so a buyer who abandoned one QR
+   * and started a second could pay the first, and the second screen would
+   * report success for a payment nobody made — then tear down its
+   * subscription and never notice the payment that was actually pending.
+   * admin-credit-stars landing mid-QR did the same thing.
+   *
+   * star_payment_intents.status is the only fact that names this purchase.
+   * The row is readable from the browser (star_payment_intents_read_own plus
+   * a SELECT grant to authenticated), and only the webhook ever writes it.
+   */
+  const isIntentPaid = useCallback(async (paymentIntentId: string): Promise<boolean> => {
+    const { data, error } = await getBrowserSupabase()
+      .from('star_payment_intents')
+      .select('status')
+      .eq('stripe_payment_intent_id', paymentIntentId)
+      .maybeSingle();
+
+    if (error || !data) return false;
+    return data.status === 'succeeded';
+  }, []);
+
+  /** Confirmed paid: read the fresh balance and show the success state. */
+  const finishSuccess = useCallback(async () => {
     const { data } = await invokeEdge<{ wallet: { total_balance: number } }>(
-      supabase,
+      getBrowserSupabase(),
       'wallet-get',
       { method: 'GET' },
     );
-    setRefreshing(false);
+    if (!mountedRef.current) return;
 
     const balance = Number(data?.wallet?.total_balance ?? NaN);
-    if (Number.isFinite(balance) && balance > baselineBalanceRef.current) {
-      settleSuccess(balance);
-    }
+    closeChannel();
+    setCreditedBalance(Number.isFinite(balance) ? balance : null);
+    setWaitingForConfirmation(false);
+    setPhase('success');
+  }, [closeChannel]);
+
+  /** Check the intent, and settle if it has been paid. */
+  const checkIntent = useCallback(
+    async (paymentIntentId: string) => {
+      if (!mountedRef.current) return false;
+      const paid = await isIntentPaid(paymentIntentId);
+      if (!paid || !mountedRef.current) return false;
+      await finishSuccess();
+      return true;
+    },
+    [isIntentPaid, finishSuccess],
+  );
+
+  /**
+   * Backstop poll while a QR is on screen.
+   *
+   * Realtime is the fast path, but it has quiet failure modes — a dropped
+   * socket, a channel that came back CHANNEL_ERROR, the table missing from
+   * the publication — and every one of them looks exactly like "the buyer has
+   * not paid yet". A five-second read of one indexed row is cheap enough that
+   * the screen should not depend on the socket to notice money arriving.
+   */
+  useEffect(() => {
+    if (phase !== 'awaiting_payment' || !qr) return;
+    const paymentIntentId = qr.paymentIntentId;
+    const timer = window.setInterval(() => {
+      void checkIntent(paymentIntentId);
+    }, INTENT_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [phase, qr, checkIntent]);
+
+  /** Manual re-check behind the "รีเฟรช" button. */
+  async function handleManualRefresh() {
+    if (!qr) return;
+    setRefreshing(true);
+    await checkIntent(qr.paymentIntentId);
+    if (mountedRef.current) setRefreshing(false);
   }
 
-  function subscribeToWallet(userId: string) {
+  function subscribeToWallet(userId: string, paymentIntentId: string) {
     closeChannel();
-    const supabase = getBrowserSupabase();
 
-    const channel = supabase
-      .channel(`wallet:${userId}`)
+    // Topic is unique per attempt — see closeChannel above for why a fixed
+    // one would eventually hand back a dead channel.
+    const channel = getBrowserSupabase()
+      .channel(`wallet:${userId}:${paymentIntentId}`)
       .on(
         'postgres_changes',
         {
@@ -193,16 +271,22 @@ export function BuyStarsForm() {
           table: 'stars_wallet',
           filter: `user_id=eq.${userId}`,
         },
-        (payload) => {
-          const next = Number(
-            (payload.new as { total_balance?: number | string } | null)?.total_balance ?? NaN,
-          );
-          if (Number.isFinite(next) && next > baselineBalanceRef.current) {
-            settleSuccess(next);
-          }
+        // The event is only a prompt to go and check; it is deliberately not
+        // trusted to mean this purchase landed. See isIntentPaid.
+        () => {
+          void checkIntent(paymentIntentId);
         },
       )
-      .subscribe();
+      .subscribe((status) => {
+        // Without a callback these statuses are swallowed and a broken
+        // channel is indistinguishable from an unpaid QR. Surfacing the
+        // waiting notice early gets the manual button in front of the user
+        // instead of making them sit out the full grace period.
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          console.warn('[BuyStarsForm] realtime channel status', status);
+          if (mountedRef.current) setWaitingForConfirmation(true);
+        }
+      });
 
     channelRef.current = channel;
   }
@@ -295,9 +379,21 @@ export function BuyStarsForm() {
       return;
     }
 
-    baselineBalanceRef.current = wallet.balance;
+    // Everything above this line was awaited, and the user can leave during
+    // those round trips. Subscribing after that would open a channel the
+    // unmount cleanup has already run past and can never close.
+    //
+    // The PaymentIntent that was opened at Stripe is deliberately left alone:
+    // cancelling it needs a server-side call this PR does not have
+    // (cancel-payment-intent is the deferred follow-up), and an unpaid
+    // PromptPay intent expires on its own. The buyer's own bank app is the
+    // only thing that could still pay it, and stripe-webhook credits from
+    // metadata regardless of whether this screen is still open — so the
+    // stars are not lost either way.
+    if (!mountedRef.current) return;
+
     setWaitingForConfirmation(false);
-    subscribeToWallet(user.id);
+    subscribeToWallet(user.id, intent.payment_intent_id);
 
     setQr({
       imageUrlPng: qrCode.imageUrlPng,
@@ -305,6 +401,7 @@ export function BuyStarsForm() {
       expiresAt: qrCode.expiresAt ?? Date.now() + PROMPTPAY_DEFAULT_TTL_MS,
       stars: intent.stars,
       amountThb: Number(intent.amount_thb),
+      paymentIntentId: intent.payment_intent_id,
     });
     setPhase('awaiting_payment');
   }
@@ -425,6 +522,22 @@ export function BuyStarsForm() {
         </div>
       )}
 
+      {!wallet.loading && wallet.error && (
+        <div
+          role="alert"
+          className="rounded-xl border border-amber-400/25 bg-amber-400/10 px-4 py-3 text-sm text-amber-100"
+        >
+          <p>โหลดยอดคงเหลือไม่สำเร็จ — ยังซื้อได้ตามปกติ</p>
+          <button
+            type="button"
+            onClick={wallet.refresh}
+            className="mt-3 min-h-11 rounded-xl border border-amber-300/40 px-4 py-2 text-sm font-semibold text-amber-100 transition hover:bg-amber-400/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+          >
+            ลองโหลดใหม่
+          </button>
+        </div>
+      )}
+
       <StarAmountSelector
         value={stars}
         onChange={(nextStars, nextSource) => {
@@ -449,8 +562,10 @@ export function BuyStarsForm() {
           </span>
         </div>
         <p className="mt-3 text-xs text-white/40">
-          ยอดคงเหลือปัจจุบัน {formatStars(wallet.balance)} Stars · เก็บได้สูงสุด{' '}
-          {formatStars(MAX_WALLET_STARS)} Stars
+          {balanceKnown
+            ? `ยอดคงเหลือปัจจุบัน ${formatStars(wallet.balance)} Stars`
+            : 'ไม่ทราบยอดคงเหลือ'}{' '}
+          · เก็บได้สูงสุด {formatStars(MAX_WALLET_STARS)} Stars
         </p>
       </div>
 

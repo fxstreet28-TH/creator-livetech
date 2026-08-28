@@ -39,6 +39,16 @@ export interface WalletSummary {
   upcomingExpirations: UpcomingExpiration[];
   /** Convenience: the balance, or 0 while loading / on error. */
   balance: number;
+  /**
+   * Whether `balance` is a real figure rather than the zero placeholder.
+   *
+   * Callers MUST check this before treating the balance as fact. A failed
+   * wallet-get reporting 0 is indistinguishable from an empty wallet, and
+   * "0" is the one value that silently breaks every rule derived from it —
+   * it makes the buyback form reject every valid amount as insufficient and
+   * makes the purchase cap check compare against the wrong ceiling.
+   */
+  balanceKnown: boolean;
   loading: boolean;
   error: EdgeError | null;
   /** Re-fetch. The buy screen calls this from its manual-refresh fallback. */
@@ -125,6 +135,7 @@ export function useWalletSummary(): WalletSummary {
     wallet: data?.wallet ?? null,
     upcomingExpirations: data?.upcoming_expirations ?? [],
     balance: data?.wallet.total_balance ?? 0,
+    balanceKnown: data !== null && error === null,
     loading,
     error,
     refresh,

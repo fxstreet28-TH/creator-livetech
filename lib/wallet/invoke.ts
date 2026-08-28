@@ -53,15 +53,21 @@ const UNKNOWN_ERROR: EdgeError = {
 };
 
 /**
- * True for statuses worth a retry. 4xx are the user's input or their wallet
- * state and will fail identically on a second call; 5xx and network failures
- * are the ones where trying again can legitimately change the answer.
+ * True when the request's outcome is genuinely unknown to us.
  *
- * Exported because the buyback form retries on this and the buy form
- * deliberately does not — an automatic retry of create-payment-intent would
- * open a second PaymentIntent and leave an orphan for the first.
+ * This is the question that matters for a non-idempotent money write, and it
+ * is not the same question as "is this worth retrying". A 4xx means the
+ * function answered and refused: nothing happened, and the user can fix their
+ * input and submit again safely. A network failure or a 5xx means the request
+ * may well have reached the function and committed — `invokeEdge` maps a
+ * FunctionsFetchError to network_error, and a gateway timeout on a call whose
+ * `request_buyback` already committed lands there too.
+ *
+ * request_buyback has no idempotency key, so a second attempt in that state
+ * can deduct twice. Callers must use this to warn rather than to offer a
+ * one-tap retry.
  */
-export function isRetryable(error: EdgeError | null): boolean {
+export function isOutcomeUnknown(error: EdgeError | null): boolean {
   if (!error) return false;
   if (error.code === 'network_error') return true;
   return typeof error.status === 'number' && error.status >= 500;

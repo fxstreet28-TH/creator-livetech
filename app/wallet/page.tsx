@@ -48,7 +48,11 @@ export default function WalletPage() {
   if (!ready) return <AuthPending />;
 
   const nextExpiry = wallet.upcomingExpirations[0] ?? null;
-  const canBuyback = wallet.balance >= MIN_BUYBACK_STARS;
+  // An unknown balance must not disable the entry point. wallet-get reports 0
+  // when it fails, and gating on that alone made Buyback unreachable for a
+  // user who has plenty of stars — the buyback screen can state the problem
+  // and offer a retry, this page cannot do that from behind a dead button.
+  const canBuyback = !wallet.balanceKnown || wallet.balance >= MIN_BUYBACK_STARS;
 
   return (
     <main className="min-h-dvh bg-[#0a0a15] text-white">
@@ -67,7 +71,7 @@ export default function WalletPage() {
             <div className="mt-2 h-11 w-40 animate-pulse rounded-lg bg-white/10" />
           ) : (
             <p className="mt-1 text-4xl font-extrabold tabular-nums">
-              {formatStars(wallet.balance)}
+              {wallet.balanceKnown ? formatStars(wallet.balance) : '—'}
               <span className="ml-2 text-base font-semibold text-white/60">Stars</span>
             </p>
           )}
@@ -127,7 +131,7 @@ export default function WalletPage() {
           )}
         </div>
 
-        {!wallet.loading && !canBuyback && (
+        {!wallet.loading && wallet.balanceKnown && !canBuyback && (
           <p id={BUYBACK_HINT_ID} className="mt-2 text-center text-xs text-white/35">
             ต้องมีอย่างน้อย {formatStars(MIN_BUYBACK_STARS)} Stars จึงจะขาย buyback ได้
           </p>
