@@ -21,7 +21,7 @@
   .animated .starSpin {
     transform-origin: 100px 100px;
     transform-box: fill-box;
-    animation: prism-spin 5.6s ease-in-out infinite;
+    animation: prism-spin 4s ease-in-out infinite;
   }
 
   .animated .luxuryOrbit {
@@ -76,11 +76,8 @@
 }
 
 @keyframes prism-spin {
-  0% { transform: perspective(420px) rotateY(0) rotateZ(-2deg); }
-  22% { transform: perspective(420px) rotateY(72deg) rotateZ(1deg); filter: saturate(1.22) brightness(1.15); }
-  50% { transform: perspective(420px) rotateY(180deg) rotateZ(2deg); filter: hue-rotate(12deg) brightness(0.88); }
-  78% { transform: perspective(420px) rotateY(288deg) rotateZ(-1deg); filter: saturate(1.2) brightness(1.15); }
-  100% { transform: perspective(420px) rotateY(360deg) rotateZ(-2deg); }
+  0%, 100% { transform: perspective(600px) rotateY(-18deg) rotateX(3deg); }
+  50% { transform: perspective(600px) rotateY(18deg) rotateX(-3deg); }
 }
 @keyframes prism-hover {
   0%, 100% { transform: translateY(2px) scale(0.98); }
