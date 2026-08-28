@@ -567,3 +567,21 @@
 .intl-phone-wrapper-error button {
   border-color: #f87171 !important;
 }
+
+/* Reduced-motion handling for the Tailwind animation utilities — added with
+   the Week 3 wallet screens (PR: star purchase + buyback).
+
+   The rules further up cover the legacy landing/auth classes only, so
+   `animate-pulse` and `animate-spin` — which the wallet skeletons and every
+   submit button use — were still animating for users who asked them not to.
+
+   Following the .aurum-spinner precedent above, the spinner is slowed rather
+   than stopped: a frozen spinner reads as a hung request, which during a
+   payment is worse than the motion. Skeletons do stop, and hold a steady
+   contrast so they still read as placeholder rather than as content.
+
+   Unlayered so it outranks the Tailwind utilities it is correcting. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse { animation: none; opacity: 0.65; }
+  .animate-spin  { animation-duration: 2.4s; }
+}
