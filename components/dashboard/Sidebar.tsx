@@ -1,7 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { NAV_ITEMS } from './nav';
+import { NAV_ITEMS, isNavItemActive } from './nav';
 
 interface SidebarProps {
   /** Called after a nav item is clicked (used to close the mobile drawer). */
@@ -15,7 +15,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
   return (
     <nav className="flex h-full flex-col gap-1 p-4">
       {NAV_ITEMS.map((item) => {
-        const active = pathname === item.href;
+        const active = isNavItemActive(pathname, item.href);
         const Icon = item.icon;
         return (
           <Link
