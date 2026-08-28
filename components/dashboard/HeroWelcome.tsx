@@ -1,5 +1,5 @@
-import { AnimatedLogo } from '@/components/auth/AnimatedLogo';
 import { StarField } from '@/components/auth/StarField';
+import { PrismStar } from '@/components/star/PrismStar';
 
 interface HeroWelcomeProps {
   displayName: string;
@@ -21,7 +21,7 @@ export function HeroWelcome({ displayName, followingCount, subscriptionCount }: 
           </div>
         </div>
         <div className="hidden w-[200px] shrink-0 justify-center md:flex">
-          <AnimatedLogo width={140} />
+          <PrismStar size={96} aria-label="Star" />
         </div>
       </div>
     </section>
