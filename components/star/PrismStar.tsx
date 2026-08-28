@@ -129,18 +129,6 @@ export function PrismStar({
         </g>
       )}
 
-      {/* Prism ring (dashed rotating) */}
-      <circle
-        className={styles.prismRing}
-        cx="100"
-        cy="100"
-        r="74"
-        fill="none"
-        stroke="#AA75FF"
-        strokeWidth="2"
-        strokeDasharray="2 10"
-      />
-
       {/* Star (3D-spinning prism-gradient, no inner white overlays) */}
       <g className={styles.starBody} filter={`url(#${gGlow})`}>
         <g className={styles.starSpin}>

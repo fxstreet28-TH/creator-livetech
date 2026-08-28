@@ -31,13 +31,6 @@
     filter: drop-shadow(0 0 4px #c99cff);
   }
 
-  .animated .prismRing {
-    transform-origin: 100px 100px;
-    transform-box: fill-box;
-    animation: prism-orbit 6.5s linear infinite;
-    filter: drop-shadow(0 0 3px #7a5cff);
-  }
-
   .animated .sparkles {
     transform-origin: 100px 100px;
     transform-box: fill-box;
@@ -86,9 +79,6 @@
 @keyframes prism-halo {
   0%, 100% { opacity: 0.3; transform: scale(0.84); }
   50% { opacity: 0.9; transform: scale(1.08); }
-}
-@keyframes prism-orbit {
-  to { transform: rotate(360deg); }
 }
 @keyframes prism-orbit-reverse {
   to { transform: rotate(-360deg); }
