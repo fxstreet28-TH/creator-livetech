@@ -81,7 +81,7 @@ export function PrismStar({
       {/* Halo (breathing) */}
       <circle className={styles.halo} cx="100" cy="100" r="90" fill={`url(#${gHalo})`} />
 
-      {/* Super charge: expanding waves + lightning bolts + rotating core */}
+      {/* Super charge: expanding waves + lightning bolts */}
       {showChargeEffects && (
         <g className={styles.superCharge} fill="none" strokeLinecap="round">
           <circle
@@ -103,14 +103,6 @@ export function PrismStar({
           <g className={styles.chargeBolts} stroke="#BFF8FF" strokeWidth="2.6">
             <path d="M100 8L95 35l8-4-4 24M173 42l-22 17 9 1-20 17M190 116l-30-5 6 8-25-7M148 181l-16-28-2 11-12-25M49 180l16-28-10 5 20-20M10 116l30-5-7 8 26-7M27 42l22 17-9 1 21 17" />
           </g>
-          <circle
-            className={styles.chargeCore}
-            cx="100"
-            cy="100"
-            r="52"
-            stroke="#fff"
-            strokeWidth="2"
-          />
         </g>
       )}
 
