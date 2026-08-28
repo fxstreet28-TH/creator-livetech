@@ -24,13 +24,6 @@
     animation: prism-spin 4s ease-in-out infinite;
   }
 
-  .animated .luxuryOrbit {
-    transform-origin: 100px 100px;
-    transform-box: fill-box;
-    animation: prism-orbit-reverse 9s linear infinite;
-    filter: drop-shadow(0 0 4px #c99cff);
-  }
-
   .animated .sparkles {
     transform-origin: 100px 100px;
     transform-box: fill-box;
@@ -79,9 +72,6 @@
 @keyframes prism-halo {
   0%, 100% { opacity: 0.3; transform: scale(0.84); }
   50% { opacity: 0.9; transform: scale(1.08); }
-}
-@keyframes prism-orbit-reverse {
-  to { transform: rotate(-360deg); }
 }
 @keyframes prism-sparkle {
   0%, 100% { opacity: 0.3; transform: rotate(0) scale(0.94); }
