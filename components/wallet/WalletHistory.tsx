@@ -1,7 +1,8 @@
 'use client';
 
 /**
- * The wallet's history, in three tabs: everything, purchases, buybacks.
+ * The wallet's history: everything, purchases, and — while the user-facing
+ * buyback feature is on — buybacks.
  *
  * "Everything" is a merge rather than a fourth query. Purchases and buybacks
  * come from their own tables, and the star ledger contributes only the events
@@ -19,14 +20,21 @@ import {
   type PurchaseEntry,
 } from '@/lib/hooks/useWalletHistory';
 import { bankDisplayName } from '@/lib/constants/thaiBanks';
+import { BUYBACK_USER_ENABLED } from '@/lib/features';
 import { formatDateTime, formatStars, formatThbWithUnit, maskBankAccount } from '@/lib/wallet/format';
 
 export type HistoryTab = 'all' | 'purchases' | 'buyback';
 
+/**
+ * The buyback-only tab is a filter over rows the "all" tab already shows, so
+ * dropping it while BUYBACK_USER_ENABLED is off hides no history: a buyback an
+ * admin created on the user's behalf still appears, in date order, under
+ * ประวัติทั้งหมด. Only the shortcut to a feature they cannot start goes away.
+ */
 const TABS: Array<{ id: HistoryTab; label: string }> = [
   { id: 'all', label: 'ประวัติทั้งหมด' },
   { id: 'purchases', label: 'การซื้อ' },
-  { id: 'buyback', label: 'Buyback' },
+  ...(BUYBACK_USER_ENABLED ? [{ id: 'buyback' as const, label: 'Buyback' }] : []),
 ];
 
 /**
@@ -79,7 +87,12 @@ interface WalletHistoryProps {
 }
 
 export function WalletHistory({ initialTab = 'all' }: WalletHistoryProps) {
-  const [tab, setTab] = useState<HistoryTab>(initialTab);
+  // A ?tab=buyback link — bookmarked, or shared from before the flag went off
+  // — would otherwise select a panel with no tab to match it. Fall back to the
+  // full history, which contains the same rows.
+  const [tab, setTab] = useState<HistoryTab>(
+    TABS.some((item) => item.id === initialTab) ? initialTab : 'all',
+  );
   const history = useWalletHistory();
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 

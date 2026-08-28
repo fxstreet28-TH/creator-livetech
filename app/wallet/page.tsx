@@ -1,10 +1,12 @@
 'use client';
 
 /**
- * /wallet — balance, the two things you can do with it, and history.
+ * /wallet — balance, what you can do with it, and history.
  *
- * Replaces the ComingSoon placeholder. The two primary actions sit above the
- * fold on a phone, because they are the only reasons this screen exists.
+ * Replaces the ComingSoon placeholder. The primary actions sit above the fold
+ * on a phone, because they are the only reasons this screen exists. There are
+ * two of them while BUYBACK_USER_ENABLED is on and one while it is off; see
+ * lib/features.ts.
  */
 
 import { Suspense } from 'react';
@@ -16,6 +18,7 @@ import { useWalletSummary } from '@/lib/hooks/useWalletSummary';
 import { WalletHistory, type HistoryTab } from '@/components/wallet/WalletHistory';
 import { formatDateTime, formatStars } from '@/lib/wallet/format';
 import { MIN_BUYBACK_STARS } from '@/lib/constants/stars';
+import { BUYBACK_USER_ENABLED } from '@/lib/features';
 
 const VALID_TABS: HistoryTab[] = ['all', 'purchases', 'buyback'];
 
@@ -95,9 +98,14 @@ export default function WalletPage() {
             ซื้อ Stars
           </Link>
 
-          {/* A link when there is something to sell, an inert button when
-              there is not: routing to a form that can only reject the user is
-              worse than saying so here.
+          {/* Nothing at all while BUYBACK_USER_ENABLED is off — not a disabled
+              control, which would advertise a feature the user cannot reach
+              through the app at all. "ซื้อ Stars" keeps flex-1 and simply
+              takes the full row.
+
+              Otherwise: a link when there is something to sell, an inert
+              button when there is not, because routing to a form that can only
+              reject the user is worse than saying so here.
 
               aria-disabled rather than the `disabled` attribute, and a button
               rather than a span, so the control stays in the tab order — a
@@ -105,29 +113,30 @@ export default function WalletPage() {
               it is unavailable and, via aria-describedby, why. A `disabled`
               button would simply vanish from the tab order with no
               explanation. */}
-          {canBuyback ? (
-            <Link
-              href="/wallet/buyback"
-              className="inline-flex min-h-[3.25rem] flex-1 items-center justify-center gap-2 rounded-2xl border border-white/12 bg-white/[0.04] px-5 py-4 text-base font-bold text-white/85 transition hover:bg-white/[0.08] focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
-            >
-              <ArrowUpRight size={18} aria-hidden />
-              Buyback
-            </Link>
-          ) : (
-            <button
-              type="button"
-              aria-disabled="true"
-              aria-describedby={BUYBACK_HINT_ID}
-              onClick={(event) => event.preventDefault()}
-              className="inline-flex min-h-[3.25rem] flex-1 cursor-not-allowed items-center justify-center gap-2 rounded-2xl border border-white/8 px-5 py-4 text-base font-bold text-white/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
-            >
-              <ArrowUpRight size={18} aria-hidden />
-              Buyback
-            </button>
-          )}
+          {BUYBACK_USER_ENABLED &&
+            (canBuyback ? (
+              <Link
+                href="/wallet/buyback"
+                className="inline-flex min-h-[3.25rem] flex-1 items-center justify-center gap-2 rounded-2xl border border-white/12 bg-white/[0.04] px-5 py-4 text-base font-bold text-white/85 transition hover:bg-white/[0.08] focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+              >
+                <ArrowUpRight size={18} aria-hidden />
+                Buyback
+              </Link>
+            ) : (
+              <button
+                type="button"
+                aria-disabled="true"
+                aria-describedby={BUYBACK_HINT_ID}
+                onClick={(event) => event.preventDefault()}
+                className="inline-flex min-h-[3.25rem] flex-1 cursor-not-allowed items-center justify-center gap-2 rounded-2xl border border-white/8 px-5 py-4 text-base font-bold text-white/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+              >
+                <ArrowUpRight size={18} aria-hidden />
+                Buyback
+              </button>
+            ))}
         </div>
 
-        {!wallet.loading && !canBuyback && (
+        {BUYBACK_USER_ENABLED && !wallet.loading && !canBuyback && (
           <p id={BUYBACK_HINT_ID} className="mt-2 text-center text-xs text-white/35">
             ต้องมีอย่างน้อย {formatStars(MIN_BUYBACK_STARS)} Stars จึงจะขาย buyback ได้
           </p>
