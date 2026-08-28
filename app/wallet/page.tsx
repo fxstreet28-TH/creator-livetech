@@ -16,6 +16,7 @@ import { ArrowUpRight, Plus } from 'lucide-react';
 import { AuthPending, useRequireAuth } from '@/lib/hooks/useRequireAuth';
 import { useWalletSummary } from '@/lib/hooks/useWalletSummary';
 import { WalletHistory, type HistoryTab } from '@/components/wallet/WalletHistory';
+import { PrismStar } from '@/components/star/PrismStar';
 import { formatDateTime, formatStars } from '@/lib/wallet/format';
 import { MIN_BUYBACK_STARS } from '@/lib/constants/stars';
 import { BUYBACK_USER_ENABLED } from '@/lib/features';
@@ -65,15 +66,24 @@ export default function WalletPage() {
           aria-label="ยอดคงเหลือ"
           className="rounded-3xl border border-purple-500/25 bg-gradient-to-br from-purple-600/25 to-pink-600/15 p-6"
         >
-          <p className="text-sm text-white/60">ยอดคงเหลือ</p>
-          {wallet.loading ? (
-            <div className="mt-2 h-11 w-40 animate-pulse rounded-lg bg-white/10" />
-          ) : (
-            <p className="mt-1 text-4xl font-extrabold tabular-nums">
-              {formatStars(wallet.balance)}
-              <span className="ml-2 text-base font-semibold text-white/60">Stars</span>
-            </p>
-          )}
+          {/* Horizontal row so the star sits beside the number rather than
+              above it. The star keeps its own fixed 72px box (the component
+              sets flex-shrink) so the breathing halo and charge waves, which
+              overflow that box, never reflow the balance text. */}
+          <div className="flex items-center gap-4">
+            <PrismStar size={72} aria-label="Stars balance" />
+            <div className="min-w-0">
+              <p className="text-sm text-white/60">ยอดคงเหลือ</p>
+              {wallet.loading ? (
+                <div className="mt-2 h-11 w-40 animate-pulse rounded-lg bg-white/10" />
+              ) : (
+                <p className="mt-1 text-4xl font-extrabold tabular-nums">
+                  {formatStars(wallet.balance)}
+                  <span className="ml-2 text-base font-semibold text-white/60">Stars</span>
+                </p>
+              )}
+            </div>
+          </div>
 
           {!wallet.loading && nextExpiry && (
             <p className="mt-3 text-xs text-white/50">

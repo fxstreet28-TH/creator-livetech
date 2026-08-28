@@ -1,0 +1,107 @@
+.star {
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+  overflow: visible;
+}
+
+/* Only animate when the class is present AND the user hasn't opted out */
+@media (prefers-reduced-motion: no-preference) {
+  .animated .halo {
+    transform-origin: center;
+    animation: prism-halo 2.7s ease-in-out infinite;
+  }
+
+  .animated .starBody {
+    transform-origin: 100px 100px;
+    transform-box: fill-box;
+    animation: prism-hover 4.8s ease-in-out infinite;
+  }
+
+  .animated .starSpin {
+    transform-origin: 100px 100px;
+    transform-box: fill-box;
+    animation: prism-spin 4s ease-in-out infinite;
+  }
+
+  .animated .luxuryOrbit {
+    transform-origin: 100px 100px;
+    transform-box: fill-box;
+    animation: prism-orbit-reverse 9s linear infinite;
+    filter: drop-shadow(0 0 4px #c99cff);
+  }
+
+  .animated .sparkles {
+    transform-origin: 100px 100px;
+    transform-box: fill-box;
+    animation: prism-sparkle 4.2s ease-in-out infinite;
+  }
+
+  .animated .superCharge {
+    transform-origin: 100px 100px;
+    transform-box: fill-box;
+    filter: drop-shadow(0 0 5px #7cecff) drop-shadow(0 0 10px #8a5cff);
+  }
+
+  .animated .chargeBolts {
+    stroke-dasharray: 22 38;
+    animation: prism-bolts 2.8s ease-in-out infinite;
+  }
+
+  .animated .chargeWave {
+    transform-origin: 100px 100px;
+    transform-box: fill-box;
+    opacity: 0;
+  }
+  .animated .waveA {
+    animation: prism-wave 2.8s ease-out infinite;
+  }
+  .animated .waveB {
+    animation: prism-wave 2.8s 0.38s ease-out infinite;
+  }
+
+  .animated .chargeCore {
+    transform-origin: 100px 100px;
+    transform-box: fill-box;
+    stroke-dasharray: 10 12;
+    animation: prism-core 2.8s ease-in-out infinite;
+  }
+}
+
+@keyframes prism-spin {
+  0%, 100% { transform: perspective(600px) rotateY(-18deg) rotateX(3deg); }
+  50% { transform: perspective(600px) rotateY(18deg) rotateX(-3deg); }
+}
+@keyframes prism-hover {
+  0%, 100% { transform: translateY(2px) scale(0.98); }
+  50% { transform: translateY(-8px) scale(1.035); }
+}
+@keyframes prism-halo {
+  0%, 100% { opacity: 0.3; transform: scale(0.84); }
+  50% { opacity: 0.9; transform: scale(1.08); }
+}
+@keyframes prism-orbit-reverse {
+  to { transform: rotate(-360deg); }
+}
+@keyframes prism-sparkle {
+  0%, 100% { opacity: 0.3; transform: rotate(0) scale(0.94); }
+  45% { opacity: 1; transform: rotate(10deg) scale(1.08); }
+}
+@keyframes prism-bolts {
+  0%, 12% { opacity: 0; stroke-dashoffset: 65; }
+  28% { opacity: 0.95; }
+  48% { opacity: 0.25; stroke-dashoffset: 0; }
+  62% { opacity: 1; }
+  76%, 100% { opacity: 0; stroke-dashoffset: -42; }
+}
+@keyframes prism-wave {
+  0%, 30% { opacity: 0; transform: scale(0.55); }
+  42% { opacity: 0.9; }
+  72%, 100% { opacity: 0; transform: scale(1.38); }
+}
+@keyframes prism-core {
+  0%, 20% { opacity: 0.18; transform: scale(0.78) rotate(0); }
+  48% { opacity: 1; transform: scale(1.02) rotate(90deg); }
+  76% { opacity: 1; transform: scale(1.08) rotate(210deg); }
+  100% { opacity: 0.18; transform: scale(0.78) rotate(360deg); }
+}
