@@ -1,5 +1,6 @@
 import ReactDOM from "react-dom";
 import type { Metadata, Viewport } from "next";
+import { FeedbackWidget } from "@/components/feedback/FeedbackWidget";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -43,7 +44,14 @@ export default function RootLayout({
 
   return (
     <html lang="th">
-      <body>{children}</body>
+      <body>
+        {children}
+        {/* Global, and last in the body so its fixed layers stack over the page
+            without needing a z-index above the app's own. Renders nothing at
+            all until there is a session, so it costs a signed-out visitor one
+            null component. */}
+        <FeedbackWidget />
+      </body>
     </html>
   );
 }
