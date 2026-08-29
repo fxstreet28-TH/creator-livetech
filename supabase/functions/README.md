@@ -38,6 +38,7 @@ still serving.
 | `stripe-webhook/` | The only path that credits stars for money. Verifies Stripe's signature, records the delivery in `stripe_events`, calls `credit_stars_purchase`. **Deploy with `--no-verify-jwt`.** |
 | `buyback-request/` | Star cashout at a flat 3.00 THB/star. Deducts now, pays by hand later. |
 | `wallet-pricing/` | Returns the live `star_pricing_config` row to the buy screen. Selects `retail_thb_per_star` and `label` only — `internal_thb_per_star` is the creator-payout basis and must never reach a browser. |
+| `send-transactional-email/` | Wallet receipts. Called only by the Postgres triggers in `20260829_email_notifications.sql`, over pg_net, on the service key — never by a browser. Reads the row back, renders one of `templates/`, sends via Resend, records the attempt in `email_log`. |
 
 All three keep the request/response shapes, error codes and HTTP statuses of
 the Next.js routes they replace byte-for-byte — `components/auth/steps/` maps
