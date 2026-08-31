@@ -19,6 +19,7 @@
  */
 
 import { FunctionsHttpError, type SupabaseClient } from '@supabase/supabase-js';
+import type { QuotaBlock } from '@/lib/creator/quota';
 import type {
   CreateLiveRequest,
   CreateLiveResponse,
@@ -273,9 +274,45 @@ export async function fetchLiveQuota(
   };
 }
 
-/** Thai for a quota refusal read from the RPC rather than from a 403. */
-export function thaiForQuotaRefusal(reason: string | null): string {
-  return thaiForGoliveReason(reason ?? '').message;
+/**
+ * A refusal read from the RPC rather than from a 403, shaped for the
+ * full-page blocked state on /creator/live.
+ *
+ * The three reasons want three different pages: a spent daily allowance is
+ * answered by upgrading, a kill switch is answered by waiting, and a
+ * throttled account is answered by talking to us. Offering "อัปเกรดแพ็กเกจ"
+ * for the last two would be selling a plan that does not fix the problem.
+ *
+ * QuotaBlock is imported as a type only, so this does not create a runtime
+ * cycle with lib/creator/quota.ts (which imports fetchLiveQuota from here).
+ */
+export function describeGoliveBlock(quota: LiveQuota): QuotaBlock | null {
+  if (quota.canGolive) return null;
+
+  const mapped = thaiForGoliveReason(quota.reason ?? '');
+
+  if (mapped.code === 'platform_budget') {
+    return {
+      kind: 'platform',
+      title: 'ระบบไม่รับไลฟ์ใหม่ชั่วคราว',
+      message: mapped.message,
+      showUpgrade: false,
+    };
+  }
+  if (mapped.code === 'account_throttled') {
+    return {
+      kind: 'account',
+      title: 'บัญชีของคุณถูกจำกัดการไลฟ์ชั่วคราว',
+      message: mapped.message,
+      showUpgrade: false,
+    };
+  }
+  return {
+    kind: 'live_hours',
+    title: mapped.code === 'daily_limit' ? 'ครบโควตาไลฟ์ของวันนี้แล้ว' : 'ยังเริ่มไลฟ์ไม่ได้ในขณะนี้',
+    message: mapped.message,
+    showUpgrade: true,
+  };
 }
 
 const SESSION_COLUMNS =

@@ -31,7 +31,8 @@
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "react-international-phone": "^4.8.0",
-    "resend": "^6.18.1"
+    "resend": "^6.18.1",
+    "tus-js-client": "^4.1.0"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.5.0",

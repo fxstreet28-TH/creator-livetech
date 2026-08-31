@@ -19,6 +19,7 @@ import { useDashboardUser } from '@/lib/hooks/useDashboardUser';
 import { useViewerCounts } from '@/lib/hooks/useViewerCounts';
 import { HeroWelcome } from '@/components/dashboard/HeroWelcome';
 import { LiveNowSection } from '@/components/dashboard/LiveNowSection';
+import { QuotaWidget } from '@/components/dashboard/QuotaWidget';
 import { RecommendedPosts } from '@/components/dashboard/RecommendedPosts';
 import { PopularCategories } from '@/components/dashboard/PopularCategories';
 
@@ -43,6 +44,8 @@ export default function DashboardPage() {
       />
       {/* Renders nothing while live_sessions is empty — see LiveNowSection. */}
       <LiveNowSection />
+      {/* Creators only, and only once their quota has loaded — see QuotaWidget. */}
+      <QuotaWidget />
       <RecommendedPosts />
       <PopularCategories />
     </div>

@@ -28,6 +28,7 @@ import {
   MAX_TITLE_LENGTH,
   MIN_PPV_PRICE_STARS,
   MIN_TITLE_LENGTH,
+  DEGRADED_MAX_QUALITY,
   QUALITY_OPTIONS,
   isQualityAllowed,
 } from '@/lib/live/constants';
@@ -112,8 +113,15 @@ interface GoLiveSetupFormProps {
   /** Null while the tier lookup is in flight or failed. */
   quota: LiveQuota | null;
   quotaLoading: boolean;
-  /** Thai, renderable. The reason the creator cannot go live at all. */
-  blockedReason?: string | null;
+  /**
+   * The cap actually in force: the tier's, or the platform's 480p ceiling
+   * while the budget status is 'degraded', whichever is lower. Null while it
+   * is unknown, in which case every option stays selectable and the backend
+   * clamps.
+   */
+  maxQuality?: BroadcastQuality | null;
+  /** True when that cap is the platform's rather than the creator's tier. */
+  qualityDegraded?: boolean;
   disabled?: boolean;
   submitting?: boolean;
   /** True once the camera is publishing a track. */
@@ -131,7 +139,8 @@ export function GoLiveSetupForm({
   errors = {},
   quota,
   quotaLoading,
-  blockedReason,
+  maxQuality = null,
+  qualityDegraded = false,
   disabled = false,
   submitting = false,
   cameraReady = false,
@@ -148,8 +157,10 @@ export function GoLiveSetupForm({
   const set = <K extends keyof GoLiveDraft>(key: K, next: GoLiveDraft[K]) =>
     onChange({ ...value, [key]: next });
 
-  const blocked = blockedReason != null;
-  const canSubmit = !disabled && !submitting && !blocked && cameraReady;
+  // A creator who cannot go live at all never reaches this form: /creator/live
+  // renders <QuotaBlockedNotice> in its place (see describeGoliveBlock). So
+  // the only reasons the button is disabled here are local ones.
+  const canSubmit = !disabled && !submitting && cameraReady;
 
   return (
     <div className="flex flex-col gap-5">
@@ -230,20 +241,34 @@ export function GoLiveSetupForm({
           className={`mt-2 h-12 ${INPUT_CLASS} py-0`}
         >
           {QUALITY_OPTIONS.map((option) => {
-            // Options above the tier cap stay in the list, disabled, with the
-            // tier that would unlock them — the same reasoning as the PPV
+            // Options above the cap stay in the list, disabled, with the
+            // reason they are out of reach — the same reasoning as the PPV
             // option in VisibilityToggle. Hiding them would leave a creator
             // wondering why their dropdown is shorter than the pricing page.
-            // The backend clamps to the cap regardless of what is sent.
-            const allowed = quota ? isQualityAllowed(option.value, quota.maxQuality) : true;
+            // The backend clamps to the tier cap regardless of what is sent.
+            const tierAllowed = quota ? isQualityAllowed(option.value, quota.maxQuality) : true;
+            const allowed = maxQuality ? isQualityAllowed(option.value, maxQuality) : tierAllowed;
+            // Which of the two caps is refusing decides the copy: a creator
+            // told to upgrade for something their plan already includes, and
+            // that will be back tomorrow, has been told the wrong thing.
+            const suffix = allowed
+              ? ''
+              : tierAllowed
+                ? ` — จำกัดชั่วคราวที่ ${DEGRADED_MAX_QUALITY}`
+                : ` — ต้องใช้แพ็กเกจ ${option.minTierLabel}`;
             return (
               <option key={option.value} value={option.value} disabled={!allowed}>
                 {option.label}
-                {allowed ? '' : ` — ต้องใช้แพ็กเกจ ${option.minTierLabel}`}
+                {suffix}
               </option>
             );
           })}
         </select>
+        {qualityDegraded && (
+          <p role="status" className="mt-2 text-[11px] leading-relaxed text-orange-200/85">
+            ระบบจำกัดคุณภาพไลฟ์ไว้ที่ {DEGRADED_MAX_QUALITY} ชั่วคราวเพื่อควบคุมค่าใช้จ่ายของแพลตฟอร์ม
+          </p>
+        )}
       </div>
 
       <div className="min-w-0">
@@ -275,7 +300,7 @@ export function GoLiveSetupForm({
         )}
       </div>
 
-      <QuotaNotice quota={quota} loading={quotaLoading} blockedReason={blockedReason} />
+      <QuotaNotice quota={quota} loading={quotaLoading} />
 
       {submitError && (
         <p
@@ -295,7 +320,7 @@ export function GoLiveSetupForm({
         {submitting ? 'กำลังเริ่มไลฟ์...' : '🔴 ไลฟ์สด'}
       </button>
 
-      {!cameraReady && !blocked && (
+      {!cameraReady && (
         <p className="-mt-2 text-center text-xs text-white/40">
           รอให้กล้องพร้อมก่อนจึงจะเริ่มไลฟ์ได้
         </p>
@@ -305,28 +330,9 @@ export function GoLiveSetupForm({
 }
 
 /** "เหลือเวลาวันนี้" and the concurrent-viewer ceiling, straight from the tier. */
-function QuotaNotice({
-  quota,
-  loading,
-  blockedReason,
-}: {
-  quota: LiveQuota | null;
-  loading: boolean;
-  blockedReason?: string | null;
-}) {
+function QuotaNotice({ quota, loading }: { quota: LiveQuota | null; loading: boolean }) {
   if (loading) {
     return <div aria-hidden className="h-16 animate-pulse rounded-2xl border border-white/10 bg-white/5" />;
-  }
-
-  if (blockedReason) {
-    return (
-      <div
-        role="alert"
-        className="rounded-2xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sm leading-relaxed text-amber-100"
-      >
-        {blockedReason}
-      </div>
-    );
   }
 
   // A failed quota read is not an error state: live-create-session runs the

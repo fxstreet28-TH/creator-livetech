@@ -4,11 +4,12 @@
  * /creator/upload — pick a video, describe it, send it straight to Bunny.
  *
  * The file never touches our servers: `content-request-video-upload` reserves
- * a Bunny Stream video and creates the draft feed_posts row, then the browser
- * PUTs the bytes to Bunny directly and the Bunny webhook publishes the post
- * when encoding finishes. So this page owns exactly three things — validation
- * before the request, the progress of the PUT, and not letting the creator
- * walk away mid-upload.
+ * a Bunny Stream video and hands back a signature scoped to that one video,
+ * creates the draft feed_posts row, then the browser streams the bytes to
+ * Bunny's TUS endpoint directly and the Bunny webhook publishes the post when
+ * encoding finishes. So this page owns exactly four things — the quota and
+ * platform-status gates, validation before the request, the progress of the
+ * upload, and not letting the creator walk away mid-upload.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -16,9 +17,11 @@ import Link from 'next/link';
 import { Upload } from 'lucide-react';
 import { AuthPending, useRequireAuth } from '@/lib/hooks/useRequireAuth';
 import { useCreatorProfile } from '@/lib/hooks/useCreatorProfile';
+import { useCreatorQuota } from '@/lib/hooks/useCreatorQuota';
+import { usePlatformStatus } from '@/lib/hooks/usePlatformStatus';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
 import { requestVideoUpload, type ContentError } from '@/lib/creator/api';
-import { thaiForUploadError, uploadToBunnyWithRetry, UPLOAD_ABORTED } from '@/lib/creator/uploader';
+import { thaiForUploadError, uploadWithTus, UPLOAD_ABORTED } from '@/lib/creator/uploader';
 import {
   aspectRatioForDimensions,
   postTypeForDuration,
@@ -26,7 +29,10 @@ import {
 import { formatDuration } from '@/lib/creator/format';
 import type { UploadRequestPayload } from '@/lib/creator/types';
 import { CREATOR_PPV_ENABLED } from '@/lib/features';
+import { describeUploadBlock } from '@/lib/creator/quota';
+import { describePlatformBlock, isDegraded } from '@/lib/platform/status';
 import { CreatorPageShell } from '@/components/creator/CreatorPageShell';
+import { QuotaBlockedNotice } from '@/components/creator/QuotaBlockedNotice';
 import { UploadDropzone, type SelectedVideo } from '@/components/creator/UploadDropzone';
 import { UploadProgressCard, type UploadPhase } from '@/components/creator/UploadProgressCard';
 import {
@@ -40,6 +46,8 @@ import {
 export default function CreatorUploadPage() {
   const { ready } = useRequireAuth();
   const profile = useCreatorProfile();
+  const quota = useCreatorQuota(profile.creatorId);
+  const platform = usePlatformStatus();
 
   const [video, setVideo] = useState<SelectedVideo | null>(null);
   const [metadata, setMetadata] = useState<PostMetadata>(EMPTY_METADATA);
@@ -47,6 +55,7 @@ export default function CreatorUploadPage() {
 
   const [phase, setPhase] = useState<UploadPhase | null>(null);
   const [percent, setPercent] = useState(0);
+  const [retry, setRetry] = useState<{ attempt: number; max: number } | null>(null);
   const [postId, setPostId] = useState<string | null>(null);
   const [failure, setFailure] = useState<{ message: string; quotaRelated: boolean } | null>(null);
 
@@ -55,6 +64,21 @@ export default function CreatorUploadPage() {
   const errors: PostMetadataErrors = validateMetadata(metadata);
   const metadataValid = Object.keys(errors).length === 0;
   const canSubmit = video !== null && metadataValid && phase === null;
+
+  /**
+   * Why this creator cannot upload at all right now, if anything.
+   *
+   * A failed quota read is NOT a block: the backend runs the same check and
+   * refuses in Thai if it has to, so a creator is never stopped by our
+   * inability to read a counter. Same reasoning as the go-live form's
+   * QuotaNotice.
+   */
+  const quotaBlock =
+    // The platform kill switch outranks the creator's own quota: when the
+    // whole platform is closed, being under quota changes nothing, and the
+    // message that helps is the one about the platform.
+    describePlatformBlock(platform.status, 'upload') ??
+    (quota.snapshot ? describeUploadBlock(quota.snapshot) : null);
 
   // Uploading is the only phase worth guarding: before it there is nothing to
   // lose, and after it the bytes are already at Bunny. The listener is added
@@ -74,13 +98,14 @@ export default function CreatorUploadPage() {
   }, [uploadInFlight]);
 
   // A creator who navigates away with the in-app router (which beforeunload
-  // cannot see) should not leave an XHR pushing a gigabyte in the background.
+  // cannot see) should not leave TUS pushing a gigabyte in the background.
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const startUpload = useCallback(
     async (selected: SelectedVideo, meta: PostMetadata) => {
       setFailure(null);
       setPercent(0);
+      setRetry(null);
       setPhase('requesting');
 
       const controller = new AbortController();
@@ -127,20 +152,30 @@ export default function CreatorUploadPage() {
       }
 
       // The draft row exists from here on, so the creator can reach the post
-      // even if the PUT then fails.
+      // even if the upload then fails.
       setPostId(data.post_id);
       setPhase('uploading');
 
       try {
-        await uploadToBunnyWithRetry(
-          selected.file,
-          data.upload_url,
-          data.upload_headers,
-          setPercent,
-          controller.signal,
-        );
+        await uploadWithTus({
+          file: selected.file,
+          endpoint: data.tus_upload_endpoint,
+          // Verbatim, both of them. SECURITY: tus_headers carries the
+          // per-video signature — it is never logged and never stored.
+          headers: data.tus_headers,
+          metadata: data.tus_metadata,
+          onProgress: (bytes, total) => {
+            // Bytes are moving again, so whatever resume was in flight is over.
+            setRetry(null);
+            setPercent(total > 0 ? Math.min(100, Math.floor((bytes / total) * 100)) : 0);
+          },
+          onRetry: (attempt, max) => setRetry({ attempt, max }),
+          signal: controller.signal,
+        });
+        setRetry(null);
         setPhase('success');
       } catch (err) {
+        setRetry(null);
         if (err instanceof Error && err.message === UPLOAD_ABORTED) {
           // Back to the form with the file and the metadata still in place —
           // cancelling an upload is not the same as discarding the work.
@@ -148,7 +183,10 @@ export default function CreatorUploadPage() {
           setPercent(0);
           return;
         }
-        console.error('[creator/upload] bunny upload failed', err);
+        // The error object carries the failed request; log the mapped status
+        // only, never the object, because its request headers hold the
+        // upload signature.
+        console.error('[creator/upload] bunny TUS upload failed');
         setFailure({ message: thaiForUploadError(err), quotaRelated: false });
         setPhase('error');
       }
@@ -165,15 +203,20 @@ export default function CreatorUploadPage() {
 
   /**
    * "ลองใหม่" after a failure starts the whole flow again, including a fresh
-   * `content-request-video-upload`. That leaves the first draft row behind
-   * with video_status 'pending' — the creator can delete it from
-   * /creator/posts, and the backend's orphan cleanup handles the Bunny side.
-   * Reusing the first upload URL would be cheaper, but a request that failed
-   * before returning one has nothing to reuse.
-   * TODO(day-9): retry against the existing draft once the backend can hand
-   * back an upload URL for a post_id.
+   * `content-request-video-upload`.
+   *
+   * This is required now, not merely convenient: the TUS signature expires
+   * (~1 hour) and is bound to the video it was minted for, so a failure that
+   * happened because it expired can only be answered with a new one. Reusing
+   * the old headers would fail identically every time.
+   *
+   * It leaves the first draft row behind with video_status 'pending' — the
+   * creator can delete it from /creator/posts, and the backend's orphan
+   * cleanup handles the Bunny side.
+   * TODO(post-launch): retry against the existing draft once the backend can
+   * re-sign an upload for an existing post_id.
    */
-  const retry = () => {
+  const retryFromScratch = () => {
     if (!video) return;
     void startUpload(video, metadata);
   };
@@ -182,6 +225,7 @@ export default function CreatorUploadPage() {
     abortRef.current?.abort();
     setPhase(null);
     setPercent(0);
+    setRetry(null);
     setFailure(null);
     setPostId(null);
   };
@@ -209,7 +253,7 @@ export default function CreatorUploadPage() {
         </Link>
       }
     >
-      {profile.loading ? (
+      {profile.loading || quota.loading || platform.loading ? (
         <div className="h-64 animate-pulse rounded-2xl border border-white/10 bg-white/5" />
       ) : !profile.creatorId ? (
         <NotACreatorNotice error={profile.error} />
@@ -220,15 +264,38 @@ export default function CreatorUploadPage() {
           fileSizeBytes={video.file.size}
           durationLabel={formatDuration(video.durationSeconds)}
           percent={percent}
+          retry={retry}
           errorMessage={failure?.message ?? null}
           showPlanUpgrade={failure?.quotaRelated ?? false}
           postId={postId}
           onCancel={() => abortRef.current?.abort()}
-          onRetry={retry}
+          onRetry={retryFromScratch}
           onStartOver={phase === 'success' ? resetForNextVideo : startOver}
+        />
+      ) : quotaBlock ? (
+        // Checked after the progress card, so an upload that filled the last
+        // slot still shows its own success state instead of being replaced by
+        // the wall it just created.
+        <QuotaBlockedNotice
+          kind={quotaBlock.kind}
+          title={quotaBlock.title}
+          message={quotaBlock.message}
+          showUpgrade={quotaBlock.showUpgrade}
         />
       ) : (
         <form onSubmit={handleSubmit} noValidate className="grid gap-6 lg:grid-cols-5">
+          {/* 'degraded' does not stop an upload — Bunny encodes what it is
+              given — but it caps the ladder it will serve, so the creator is
+              told before they wonder why their 1080p master plays back soft. */}
+          {isDegraded(platform.status) && (
+            <p
+              role="status"
+              className="rounded-2xl border border-orange-400/25 bg-orange-500/10 px-4 py-3 text-sm leading-relaxed text-orange-100 lg:col-span-5"
+            >
+              ⚠️ ขณะนี้ระบบจำกัดคุณภาพวิดีโอไว้ที่ 480p ชั่วคราวเพื่อควบคุมค่าใช้จ่ายของแพลตฟอร์ม —
+              อัปโหลดได้ตามปกติ และไฟล์ต้นฉบับของคุณยังถูกเก็บไว้ครบ
+            </p>
+          )}
           {/* 3/5 + 2/5 ≈ the 60/40 split the brief asks for, and it collapses
               to a single column below lg without a second breakpoint. */}
           <div className="min-w-0 lg:col-span-3">

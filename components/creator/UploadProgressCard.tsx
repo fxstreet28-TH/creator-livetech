@@ -1,8 +1,8 @@
 'use client';
 
 /**
- * What the upload screen becomes once the PUT to Bunny starts: the file, a
- * progress bar, and the one control that matters mid-upload — cancel.
+ * What the upload screen becomes once the TUS upload to Bunny starts: the
+ * file, a progress bar, and the one control that matters mid-upload — cancel.
  *
  * Also renders the two terminal states, because they are the same card with
  * the same file in it. Swapping to a different component on completion would
@@ -22,6 +22,12 @@ interface UploadProgressCardProps {
   durationLabel: string;
   /** 0-100. */
   percent: number;
+  /**
+   * Set while TUS is resuming after a dropped chunk, cleared once bytes move
+   * again. The creator is told rather than left watching a bar that stopped:
+   * a resume can wait 20s before its last attempt.
+   */
+  retry?: { attempt: number; max: number } | null;
   /** Thai, already localised. Only read in the 'error' phase. */
   errorMessage?: string | null;
   /** Set when the failure is a quota/tier refusal, so we can offer the link. */
@@ -39,6 +45,7 @@ export function UploadProgressCard({
   fileSizeBytes,
   durationLabel,
   percent,
+  retry,
   errorMessage,
   showPlanUpgrade = false,
   postId,
@@ -87,7 +94,11 @@ export function UploadProgressCard({
 
           <div className="mt-2 flex items-center justify-between text-xs text-white/55">
             <span role="status">
-              {phase === 'requesting' ? 'กำลังเตรียมการอัปโหลด...' : 'กำลังอัปโหลด...'}
+              {phase === 'requesting'
+                ? 'กำลังเตรียมการอัปโหลด...'
+                : retry
+                  ? `กำลังเชื่อมต่อใหม่... (${retry.attempt}/${retry.max})`
+                  : 'กำลังอัปโหลด...'}
             </span>
             <span className="tabular-nums">
               {phase === 'uploading'
@@ -97,7 +108,9 @@ export function UploadProgressCard({
           </div>
 
           <p className="mt-3 text-[11px] leading-relaxed text-white/35">
-            อย่าปิดหน้านี้จนกว่าการอัปโหลดจะเสร็จ
+            {retry
+              ? 'การเชื่อมต่อขัดข้อง ระบบกำลังอัปโหลดต่อจากจุดเดิม ไม่ต้องเริ่มใหม่'
+              : 'อย่าปิดหน้านี้จนกว่าการอัปโหลดจะเสร็จ'}
           </p>
         </div>
       )}

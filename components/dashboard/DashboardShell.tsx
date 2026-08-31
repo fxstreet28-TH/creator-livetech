@@ -30,7 +30,9 @@ export function DashboardShell({ displayName, email, avatarUrl, children }: Dash
 
       <div className="flex">
         {/* Desktop sidebar */}
-        <aside className="sticky top-16 hidden h-[calc(100dvh-4rem)] w-60 shrink-0 overflow-y-auto border-r border-white/6 bg-[#0a0a15] md:block">
+        {/* top-16 plus whatever the kill-switch banner is taking, so the
+            sidebar keeps sitting directly under the top bar in both states. */}
+        <aside className="sticky top-[calc(4rem+var(--kill-switch-h,0px))] hidden h-[calc(100dvh-4rem-var(--kill-switch-h,0px))] w-60 shrink-0 overflow-y-auto border-r border-white/6 bg-[#0a0a15] md:block">
           <Sidebar />
         </aside>
 

@@ -31,6 +31,26 @@ export function isQualityAllowed(quality: BroadcastQuality, maxQuality: Broadcas
   return QUALITY_ORDER.indexOf(quality) <= QUALITY_ORDER.indexOf(maxQuality);
 }
 
+/**
+ * The ceiling the platform puts on itself while the budget status is
+ * 'degraded'. Bandwidth is the bill, so halving the bitrate is what buys the
+ * time to fix the cause without taking live streaming away entirely.
+ */
+export const DEGRADED_MAX_QUALITY: BroadcastQuality = '480p';
+
+/** The lower of two caps — a tier's and the platform's. */
+export function lowerQuality(a: BroadcastQuality, b: BroadcastQuality): BroadcastQuality {
+  return QUALITY_ORDER.indexOf(a) <= QUALITY_ORDER.indexOf(b) ? a : b;
+}
+
+/** `quality`, or `max` when it sits above it. */
+export function clampQuality(
+  quality: BroadcastQuality,
+  max: BroadcastQuality,
+): BroadcastQuality {
+  return isQualityAllowed(quality, max) ? quality : max;
+}
+
 export interface QualityOption {
   value: BroadcastQuality;
   label: string;

@@ -21,14 +21,23 @@ import Link from 'next/link';
 import { Loader2 } from 'lucide-react';
 import { AuthPending, useRequireAuth } from '@/lib/hooks/useRequireAuth';
 import { useCreatorProfile } from '@/lib/hooks/useCreatorProfile';
+import { usePlatformStatus } from '@/lib/hooks/usePlatformStatus';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
 import { CREATOR_PPV_ENABLED } from '@/lib/features';
-import { createLiveSession, endLiveSession, fetchLiveQuota, thaiForQuotaRefusal } from '@/lib/live/api';
+import { describePlatformBlock, isDegraded } from '@/lib/platform/status';
+import { createLiveSession, describeGoliveBlock, endLiveSession, fetchLiveQuota } from '@/lib/live/api';
 import type { BroadcastQuality, EndLiveResponse, LiveQuota } from '@/lib/live/types';
-import { DEFAULT_QUALITY, isQualityAllowed } from '@/lib/live/constants';
+import {
+  clampQuality,
+  DEFAULT_QUALITY,
+  DEGRADED_MAX_QUALITY,
+  isQualityAllowed,
+  lowerQuality,
+} from '@/lib/live/constants';
 import { DEFAULT_FILTER_ID, type FilterId } from '@/lib/live/cameraFilters';
 import type { Room } from '@/lib/live/livekitClient';
 import { CreatorPageShell } from '@/components/creator/CreatorPageShell';
+import { QuotaBlockedNotice } from '@/components/creator/QuotaBlockedNotice';
 import { CameraPreview } from '@/components/live/CameraPreview';
 import {
   EMPTY_DRAFT,
@@ -93,6 +102,7 @@ export default function CreatorLivePage() {
 
 function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName: string }) {
   const router = useRouter();
+  const platform = usePlatformStatus();
 
   const [draft, setDraft] = useState<GoLiveDraft>(EMPTY_DRAFT);
   const [showErrors, setShowErrors] = useState(false);
@@ -126,6 +136,22 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
 
   const elapsedSeconds = useElapsedSeconds(broadcast?.startedAt ?? null);
   const errors = validateDraft(draft);
+
+  /**
+   * The quality cap actually in force, and the quality that will be sent.
+   *
+   * Derived at render rather than written back into `draft`: a 'degraded' that
+   * clears while the form is open should give the creator their 720p back,
+   * and an effect that overwrote the draft would have thrown their choice
+   * away. `effectiveQuality` is what the select shows and what go-live sends,
+   * so the two cannot disagree.
+   */
+  const qualityDegraded = isDegraded(platform.status);
+  const tierMaxQuality = quota?.maxQuality ?? null;
+  const maxQuality = qualityDegraded
+    ? lowerQuality(tierMaxQuality ?? DEGRADED_MAX_QUALITY, DEGRADED_MAX_QUALITY)
+    : tierMaxQuality;
+  const effectiveQuality = maxQuality ? clampQuality(draft.quality, maxQuality) : draft.quality;
 
   useEffect(() => {
     let cancelled = false;
@@ -202,7 +228,7 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
     const { data, error } = await createLiveSession(supabase, {
       title: draft.title.trim(),
       access_level: draft.visibility,
-      broadcast_quality: draft.quality,
+      broadcast_quality: effectiveQuality,
       // Recording stays off: LiveKit egress is not wired, so a session flagged
       // for recording produces nothing (non-negotiable #5).
       recording_enabled: false,
@@ -303,9 +329,21 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
     );
   }
 
-  const blockedReason =
-    quota && !quota.canGolive ? thaiForQuotaRefusal(quota.reason) : null;
-
+  /**
+   * Why this creator cannot go live at all, if anything.
+   *
+   * When it is set the setup form is not rendered — which also means the
+   * camera is never opened, so a creator who cannot broadcast is not asked
+   * for a camera permission first. A failed quota read leaves this null: the
+   * backend runs the same check and refuses in Thai if it has to, and being
+   * unable to read a counter is not a reason to stop someone.
+   */
+  const goliveBlock =
+    // The platform kill switch outranks the creator's own quota, for the same
+    // reason as on /creator/upload. check_creator_can_golive refuses on these
+    // two statuses as well, but the view's message is the one ops can reword.
+    describePlatformBlock(platform.status, 'live') ??
+    (quota ? describeGoliveBlock(quota) : null);
   return (
     <CreatorPageShell
       title="ไลฟ์สด"
@@ -320,39 +358,54 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
         </Link>
       }
     >
-      <form onSubmit={handleSubmit} noValidate className="grid gap-6 lg:grid-cols-5">
-        <div className="min-w-0 lg:col-span-3">
-          <CameraPreview
-            quality={draft.quality}
-            deviceId={deviceId}
-            onDeviceIdChange={setDeviceId}
-            micEnabled={micEnabled}
-            onMicEnabledChange={setMicEnabled}
-            filterId={filterId}
-            onFilterIdChange={setFilterId}
-            onReadyChange={setCameraReady}
-          />
-          <p className="mt-3 text-[11px] leading-relaxed text-white/35">
-            แนะนำให้ไลฟ์จากคอมพิวเตอร์ — การไลฟ์จากเบราว์เซอร์บนมือถืออาจใช้งานไม่ได้ในบางเครื่อง
-          </p>
-        </div>
-
-        <div className="min-w-0 lg:col-span-2">
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur-xl">
-            <GoLiveSetupForm
-              value={draft}
-              onChange={setDraft}
-              errors={showErrors ? errors : {}}
-              quota={quota}
-              quotaLoading={quotaLoading}
-              blockedReason={blockedReason}
-              submitting={submitting}
-              cameraReady={cameraReady}
-              submitError={submitError}
+      {quotaLoading || platform.loading ? (
+        <div className="h-96 animate-pulse rounded-2xl border border-white/10 bg-white/5" />
+      ) : goliveBlock ? (
+        <QuotaBlockedNotice
+          kind={goliveBlock.kind}
+          title={goliveBlock.title}
+          message={goliveBlock.message}
+          showUpgrade={goliveBlock.showUpgrade}
+        />
+      ) : (
+        <form onSubmit={handleSubmit} noValidate className="grid gap-6 lg:grid-cols-5">
+          <div className="min-w-0 lg:col-span-3">
+            <CameraPreview
+              quality={effectiveQuality}
+              deviceId={deviceId}
+              onDeviceIdChange={setDeviceId}
+              micEnabled={micEnabled}
+              onMicEnabledChange={setMicEnabled}
+              filterId={filterId}
+              onFilterIdChange={setFilterId}
+              onReadyChange={setCameraReady}
             />
+            <p className="mt-3 text-[11px] leading-relaxed text-white/35">
+              แนะนำให้ไลฟ์จากคอมพิวเตอร์ — การไลฟ์จากเบราว์เซอร์บนมือถืออาจใช้งานไม่ได้ในบางเครื่อง
+            </p>
           </div>
-        </div>
-      </form>
+
+          <div className="min-w-0 lg:col-span-2">
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur-xl">
+              <GoLiveSetupForm
+                // The clamped quality is what the select shows; onChange still
+                // writes the creator's own pick back to the draft, so a
+                // 'degraded' that clears gives them their 720p back.
+                value={{ ...draft, quality: effectiveQuality }}
+                onChange={setDraft}
+                errors={showErrors ? errors : {}}
+                quota={quota}
+                quotaLoading={quotaLoading}
+                maxQuality={maxQuality}
+                qualityDegraded={qualityDegraded}
+                submitting={submitting}
+                cameraReady={cameraReady}
+                submitError={submitError}
+              />
+            </div>
+          </div>
+        </form>
+      )}
     </CreatorPageShell>
   );
 }

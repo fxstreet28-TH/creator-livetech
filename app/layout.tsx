@@ -1,6 +1,7 @@
 import ReactDOM from "react-dom";
 import type { Metadata, Viewport } from "next";
 import { FeedbackWidget } from "@/components/feedback/FeedbackWidget";
+import { KillSwitchBanner } from "@/components/platform/KillSwitchBanner";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -45,6 +46,10 @@ export default function RootLayout({
   return (
     <html lang="th">
       <body>
+        {/* First in the body and fixed to the top: it outranks every page's own
+            chrome, which is the point — it is the platform talking, not a
+            screen. Renders nothing while the budget status is 'normal'. */}
+        <KillSwitchBanner />
         {children}
         {/* Global, and last in the body so its fixed layers stack over the page
             without needing a z-index above the app's own. Renders nothing at
