@@ -359,8 +359,15 @@ export async function fetchFollowedCreatorIds(supabase: SupabaseClient): Promise
 /**
  * Sessions that are on air right now, most-watched first.
  *
- * Empty until Day 7-8 ships live streaming — `live_sessions` has no rows at
- * all today. Callers hide their section rather than render an empty one.
+ * `live_sessions_public_active_read` covers 'waiting' and 'live' for public
+ * sessions, so this needs no new policy — but it also means a gated live never
+ * appears here, exactly as a gated post never appears in the video feed.
+ *
+ * Callers hide their section rather than render an empty one.
+ *
+ * TODO(post-launch): a session whose broadcaster closed the tab without
+ * pressing "จบไลฟ์" stays 'waiting'/'live' forever and keeps showing here.
+ * Only live-end-session closes a row today; a reaper needs to exist.
  */
 export async function fetchLiveSessions(
   supabase: SupabaseClient,
@@ -372,7 +379,12 @@ export async function fetchLiveSessions(
       `id, creator_id, room_name, title, current_viewer_count, cover_image_url,
        access_level, creators ( id, handle, display_name, category )`,
     )
-    .eq('status', 'live')
+    // 'waiting' as well as 'live': live-create-session inserts the row as
+    // 'waiting' and the backend never promotes it — only the broadcaster does
+    // (markSessionLive in lib/live/api.ts), and that write is best-effort. A
+    // feed filtered on 'live' alone would hide a session that is genuinely on
+    // air whenever that one UPDATE is refused or has not landed yet.
+    .in('status', ['live', 'waiting'])
     .order('current_viewer_count', { ascending: false })
     .limit(limit);
 
@@ -407,6 +419,34 @@ export async function fetchLiveSessions(
     }),
     error: null,
   };
+}
+
+/**
+ * One creator's identity, for a screen that has a creator_id and nothing else
+ * — the live watch page, which reads `live_sessions` and gets no embed.
+ *
+ * Same two-source merge as the feed cards (resolveCreatorSummary): the
+ * `creators` row for what it has, `creator_profiles` on top for what it
+ * actually fills in. Both reads are allowed to fail to null — a live with an
+ * unnamed creator still plays, and the display helpers already render that
+ * case (see components/viewer/creatorDisplay).
+ */
+export async function fetchCreatorSummary(
+  supabase: SupabaseClient,
+  creatorId: string,
+): Promise<CreatorSummary> {
+  const [creator, profiles] = await Promise.all([
+    supabase.from('creators').select('id, handle, display_name, category').eq('id', creatorId).maybeSingle(),
+    fetchProfiles(supabase, [creatorId]),
+  ]);
+
+  if (creator.error) console.error('[publicFeed] creators read failed', creator.error);
+
+  return resolveCreatorSummary(
+    creatorId,
+    (creator.data as Record<string, unknown> | null) ?? null,
+    profiles.get(creatorId),
+  );
 }
 
 /**
