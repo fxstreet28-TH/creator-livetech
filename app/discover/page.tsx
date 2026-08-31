@@ -1,22 +1,24 @@
 'use client';
 
 /**
- * /discover — the public feed.
+ * /discover — the feed.
  *
- * No auth gate, by design: an anonymous visitor arriving from a shared link
- * has to be able to browse. That is also why this page is NOT under
- * app/dashboard — DashboardChrome runs useRequireAuth and would bounce them to
- * /login. The trade-off is that the sidebar is absent here; the shell renders
- * a "กลับแดชบอร์ด" link so a signed-in visitor can get back to it.
+ * Login required. The product decision is that every viewer flow is
+ * authenticated, and the backend now enforces it: the feed_posts_preview_read
+ * and creators_public_read policies are scoped to `authenticated`, so an
+ * anonymous visitor would only ever see an empty page. The gate turns that
+ * into a redirect to /login?redirect=/discover instead.
  *
- * Only the "กำลังติดตาม" tab needs a session, and it asks for one in place
- * rather than gating the route.
+ * The page still sits outside app/dashboard: DashboardChrome carries the
+ * sidebar and a different frame, and these pages paint their own via
+ * ViewerPageShell. The shell renders a "กลับแดชบอร์ด" link to get back.
  */
 
 import { Suspense, useCallback, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Loader2 } from 'lucide-react';
 import { useDashboardUser } from '@/lib/hooks/useDashboardUser';
+import { AuthPending, useRequireAuth } from '@/lib/hooks/useRequireAuth';
 import { useLiveSessions } from '@/lib/hooks/useLiveSessions';
 import { usePublicFeed } from '@/lib/hooks/usePublicFeed';
 import { FeedEmptyState } from '@/components/viewer/FeedEmptyState';
@@ -26,6 +28,9 @@ import { PublicFeedGrid } from '@/components/viewer/PublicFeedGrid';
 import { ViewerPageShell } from '@/components/viewer/ViewerPageShell';
 
 export default function DiscoverPage() {
+  const { ready } = useRequireAuth();
+  if (!ready) return <AuthPending />;
+
   return (
     <ViewerPageShell
       title="ค้นพบเนื้อหา"

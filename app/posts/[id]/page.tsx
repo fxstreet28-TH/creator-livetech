@@ -1,14 +1,17 @@
 /**
- * /posts/[id] — the public post detail.
+ * /posts/[id] — the post detail.
  *
  * A Server Component wrapper around a client view, purely so
  * `generateStaticParams` can be exported: the Capacitor build runs
  * `output: 'export'`, and Next.js refuses to build a dynamic segment without
  * it. Nothing here reads cookies or any other server-only API, so the export
  * still resolves.
+ *
+ * Login required, like every viewer route: the gate is PostDetailGuard, which
+ * has to be a separate client module because this file cannot be one.
  */
 
-import { PublicPostView } from '@/components/viewer/PublicPostView';
+import { PostDetailGuard } from './PostDetailGuard';
 
 /**
  * An EMPTY array counts as "missing" and fails the export build, so returning
@@ -32,5 +35,5 @@ export default async function PublicPostPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  return <PublicPostView postId={id} />;
+  return <PostDetailGuard postId={id} />;
 }
