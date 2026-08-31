@@ -23,6 +23,7 @@
     "canvas-confetti": "^1.9.4",
     "framer-motion": "^13.0.0",
     "libphonenumber-js": "^1.13.10",
+    "livekit-client": "^2.22.1",
     "lucide-react": "^1.29.0",
     "next": "16.2.6",
     "react": "19.2.6",
