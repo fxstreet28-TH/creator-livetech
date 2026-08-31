@@ -70,6 +70,10 @@ export const NAV_ITEMS: NavItem[] = [
 export const CREATOR_NAV_ITEMS: NavItem[] = [
   { label: 'อัปโหลดวิดีโอ', href: '/creator/upload', icon: Upload },
   { label: 'โพสต์ของฉัน', href: '/creator/posts', icon: ListVideo },
+  // Distinct from the viewer-side 'กำลังไลฟ์' (/live) above: that is where you
+  // watch, this is where you broadcast. isNavItemActive matches on a `/`
+  // boundary, so /creator/live never lights up /live and vice versa.
+  { label: 'ไลฟ์สด', href: '/creator/live', icon: Radio, live: true },
 ];
 
 /** Five most-used destinations for the mobile bottom bar. */
