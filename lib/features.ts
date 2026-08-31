@@ -23,3 +23,20 @@
  */
 export const BUYBACK_USER_ENABLED =
   process.env.NEXT_PUBLIC_BUYBACK_USER_ENABLED === 'true';
+
+/**
+ * Pay-per-view as an option on the creator upload form.
+ *
+ * Off until the backend can store a PPV price. `content-request-video-upload`
+ * accepts `ppv_price_stars` in its request type but never writes it: it
+ * creates no `ppv_posts` row, so `feed_posts.ppv_post_id` stays NULL — and the
+ * `feed_posts_ppv_unlocked_read` policy requires a non-null `ppv_post_id`,
+ * while `content-get-playback-url` refuses any 'ppv' post without one. A
+ * creator who chose PPV today would spend a video from their monthly quota on
+ * a post that no viewer can watch, unlock, or pay for, with the price they
+ * typed silently dropped.
+ *
+ * The UI is built and behind this flag rather than absent, so enabling PPV is
+ * an env change once the backend writes the ppv_posts row.
+ */
+export const CREATOR_PPV_ENABLED = process.env.NEXT_PUBLIC_CREATOR_PPV_ENABLED === 'true';
