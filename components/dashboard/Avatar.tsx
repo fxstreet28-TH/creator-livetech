@@ -20,7 +20,8 @@ export function Avatar({ name, src, size = 32, ring = false }: AvatarProps) {
       style={{ width: size, height: size, fontSize: Math.round(size * 0.42) }}
     >
       {src ? (
-        // Remote DiceBear SVGs — plain img avoids next/image remote config.
+        // Remote avatars (creator_profiles.avatar_url) — plain img avoids
+        // next/image remote config, which the Capacitor build disables anyway.
         // eslint-disable-next-line @next/next/no-img-element
         <img src={src} alt={name} width={size} height={size} className="h-full w-full object-cover" />
       ) : (
