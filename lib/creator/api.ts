@@ -221,8 +221,8 @@ async function invokeContent<T>(
 /**
  * Reserve a Bunny Stream slot and create the draft feed_posts row.
  *
- * The response carries upload credentials — see the SECURITY note on
- * UploadRequestResponse.upload_headers. Do not log the resolved value.
+ * The response carries a per-video upload signature — see the SECURITY note
+ * on UploadRequestResponse.tus_headers. Do not log the resolved value.
  */
 export function requestVideoUpload(
   supabase: SupabaseClient,

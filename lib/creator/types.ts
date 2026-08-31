@@ -121,27 +121,69 @@ export interface UploadRequestPayload {
   scheduled_publish_at?: string;
 }
 
-/** 200 response from content-request-video-upload. */
+/**
+ * Headers Bunny's TUS endpoint authenticates the upload with.
+ *
+ * A `type` rather than an `interface` on purpose: tus-js-client takes
+ * `Record<string, string>`, and only a type alias is assignable to it.
+ *
+ * The signature is SHA256(libraryId + apiKey + expire + videoId) computed on
+ * the backend, so it authorises exactly one video until `AuthorizationExpire`
+ * passes — it is not the library API key and cannot read, list or delete
+ * anything. It is still a credential for that one upload: do not log it, do
+ * not put it in a URL, and do not reuse it after a failure (request a fresh
+ * one instead — see the retry path in app/creator/upload/page.tsx).
+ */
+export type TusUploadHeaders = {
+  /** SHA256(libraryId + apiKey + expire + videoId), hex. */
+  AuthorizationSignature: string;
+  /** Unix seconds, as a string. ~1 hour out. */
+  AuthorizationExpire: string;
+  LibraryId: string;
+  /** Same value as `video_guid`. */
+  VideoId: string;
+};
+
+/** TUS `Upload-Metadata` entries Bunny reads. Also a type alias, same reason. */
+export type TusUploadMetadata = {
+  /** The file's MIME type, e.g. 'video/mp4'. */
+  filetype: string;
+  /** Shown in the Bunny dashboard, not to viewers. */
+  title: string;
+};
+
+/** `quota_details` on a successful upload request. */
+export interface UploadQuotaDetails {
+  videos_used: number;
+  videos_limit: number;
+  /** ISO timestamp for the start of next month, Asia/Bangkok. */
+  resets_at: string;
+}
+
+/**
+ * 200 response from content-request-video-upload (v5+).
+ *
+ * v4 returned `upload_url` + `upload_method` + `upload_headers`, and
+ * `upload_headers.AccessKey` was the Bunny Stream *library* API key — a
+ * credential with read and delete rights over every creator's video, handed
+ * to the browser on every upload. v5 replaces all three fields with the TUS
+ * trio below, whose signature is scoped to one video and expires. The old
+ * fields are gone from this type deliberately: nothing can read them, so no
+ * code path can quietly go back to the leaking one.
+ */
 export interface UploadRequestResponse {
   /** The draft feed_posts row. */
   post_id: string;
   /** Bunny Stream video GUID. The brief calls this `video_uid`. */
   video_guid: string;
-  /** Bunny Stream video endpoint. PUT the raw file here. */
-  upload_url: string;
-  upload_method: 'PUT';
-  /**
-   * Send these verbatim and do not add to them.
-   *
-   * SECURITY: the deployed backend puts the Bunny Stream library API key in
-   * here, so this object is a credential. Never log it, never persist it,
-   * never put it in a URL. Flagged to the backend owner — the fix is a
-   * per-video presigned TUS/PUT signature rather than the library key.
-   */
-  upload_headers: Record<string, string>;
+  /** Bunny's TUS creation endpoint, e.g. https://video.bunnycdn.com/tusupload */
+  tus_upload_endpoint: string;
+  /** SECURITY: see TusUploadHeaders. Send verbatim, never log. */
+  tus_headers: TusUploadHeaders;
+  tus_metadata: TusUploadMetadata;
   playback_hls_url: string;
   thumbnail_url: string;
-  quota_details?: Record<string, unknown> | null;
+  quota_details: UploadQuotaDetails;
 }
 
 /** 200 response from content-get-playback-url when the caller is entitled. */

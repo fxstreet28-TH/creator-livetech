@@ -64,7 +64,7 @@ export interface CreateLiveResponse {
    *
    * SECURITY: this is a credential for the room. Never log it, never put it in
    * a URL, never persist it — same contract as UploadRequestResponse
-   * .upload_headers in lib/creator/types.ts. A broadcast that outlives the
+   * .tus_headers in lib/creator/types.ts. A broadcast that outlives the
    * token needs a fresh one from a fresh call, not a stored copy.
    */
   access_token: string;
