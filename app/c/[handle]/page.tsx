@@ -5,9 +5,12 @@
  * Server Component wrapper for the same reason as /posts/[id]:
  * `generateStaticParams` cannot be exported from a 'use client' module, and
  * the Capacitor `output: 'export'` build requires it on every dynamic segment.
+ *
+ * Login required, like every viewer route: the gate is CreatorProfileGuard,
+ * which has to be a separate client module because this file cannot be one.
  */
 
-import { CreatorProfilePlaceholder } from '@/components/viewer/CreatorProfilePlaceholder';
+import { CreatorProfileGuard } from './CreatorProfileGuard';
 
 /** See the note in app/posts/[id]/page.tsx — an empty array fails the export. */
 export function generateStaticParams() {
@@ -20,5 +23,5 @@ export default async function CreatorProfilePage({
   params: Promise<{ handle: string }>;
 }) {
   const { handle } = await params;
-  return <CreatorProfilePlaceholder handle={decodeURIComponent(handle)} />;
+  return <CreatorProfileGuard handle={decodeURIComponent(handle)} />;
 }
