@@ -585,3 +585,76 @@
   .animate-pulse { animation: none; opacity: 0.65; }
   .animate-spin  { animation-duration: 2.4s; }
 }
+
+/* AURUM Live — floating emoji reactions (Day 8.5).
+
+   CSS keyframes rather than a JS animation loop, deliberately: up to 50 of
+   these run at once over a video the machine is already encoding, and a
+   requestAnimationFrame loop writing 50 transforms per frame competes with the
+   encoder for the main thread. Keyframed transform + opacity stay on the
+   compositor, so the broadcast keeps its frame rate.
+
+   The rise is expressed as translateY(-100%) of the item, and the item is the
+   full height of the overlay with the emoji sitting at its bottom edge — so
+   moving it up by its own height carries the emoji from the bottom of the
+   video to the top, whatever size the player happens to be. The horizontal
+   drift is a four-point sine, its amplitude set per emoji as --reaction-drift.
+
+   Two elements because there are two transforms: the outer one travels, the
+   inner one does the pop. Nesting them keeps both on the compositor instead of
+   making one overwrite the other. */
+.aurum-reaction {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3rem;
+  margin-left: -1.5rem;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  will-change: transform;
+  animation: aurum-reaction-rise 3s linear forwards;
+}
+@keyframes aurum-reaction-rise {
+  0%   { transform: translate3d(0, 0, 0); }
+  25%  { transform: translate3d(var(--reaction-drift, 0px), -25%, 0); }
+  50%  { transform: translate3d(0, -50%, 0); }
+  75%  { transform: translate3d(calc(var(--reaction-drift, 0px) * -1), -75%, 0); }
+  100% { transform: translate3d(0, -100%, 0); }
+}
+
+.aurum-reaction__emoji {
+  font-size: 28px;
+  line-height: 1;
+  /* The video underneath can be any colour, and an emoji on a bright frame
+     disappears without this. */
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.55));
+  will-change: transform, opacity;
+  animation: aurum-reaction-pop 3s ease-out forwards;
+}
+/* 0.8 -> 1.2 -> 1.0 inside the first 300ms (10% of the 3s rise) is the pop
+   that makes a tap feel like it did something; the fade is the last second. */
+@keyframes aurum-reaction-pop {
+  0%    { transform: scale(0.8); opacity: 0.85; }
+  3.5%  { transform: scale(1.2); opacity: 1; }
+  10%   { transform: scale(1); opacity: 1; }
+  66.6% { transform: scale(1); opacity: 1; }
+  100%  { transform: scale(1); opacity: 0; }
+}
+
+/* Reduced motion: the reaction still has to be visible — it is the only
+   feedback a tap gets, and silently dropping it reads as a broken button — so
+   it holds its place and fades instead of flying. Same reasoning as the
+   spinner further up, which is slowed rather than stopped. */
+@media (prefers-reduced-motion: reduce) {
+  .aurum-reaction { animation: aurum-reaction-hold 3s linear forwards; }
+  .aurum-reaction__emoji { animation: aurum-reaction-fade 3s linear forwards; }
+}
+@keyframes aurum-reaction-hold {
+  0%, 100% { transform: translate3d(0, -35%, 0); }
+}
+@keyframes aurum-reaction-fade {
+  0%   { opacity: 1; }
+  60%  { opacity: 1; }
+  100% { opacity: 0; }
+}
