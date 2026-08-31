@@ -136,6 +136,12 @@ export function PostEditModal({ post, onClose, onSaved }: PostEditModalProps) {
     }
 
     const description = metadata.description.trim();
+
+    // While the flag is off the PPV control is inert, so a 'ppv' value here
+    // can only be the one the post already carried — preserved rather than
+    // silently downgraded to 'subscribers' on an unrelated title edit.
+    const accessLevel =
+      !CREATOR_PPV_ENABLED && metadata.visibility === 'ppv' ? post.access_level : metadata.visibility;
     const { error: updateError } = await supabase
       .from('feed_posts')
       .update({
@@ -146,7 +152,7 @@ export function PostEditModal({ post, onClose, onSaved }: PostEditModalProps) {
         // ppv_price_stars is deliberately absent: no such column exists, and
         // PPV stays behind CREATOR_PPV_ENABLED until the backend can store a
         // price on ppv_posts.
-        access_level: CREATOR_PPV_ENABLED ? metadata.visibility : toVisibilityWithoutPpv(metadata.visibility),
+        access_level: accessLevel,
       })
       .eq('id', post.id);
 
@@ -238,9 +244,4 @@ export function PostEditModal({ post, onClose, onSaved }: PostEditModalProps) {
       </motion.div>
     </motion.div>
   );
-}
-
-/** Belt and braces: PPV must not reach the database while the flag is off. */
-function toVisibilityWithoutPpv(visibility: CreatorVisibility): CreatorVisibility {
-  return visibility === 'ppv' ? 'subscribers' : visibility;
 }
