@@ -9,6 +9,7 @@ import {
   Settings,
   Upload,
   ListVideo,
+  Gauge,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -74,6 +75,9 @@ export const CREATOR_NAV_ITEMS: NavItem[] = [
   // watch, this is where you broadcast. isNavItemActive matches on a `/`
   // boundary, so /creator/live never lights up /live and vice versa.
   { label: 'ไลฟ์สด', href: '/creator/live', icon: Radio, live: true },
+  // Last in the group on purpose: it is where a creator goes after one of the
+  // three above has told them they cannot do something, not a place to start.
+  { label: 'ดูโควตา', href: '/creator/quota', icon: Gauge },
 ];
 
 /** Five most-used destinations for the mobile bottom bar. */
