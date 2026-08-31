@@ -26,6 +26,7 @@ import { CREATOR_PPV_ENABLED } from '@/lib/features';
 import { createLiveSession, endLiveSession, fetchLiveQuota, thaiForQuotaRefusal } from '@/lib/live/api';
 import type { BroadcastQuality, EndLiveResponse, LiveQuota } from '@/lib/live/types';
 import { DEFAULT_QUALITY, isQualityAllowed } from '@/lib/live/constants';
+import { DEFAULT_FILTER_ID, type FilterId } from '@/lib/live/cameraFilters';
 import type { Room } from '@/lib/live/livekitClient';
 import { CreatorPageShell } from '@/components/creator/CreatorPageShell';
 import { CameraPreview } from '@/components/live/CameraPreview';
@@ -101,6 +102,15 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
   const [deviceId, setDeviceId] = useState('');
   const [micEnabled, setMicEnabled] = useState(true);
   const [cameraReady, setCameraReady] = useState(false);
+  /**
+   * The camera look, held here rather than in either component that shows it.
+   *
+   * CameraPreview unmounts the moment the broadcast starts — it has to, it is
+   * holding the camera — so a look chosen on the setup screen would be lost on
+   * the way to CreatorBroadcaster if it lived down there. This is the shared
+   * state the brief asks for; it is one useState, not a store.
+   */
+  const [filterId, setFilterId] = useState<FilterId>(DEFAULT_FILTER_ID);
 
   const [quota, setQuota] = useState<LiveQuota | null>(null);
   const [quotaLoading, setQuotaLoading] = useState(true);
@@ -269,6 +279,8 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
         room={room}
         videoDeviceId={deviceId || undefined}
         micEnabled={micEnabled}
+        filterId={filterId}
+        onFilterIdChange={setFilterId}
         creatorName={creatorName}
         viewers={viewers}
         elapsedSeconds={elapsedSeconds}
@@ -316,6 +328,8 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
             onDeviceIdChange={setDeviceId}
             micEnabled={micEnabled}
             onMicEnabledChange={setMicEnabled}
+            filterId={filterId}
+            onFilterIdChange={setFilterId}
             onReadyChange={setCameraReady}
           />
           <p className="mt-3 text-[11px] leading-relaxed text-white/35">
@@ -355,6 +369,8 @@ function BroadcastingLayout({
   room,
   videoDeviceId,
   micEnabled,
+  filterId,
+  onFilterIdChange,
   creatorName,
   viewers,
   elapsedSeconds,
@@ -369,6 +385,9 @@ function BroadcastingLayout({
   videoDeviceId?: string;
   /** The mic toggle's state when the creator pressed go-live. */
   micEnabled: boolean;
+  /** The look picked on the setup screen, still changeable mid-broadcast. */
+  filterId: FilterId;
+  onFilterIdChange: (id: FilterId) => void;
   creatorName: string;
   viewers: { current: number; peak: number };
   elapsedSeconds: number;
@@ -390,6 +409,8 @@ function BroadcastingLayout({
               videoDeviceId={videoDeviceId}
               micEnabled={micEnabled}
               elapsedSeconds={elapsedSeconds}
+              filterId={filterId}
+              onFilterIdChange={onFilterIdChange}
               onRoomChange={onRoomChange}
               onViewerCountChange={onViewerCountChange}
             />

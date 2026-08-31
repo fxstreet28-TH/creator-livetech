@@ -20,6 +20,8 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Camera, Mic, MicOff, RefreshCw } from 'lucide-react';
 import type { BroadcastQuality } from '@/lib/live/types';
 import { resolutionFor, thaiForMediaError } from '@/lib/live/livekitClient';
+import { filterCssFor, type FilterId } from '@/lib/live/cameraFilters';
+import { CameraFilterSelector } from './CameraFilterSelector';
 
 interface CameraPreviewProps {
   quality: BroadcastQuality;
@@ -28,6 +30,13 @@ interface CameraPreviewProps {
   onDeviceIdChange: (deviceId: string) => void;
   micEnabled: boolean;
   onMicEnabledChange: (enabled: boolean) => void;
+  /**
+   * The chosen look. Lifted to the page rather than held here so it survives
+   * the swap to the broadcasting state — this component unmounts at that
+   * moment (it has to; it is holding the camera the broadcast needs).
+   */
+  filterId: FilterId;
+  onFilterIdChange: (id: FilterId) => void;
   /** Told whether a usable camera track is live, so the form can gate its CTA. */
   onReadyChange?: (ready: boolean) => void;
 }
@@ -38,6 +47,8 @@ export function CameraPreview({
   onDeviceIdChange,
   micEnabled,
   onMicEnabledChange,
+  filterId,
+  onFilterIdChange,
   onReadyChange,
 }: CameraPreviewProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -187,6 +198,9 @@ export function CameraPreview({
           muted
           aria-label="ภาพตัวอย่างจากกล้อง"
           className="h-full w-full object-cover"
+          // Local rendering only — the MediaStreamTrack underneath is
+          // untouched, and so is what LiveKit will publish from it.
+          style={{ filter: filterCssFor(filterId) }}
         />
 
         {starting && !error && (
@@ -237,6 +251,8 @@ export function CameraPreview({
             </select>
           </div>
         )}
+
+        <CameraFilterSelector value={filterId} onChange={onFilterIdChange} />
 
         <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-3">
           <button

@@ -26,8 +26,6 @@ import {
 interface CameraFilterSelectorProps {
   value: FilterId;
   onChange: (id: FilterId) => void;
-  /** Hides the legend where the surrounding UI already carries the title. */
-  hideLegend?: boolean;
   disabled?: boolean;
   className?: string;
 }
@@ -35,7 +33,6 @@ interface CameraFilterSelectorProps {
 export function CameraFilterSelector({
   value,
   onChange,
-  hideLegend = false,
   disabled = false,
   className = '',
 }: CameraFilterSelectorProps) {
@@ -43,9 +40,7 @@ export function CameraFilterSelector({
 
   return (
     <fieldset disabled={disabled} className={`min-w-0 ${className}`}>
-      <legend className={hideLegend ? 'sr-only' : 'mb-2 text-sm font-medium text-white/75'}>
-        เลือกลุค
-      </legend>
+      <legend className="mb-2 text-sm font-medium text-white/75">เลือกลุค</legend>
 
       <div className="flex flex-wrap gap-2">
         {FILTER_ORDER.map((id) => {
