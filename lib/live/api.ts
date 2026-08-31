@@ -20,7 +20,6 @@
 
 import { FunctionsHttpError, type SupabaseClient } from '@supabase/supabase-js';
 import type {
-  BroadcastQuality,
   CreateLiveRequest,
   CreateLiveResponse,
   EndLiveResponse,
@@ -412,7 +411,11 @@ export async function persistViewerCounts(
       updated_at: new Date().toISOString(),
     })
     .eq('id', sessionId)
-    .lte('peak_viewer_count', peak);
+    // Never lower a stored peak, and never touch a session that has already
+    // been closed — a write still in flight when "จบไลฟ์" lands would
+    // otherwise put a live viewer count back on an ended row.
+    .lte('peak_viewer_count', peak)
+    .in('status', ['waiting', 'live']);
 
   if (error) console.error('[live/api] persistViewerCounts failed', error);
 }

@@ -134,20 +134,33 @@ export function ViewerLivePlayer({
       if (room.remoteParticipants.size > 0) setPhase('watching');
     }
 
+    const onReconnecting = () => setPhase('reconnecting');
+    const onReconnected = () => setPhase('watching');
+    const onAudioStatus = () => setAudioBlocked(!room.canPlaybackAudio);
+
     room.on(RoomEvent.TrackSubscribed, onSubscribed);
     room.on(RoomEvent.TrackUnsubscribed, onUnsubscribed);
     room.on(RoomEvent.ParticipantConnected, refreshViewers);
     room.on(RoomEvent.ParticipantDisconnected, refreshViewers);
-    room.on(RoomEvent.Reconnecting, () => setPhase('reconnecting'));
-    room.on(RoomEvent.Reconnected, () => setPhase('watching'));
-    room.on(RoomEvent.AudioPlaybackStatusChanged, () => setAudioBlocked(!room.canPlaybackAudio));
+    room.on(RoomEvent.Reconnecting, onReconnecting);
+    room.on(RoomEvent.Reconnected, onReconnected);
+    room.on(RoomEvent.AudioPlaybackStatusChanged, onAudioStatus);
     room.on(RoomEvent.Disconnected, onDisconnected);
 
     void connect();
 
     return () => {
       cancelled = true;
-      room.removeAllListeners();
+      // By reference rather than removeAllListeners() — see the same note in
+      // CreatorBroadcaster.
+      room.off(RoomEvent.TrackSubscribed, onSubscribed);
+      room.off(RoomEvent.TrackUnsubscribed, onUnsubscribed);
+      room.off(RoomEvent.ParticipantConnected, refreshViewers);
+      room.off(RoomEvent.ParticipantDisconnected, refreshViewers);
+      room.off(RoomEvent.Reconnecting, onReconnecting);
+      room.off(RoomEvent.Reconnected, onReconnected);
+      room.off(RoomEvent.AudioPlaybackStatusChanged, onAudioStatus);
+      room.off(RoomEvent.Disconnected, onDisconnected);
       callbacks.current.onRoomChange(null);
       roomRef.current = null;
       container?.replaceChildren();

@@ -208,14 +208,17 @@ export function CreatorBroadcaster({
       }
     }
 
+    const onReconnecting = () => setPhaseAndReport('reconnecting');
+    const onReconnected = () => {
+      setPhaseAndReport('live');
+      attachSelfView();
+    };
+
     room.on(RoomEvent.ParticipantConnected, refreshViewers);
     room.on(RoomEvent.ParticipantDisconnected, refreshViewers);
     room.on(RoomEvent.LocalTrackPublished, attachSelfView);
-    room.on(RoomEvent.Reconnecting, () => setPhaseAndReport('reconnecting'));
-    room.on(RoomEvent.Reconnected, () => {
-      setPhaseAndReport('live');
-      attachSelfView();
-    });
+    room.on(RoomEvent.Reconnecting, onReconnecting);
+    room.on(RoomEvent.Reconnected, onReconnected);
     room.on(RoomEvent.Disconnected, onDisconnected);
 
     void connect();
@@ -223,7 +226,16 @@ export function CreatorBroadcaster({
     return () => {
       cancelled = true;
       if (retryTimer) clearTimeout(retryTimer);
-      room.removeAllListeners();
+      // Each handler is removed by reference rather than with
+      // removeAllListeners(): the Room is an EventEmitter the SDK also hands
+      // to its own internals, and tearing down every listener on it is a
+      // bigger hammer than unsubscribing what this component subscribed.
+      room.off(RoomEvent.ParticipantConnected, refreshViewers);
+      room.off(RoomEvent.ParticipantDisconnected, refreshViewers);
+      room.off(RoomEvent.LocalTrackPublished, attachSelfView);
+      room.off(RoomEvent.Reconnecting, onReconnecting);
+      room.off(RoomEvent.Reconnected, onReconnected);
+      room.off(RoomEvent.Disconnected, onDisconnected);
       callbacks.current.onRoomChange(null);
       roomRef.current = null;
       void leaveRoom(room);
