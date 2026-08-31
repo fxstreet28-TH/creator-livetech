@@ -22,6 +22,8 @@ import {
   formatPostDateTime,
 } from '@/lib/creator/format';
 import { useCreatorPost } from '@/lib/hooks/useCreatorPost';
+import { aspectClassFor } from '@/lib/viewer/publicFeed';
+import { PublicVideoPlayer } from '@/components/viewer/PublicVideoPlayer';
 import type { CreatorPost } from '@/lib/creator/types';
 import { PrismStar } from '@/components/star/PrismStar';
 import { CreatorPageShell } from './CreatorPageShell';
@@ -212,11 +214,10 @@ function Stat({ icon, label, value }: { icon: React.ReactNode; label: string; va
  * own post; and the manifest is only worth requesting once someone actually
  * wants to watch.
  *
- * The player is a bare <video src={hls}>: hls.js is not a dependency
- * (package.json checked) and adding one for a creator-side preview is not
- * Day 3-4's call — Safari and iOS play HLS natively, and browsers that cannot
- * are told so instead of being shown a silently dead player.
- * TODO(day-5): replace with the real player component.
+ * The player itself is <PublicVideoPlayer>, the same component the viewer
+ * screens use — a creator previewing their own post and a viewer watching it
+ * should not be two implementations that drift. It is still a native <video>
+ * underneath (hls.js is not a dependency); see that component for why.
  */
 function VideoSection({
   post,
@@ -228,8 +229,6 @@ function VideoSection({
   const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
   const [loadingUrl, setLoadingUrl] = useState(false);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
-  /** Set when the <video> itself gives up — see the note below the player. */
-  const [playbackUnsupported, setPlaybackUnsupported] = useState(false);
 
   const status = post.video_status;
 
@@ -299,58 +298,47 @@ function VideoSection({
     setPlaybackUrl(data.playback_url);
   }
 
+  if (playbackUrl) {
+    return (
+      <PublicVideoPlayer
+        src={playbackUrl}
+        poster={post.thumbnail_url}
+        aspectRatio={post.aspect_ratio}
+        title={post.title}
+        // The creator has already tapped play to get here, so starting is
+        // what they asked for.
+        autoPlay
+      />
+    );
+  }
+
   return (
     <section className="overflow-hidden rounded-2xl border border-white/10 bg-black">
-      <div className="relative aspect-video w-full">
-        {playbackUrl ? (
-          <video
-            src={playbackUrl}
-            poster={post.thumbnail_url ?? undefined}
-            controls
-            autoPlay
-            playsInline
-            // Reported after the fact rather than predicted from
-            // canPlayType(): that probe needs `document`, which does not exist
-            // during the prerender pass, so branching on it would render one
-            // tree on the server and another on the client.
-            onError={() => setPlaybackUnsupported(true)}
-            className="h-full w-full bg-black"
-          />
-        ) : (
-          <>
-            {post.thumbnail_url && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={post.thumbnail_url} alt="" className="h-full w-full object-cover" />
-            )}
-            <button
-              type="button"
-              onClick={play}
-              disabled={loadingUrl}
-              className="absolute inset-0 grid place-items-center bg-black/35 transition hover:bg-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
-              aria-label="เล่นวิดีโอ"
-            >
-              <span className="grid h-16 w-16 place-items-center rounded-full bg-white/15 backdrop-blur">
-                {loadingUrl ? (
-                  <Loader2 size={26} className="animate-spin text-white" aria-hidden />
-                ) : (
-                  <Play size={26} className="translate-x-0.5 text-white" aria-hidden />
-                )}
-              </span>
-            </button>
-          </>
+      <div className={`relative w-full ${aspectClassFor(post.aspect_ratio)}`}>
+        {post.thumbnail_url && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={post.thumbnail_url} alt="" className="h-full w-full object-cover" />
         )}
+        <button
+          type="button"
+          onClick={play}
+          disabled={loadingUrl}
+          className="absolute inset-0 grid place-items-center bg-black/35 transition hover:bg-black/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+          aria-label="เล่นวิดีโอ"
+        >
+          <span className="grid h-16 w-16 place-items-center rounded-full bg-white/15 backdrop-blur">
+            {loadingUrl ? (
+              <Loader2 size={26} className="animate-spin text-white" aria-hidden />
+            ) : (
+              <Play size={26} className="translate-x-0.5 text-white" aria-hidden />
+            )}
+          </span>
+        </button>
       </div>
 
       {playbackError && (
         <p role="alert" className="border-t border-white/10 px-4 py-3 text-sm text-rose-200">
           {playbackError}
-        </p>
-      )}
-
-      {playbackUnsupported && (
-        <p role="alert" className="border-t border-white/10 px-4 py-3 text-xs leading-relaxed text-white/50">
-          เบราว์เซอร์นี้ยังเล่นตัวอย่าง HLS ไม่ได้ — ลองเปิดด้วย Safari หรือบนมือถือ
-          ระบบเล่นวิดีโอเต็มรูปแบบจะมาในเร็ว ๆ นี้
         </p>
       )}
     </section>
