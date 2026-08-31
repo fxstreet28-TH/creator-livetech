@@ -7,6 +7,8 @@ import {
   Wallet,
   MessageCircle,
   Settings,
+  Upload,
+  ListVideo,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -50,6 +52,24 @@ export const NAV_ITEMS: NavItem[] = [
   { label: 'กระเป๋าเงิน', href: '/wallet', icon: Wallet },
   { label: 'ข้อความ', href: '/messages', icon: MessageCircle },
   { label: 'ตั้งค่า', href: '/settings', icon: Settings },
+];
+
+/**
+ * Creator Studio — shown only to a user who has a row in `creators`.
+ *
+ * Its own group under a heading rather than two more entries appended to
+ * NAV_ITEMS: these are authoring tools, not places to watch things, and a
+ * "อัปโหลดวิดีโอ" sitting directly under "ตั้งค่า" reads as another account
+ * setting. The group is gated by useCreatorProfile in <Sidebar>, so a viewer
+ * never sees a link to a page that would only tell them to apply.
+ *
+ * Deliberately NOT added to BOTTOM_NAV_ITEMS: the mobile bar is five fixed
+ * slots for everyone, and the creator screens live outside the dashboard
+ * chrome anyway (CreatorPageShell renders no bottom bar).
+ */
+export const CREATOR_NAV_ITEMS: NavItem[] = [
+  { label: 'อัปโหลดวิดีโอ', href: '/creator/upload', icon: Upload },
+  { label: 'โพสต์ของฉัน', href: '/creator/posts', icon: ListVideo },
 ];
 
 /** Five most-used destinations for the mobile bottom bar. */
