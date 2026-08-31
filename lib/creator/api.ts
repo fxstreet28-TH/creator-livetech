@@ -117,16 +117,9 @@ const QUOTA_CODES = new Set([
 ]);
 
 function thaiForError(code: string, message: string, status: number): ContentError {
-  if (code === 'quota_exceeded' || status === 403) {
-    const mapped = thaiForQuotaReason(message);
-    return {
-      code: mapped.code,
-      message: mapped.message,
-      detail: message,
-      status,
-      quotaRelated: QUOTA_CODES.has(mapped.code),
-    };
-  }
+  // Code-specific branches first: content-get-playback-url answers both
+  // 'not_published' and an un-entitled viewer with 403, and reading the status
+  // before the code would report either as a quota problem.
   if (code === 'video_not_ready') {
     return {
       code,
@@ -149,6 +142,16 @@ function thaiForError(code: string, message: string, status: number): ContentErr
       message: 'ระบบวิดีโอไม่ตอบสนอง กรุณาลองใหม่อีกครั้ง',
       detail: message,
       status,
+    };
+  }
+  if (code === 'quota_exceeded' || status === 403) {
+    const mapped = thaiForQuotaReason(message);
+    return {
+      code: mapped.code,
+      message: mapped.message,
+      detail: message,
+      status,
+      quotaRelated: QUOTA_CODES.has(mapped.code),
     };
   }
   if (status === 401) {
