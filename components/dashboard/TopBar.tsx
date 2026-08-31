@@ -44,7 +44,9 @@ export function TopBar({ displayName, email, avatarUrl, onOpenDrawer }: TopBarPr
   }
 
   return (
-    <header className="safe-top sticky top-0 z-30 flex h-[calc(4rem+env(safe-area-inset-top))] items-center gap-3 border-b border-white/6 bg-[#0a0a15]/85 px-4 backdrop-blur-md md:px-6">
+    // top offset, not 0: the kill-switch banner is fixed above everything, and
+    // --kill-switch-h is 0px unless it is on screen (see globals.css).
+    <header className="safe-top sticky top-[var(--kill-switch-h,0px)] z-30 flex h-[calc(4rem+env(safe-area-inset-top))] items-center gap-3 border-b border-white/6 bg-[#0a0a15]/85 px-4 backdrop-blur-md md:px-6">
       {/* Mobile hamburger */}
       <button
         type="button"

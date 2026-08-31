@@ -555,6 +555,21 @@
 .safe-mt { margin-top:    env(safe-area-inset-top); }
 .safe-mb { margin-bottom: env(safe-area-inset-bottom); }
 
+/* Kill-switch banner offset.
+
+   <KillSwitchBanner> is fixed to the top of the viewport at z-50 so it holds
+   while a page scrolls, which would otherwise put it on top of the app's own
+   header. It writes its measured height into --kill-switch-h while it is on
+   screen and removes the property when it goes away, so this padding and the
+   two calc()s in the dashboard chrome (TopBar's sticky top, the desktop
+   sidebar's top and height) all collapse to their old values at status
+   'normal' — which is almost always.
+
+   Unlayered for the same reason as the safe-area rules above: a Tailwind
+   utility must not outrank it and leave the banner covering the top bar. */
+:root { --kill-switch-h: 0px; }
+body { padding-top: var(--kill-switch-h); }
+
 /* react-international-phone — match AURUM purple focus ring + error state.
    Unlayered + !important so :focus reliably overrides the library's inline
    styles (inline styles set the resting border; these win on focus). */

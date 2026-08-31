@@ -18,6 +18,7 @@ import { Upload } from 'lucide-react';
 import { AuthPending, useRequireAuth } from '@/lib/hooks/useRequireAuth';
 import { useCreatorProfile } from '@/lib/hooks/useCreatorProfile';
 import { useCreatorQuota } from '@/lib/hooks/useCreatorQuota';
+import { usePlatformStatus } from '@/lib/hooks/usePlatformStatus';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
 import { requestVideoUpload, type ContentError } from '@/lib/creator/api';
 import { thaiForUploadError, uploadWithTus, UPLOAD_ABORTED } from '@/lib/creator/uploader';
@@ -29,6 +30,7 @@ import { formatDuration } from '@/lib/creator/format';
 import type { UploadRequestPayload } from '@/lib/creator/types';
 import { CREATOR_PPV_ENABLED } from '@/lib/features';
 import { describeUploadBlock } from '@/lib/creator/quota';
+import { describePlatformBlock } from '@/lib/platform/status';
 import { CreatorPageShell } from '@/components/creator/CreatorPageShell';
 import { QuotaBlockedNotice } from '@/components/creator/QuotaBlockedNotice';
 import { UploadDropzone, type SelectedVideo } from '@/components/creator/UploadDropzone';
@@ -45,6 +47,7 @@ export default function CreatorUploadPage() {
   const { ready } = useRequireAuth();
   const profile = useCreatorProfile();
   const quota = useCreatorQuota(profile.creatorId);
+  const platform = usePlatformStatus();
 
   const [video, setVideo] = useState<SelectedVideo | null>(null);
   const [metadata, setMetadata] = useState<PostMetadata>(EMPTY_METADATA);
@@ -70,7 +73,12 @@ export default function CreatorUploadPage() {
    * inability to read a counter. Same reasoning as the go-live form's
    * QuotaNotice.
    */
-  const quotaBlock = quota.snapshot ? describeUploadBlock(quota.snapshot) : null;
+  const quotaBlock =
+    // The platform kill switch outranks the creator's own quota: when the
+    // whole platform is closed, being under quota changes nothing, and the
+    // message that helps is the one about the platform.
+    describePlatformBlock(platform.status, 'upload') ??
+    (quota.snapshot ? describeUploadBlock(quota.snapshot) : null);
 
   // Uploading is the only phase worth guarding: before it there is nothing to
   // lose, and after it the bytes are already at Bunny. The listener is added
@@ -245,7 +253,7 @@ export default function CreatorUploadPage() {
         </Link>
       }
     >
-      {profile.loading || quota.loading ? (
+      {profile.loading || quota.loading || platform.loading ? (
         <div className="h-64 animate-pulse rounded-2xl border border-white/10 bg-white/5" />
       ) : !profile.creatorId ? (
         <NotACreatorNotice error={profile.error} />

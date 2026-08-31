@@ -21,8 +21,10 @@ import Link from 'next/link';
 import { Loader2 } from 'lucide-react';
 import { AuthPending, useRequireAuth } from '@/lib/hooks/useRequireAuth';
 import { useCreatorProfile } from '@/lib/hooks/useCreatorProfile';
+import { usePlatformStatus } from '@/lib/hooks/usePlatformStatus';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
 import { CREATOR_PPV_ENABLED } from '@/lib/features';
+import { describePlatformBlock } from '@/lib/platform/status';
 import { createLiveSession, describeGoliveBlock, endLiveSession, fetchLiveQuota } from '@/lib/live/api';
 import type { BroadcastQuality, EndLiveResponse, LiveQuota } from '@/lib/live/types';
 import { DEFAULT_QUALITY, isQualityAllowed } from '@/lib/live/constants';
@@ -94,6 +96,7 @@ export default function CreatorLivePage() {
 
 function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName: string }) {
   const router = useRouter();
+  const platform = usePlatformStatus();
 
   const [draft, setDraft] = useState<GoLiveDraft>(EMPTY_DRAFT);
   const [showErrors, setShowErrors] = useState(false);
@@ -313,7 +316,12 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
    * backend runs the same check and refuses in Thai if it has to, and being
    * unable to read a counter is not a reason to stop someone.
    */
-  const goliveBlock = quota ? describeGoliveBlock(quota) : null;
+  const goliveBlock =
+    // The platform kill switch outranks the creator's own quota, for the same
+    // reason as on /creator/upload. check_creator_can_golive refuses on these
+    // two statuses as well, but the view's message is the one ops can reword.
+    describePlatformBlock(platform.status, 'live') ??
+    (quota ? describeGoliveBlock(quota) : null);
 
   return (
     <CreatorPageShell
@@ -329,7 +337,7 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
         </Link>
       }
     >
-      {quotaLoading ? (
+      {quotaLoading || platform.loading ? (
         <div className="h-96 animate-pulse rounded-2xl border border-white/10 bg-white/5" />
       ) : goliveBlock ? (
         <QuotaBlockedNotice
