@@ -289,12 +289,6 @@ export function isStorageFull(snapshot: CreatorQuotaSnapshot): boolean {
   return snapshot.usage.storageGb >= snapshot.limits.storageQuotaGb;
 }
 
-/** True when today's live allowance is spent. */
-export function isLiveQuotaFull(snapshot: CreatorQuotaSnapshot): boolean {
-  const live = snapshot.live;
-  return live !== null && live.known && live.hoursUsedToday >= live.hoursLimitPerDay;
-}
-
 /**
  * True when the creator's own row has been throttled or suspended by the
  * backend, which refuses both uploads and live regardless of the counters.

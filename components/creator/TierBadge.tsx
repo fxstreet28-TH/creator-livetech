@@ -64,8 +64,3 @@ export function TierBadge({ tier, size = 'md', className = '' }: TierBadgeProps)
     </span>
   );
 }
-
-/** The plan's name for prose ("แพ็กเกจ Pro"). Same source as the badge. */
-export function tierLabel(tier: CreatorTier): string {
-  return (TIER_STYLES[tier] ?? TIER_STYLES.free).label;
-}

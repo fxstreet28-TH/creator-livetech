@@ -274,13 +274,9 @@ export async function fetchLiveQuota(
   };
 }
 
-/** Thai for a quota refusal read from the RPC rather than from a 403. */
-export function thaiForQuotaRefusal(reason: string | null): string {
-  return thaiForGoliveReason(reason ?? '').message;
-}
-
 /**
- * The same refusal, shaped for the full-page blocked state on /creator/live.
+ * A refusal read from the RPC rather than from a 403, shaped for the
+ * full-page blocked state on /creator/live.
  *
  * The three reasons want three different pages: a spent daily allowance is
  * answered by upgrading, a kill switch is answered by waiting, and a
