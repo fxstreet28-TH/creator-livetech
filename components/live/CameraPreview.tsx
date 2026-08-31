@@ -51,10 +51,14 @@ export function CameraPreview({
   const [attempt, setAttempt] = useState(0);
   const [level, setLevel] = useState(0);
 
-  // onReadyChange lands in the effect's dependency list, and a parent that
-  // passes an inline arrow would otherwise restart the camera on every render.
+  // onReadyChange would land in the camera effect's dependency list, and a
+  // parent passing an inline arrow would then restart the camera on every
+  // render. Kept in a ref, written in its own effect rather than during
+  // render, so the camera effect can depend on nothing but the device.
   const readyRef = useRef(onReadyChange);
-  readyRef.current = onReadyChange;
+  useEffect(() => {
+    readyRef.current = onReadyChange;
+  }, [onReadyChange]);
 
   useEffect(() => {
     let cancelled = false;
