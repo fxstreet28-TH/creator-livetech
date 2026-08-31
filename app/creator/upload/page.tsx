@@ -17,6 +17,7 @@ import Link from 'next/link';
 import { Upload } from 'lucide-react';
 import { AuthPending, useRequireAuth } from '@/lib/hooks/useRequireAuth';
 import { useCreatorProfile } from '@/lib/hooks/useCreatorProfile';
+import { useCreatorQuota } from '@/lib/hooks/useCreatorQuota';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
 import { requestVideoUpload, type ContentError } from '@/lib/creator/api';
 import { thaiForUploadError, uploadWithTus, UPLOAD_ABORTED } from '@/lib/creator/uploader';
@@ -27,7 +28,9 @@ import {
 import { formatDuration } from '@/lib/creator/format';
 import type { UploadRequestPayload } from '@/lib/creator/types';
 import { CREATOR_PPV_ENABLED } from '@/lib/features';
+import { describeUploadBlock } from '@/lib/creator/quota';
 import { CreatorPageShell } from '@/components/creator/CreatorPageShell';
+import { QuotaBlockedNotice } from '@/components/creator/QuotaBlockedNotice';
 import { UploadDropzone, type SelectedVideo } from '@/components/creator/UploadDropzone';
 import { UploadProgressCard, type UploadPhase } from '@/components/creator/UploadProgressCard';
 import {
@@ -41,6 +44,7 @@ import {
 export default function CreatorUploadPage() {
   const { ready } = useRequireAuth();
   const profile = useCreatorProfile();
+  const quota = useCreatorQuota(profile.creatorId);
 
   const [video, setVideo] = useState<SelectedVideo | null>(null);
   const [metadata, setMetadata] = useState<PostMetadata>(EMPTY_METADATA);
@@ -57,6 +61,16 @@ export default function CreatorUploadPage() {
   const errors: PostMetadataErrors = validateMetadata(metadata);
   const metadataValid = Object.keys(errors).length === 0;
   const canSubmit = video !== null && metadataValid && phase === null;
+
+  /**
+   * Why this creator cannot upload at all right now, if anything.
+   *
+   * A failed quota read is NOT a block: the backend runs the same check and
+   * refuses in Thai if it has to, so a creator is never stopped by our
+   * inability to read a counter. Same reasoning as the go-live form's
+   * QuotaNotice.
+   */
+  const quotaBlock = quota.snapshot ? describeUploadBlock(quota.snapshot) : null;
 
   // Uploading is the only phase worth guarding: before it there is nothing to
   // lose, and after it the bytes are already at Bunny. The listener is added
@@ -231,7 +245,7 @@ export default function CreatorUploadPage() {
         </Link>
       }
     >
-      {profile.loading ? (
+      {profile.loading || quota.loading ? (
         <div className="h-64 animate-pulse rounded-2xl border border-white/10 bg-white/5" />
       ) : !profile.creatorId ? (
         <NotACreatorNotice error={profile.error} />
@@ -249,6 +263,16 @@ export default function CreatorUploadPage() {
           onCancel={() => abortRef.current?.abort()}
           onRetry={retryFromScratch}
           onStartOver={phase === 'success' ? resetForNextVideo : startOver}
+        />
+      ) : quotaBlock ? (
+        // Checked after the progress card, so an upload that filled the last
+        // slot still shows its own success state instead of being replaced by
+        // the wall it just created.
+        <QuotaBlockedNotice
+          kind={quotaBlock.kind}
+          title={quotaBlock.title}
+          message={quotaBlock.message}
+          showUpgrade={quotaBlock.showUpgrade}
         />
       ) : (
         <form onSubmit={handleSubmit} noValidate className="grid gap-6 lg:grid-cols-5">

@@ -262,6 +262,23 @@ export function usageState(percent: number): UsageState {
   return 'ok';
 }
 
+/**
+ * Which wall a creator has hit. Named here rather than in the component that
+ * renders it, so the upload page, the live page and the notice component all
+ * agree on the vocabulary.
+ */
+export type QuotaBlockKind = 'videos' | 'storage' | 'live_hours' | 'account' | 'platform';
+
+export interface QuotaBlock {
+  kind: QuotaBlockKind;
+  /** Thai, renderable. */
+  title: string;
+  /** Thai, renderable. */
+  message: string;
+  /** False where paying more would not help. */
+  showUpgrade: boolean;
+}
+
 /** True when this creator cannot upload another video this month. */
 export function isVideoQuotaFull(snapshot: CreatorQuotaSnapshot): boolean {
   return snapshot.usage.videosUploaded >= snapshot.limits.maxVideosPerMonth;
@@ -284,6 +301,47 @@ export function isLiveQuotaFull(snapshot: CreatorQuotaSnapshot): boolean {
  */
 export function isAccountBlocked(snapshot: CreatorQuotaSnapshot): boolean {
   return snapshot.usage.status === 'throttled' || snapshot.usage.status === 'suspended';
+}
+
+/**
+ * Why this creator cannot start an upload right now, or null if they can.
+ *
+ * Mirrors the order `check_creator_can_upload` checks in, so the reason shown
+ * before the request is the reason the backend would have given after it. The
+ * two length/feature refusals it also has (video too long, long-form on a free
+ * tier) are deliberately not here: both depend on the file, which does not
+ * exist yet at gate time, and the dropzone already reports them per file.
+ */
+export function describeUploadBlock(snapshot: CreatorQuotaSnapshot): QuotaBlock | null {
+  if (isAccountBlocked(snapshot)) {
+    return {
+      kind: 'account',
+      title: 'บัญชีของคุณถูกจำกัดการอัปโหลดชั่วคราว',
+      message: 'กรุณาติดต่อทีมงานเพื่อตรวจสอบสถานะบัญชีของคุณ',
+      showUpgrade: false,
+    };
+  }
+  if (isVideoQuotaFull(snapshot)) {
+    return {
+      kind: 'videos',
+      title: 'ครบโควตาวิดีโอเดือนนี้แล้ว',
+      message:
+        `คุณอัปโหลดครบ ${snapshot.limits.maxVideosPerMonth} คลิปของเดือนนี้แล้ว ` +
+        `โควตาจะรีเซ็ตวันที่ ${nextMonthResetLabel()} หรืออัปเกรดแพ็กเกจเพื่ออัปโหลดต่อได้ทันที`,
+      showUpgrade: true,
+    };
+  }
+  if (isStorageFull(snapshot)) {
+    return {
+      kind: 'storage',
+      title: 'พื้นที่จัดเก็บเต็มแล้ว',
+      message:
+        `คุณใช้พื้นที่ครบ ${formatGb(snapshot.limits.storageQuotaGb)} แล้ว ` +
+        'ลบวิดีโอเก่าที่ไม่ใช้แล้วเพื่อคืนพื้นที่ หรืออัปเกรดแพ็กเกจ',
+      showUpgrade: true,
+    };
+  }
+  return null;
 }
 
 /** "2 GB", "0.4 GB". Storage figures are small enough to read in GB throughout. */

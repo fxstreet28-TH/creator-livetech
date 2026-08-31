@@ -112,8 +112,6 @@ interface GoLiveSetupFormProps {
   /** Null while the tier lookup is in flight or failed. */
   quota: LiveQuota | null;
   quotaLoading: boolean;
-  /** Thai, renderable. The reason the creator cannot go live at all. */
-  blockedReason?: string | null;
   disabled?: boolean;
   submitting?: boolean;
   /** True once the camera is publishing a track. */
@@ -131,7 +129,6 @@ export function GoLiveSetupForm({
   errors = {},
   quota,
   quotaLoading,
-  blockedReason,
   disabled = false,
   submitting = false,
   cameraReady = false,
@@ -148,8 +145,10 @@ export function GoLiveSetupForm({
   const set = <K extends keyof GoLiveDraft>(key: K, next: GoLiveDraft[K]) =>
     onChange({ ...value, [key]: next });
 
-  const blocked = blockedReason != null;
-  const canSubmit = !disabled && !submitting && !blocked && cameraReady;
+  // A creator who cannot go live at all never reaches this form: /creator/live
+  // renders <QuotaBlockedNotice> in its place (see describeGoliveBlock). So
+  // the only reasons the button is disabled here are local ones.
+  const canSubmit = !disabled && !submitting && cameraReady;
 
   return (
     <div className="flex flex-col gap-5">
@@ -275,7 +274,7 @@ export function GoLiveSetupForm({
         )}
       </div>
 
-      <QuotaNotice quota={quota} loading={quotaLoading} blockedReason={blockedReason} />
+      <QuotaNotice quota={quota} loading={quotaLoading} />
 
       {submitError && (
         <p
@@ -295,7 +294,7 @@ export function GoLiveSetupForm({
         {submitting ? 'กำลังเริ่มไลฟ์...' : '🔴 ไลฟ์สด'}
       </button>
 
-      {!cameraReady && !blocked && (
+      {!cameraReady && (
         <p className="-mt-2 text-center text-xs text-white/40">
           รอให้กล้องพร้อมก่อนจึงจะเริ่มไลฟ์ได้
         </p>
@@ -305,28 +304,9 @@ export function GoLiveSetupForm({
 }
 
 /** "เหลือเวลาวันนี้" and the concurrent-viewer ceiling, straight from the tier. */
-function QuotaNotice({
-  quota,
-  loading,
-  blockedReason,
-}: {
-  quota: LiveQuota | null;
-  loading: boolean;
-  blockedReason?: string | null;
-}) {
+function QuotaNotice({ quota, loading }: { quota: LiveQuota | null; loading: boolean }) {
   if (loading) {
     return <div aria-hidden className="h-16 animate-pulse rounded-2xl border border-white/10 bg-white/5" />;
-  }
-
-  if (blockedReason) {
-    return (
-      <div
-        role="alert"
-        className="rounded-2xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sm leading-relaxed text-amber-100"
-      >
-        {blockedReason}
-      </div>
-    );
   }
 
   // A failed quota read is not an error state: live-create-session runs the
