@@ -36,14 +36,11 @@ export function useCreatorProfile(): CreatorProfile {
 
   const userId = user?.id ?? null;
 
+  // No creator lookup without a user, and no setState here either: the
+  // signed-out shape is derived at the return instead, which keeps this effect
+  // a pure "talk to an external system" effect.
   useEffect(() => {
-    if (userLoading) return;
-
-    if (!userId) {
-      setProfile({ creatorId: null, contentTier: null, displayName: null });
-      setLoading(false);
-      return;
-    }
+    if (userLoading || !userId) return;
 
     let cancelled = false;
 
@@ -91,5 +88,13 @@ export function useCreatorProfile(): CreatorProfile {
     };
   }, [userId, userLoading]);
 
-  return { ...profile, loading: userLoading || loading, error };
+  const hasUser = userId !== null;
+
+  return {
+    creatorId: hasUser ? profile.creatorId : null,
+    contentTier: hasUser ? profile.contentTier : null,
+    displayName: hasUser ? profile.displayName : null,
+    loading: userLoading || (hasUser && loading),
+    error: hasUser ? error : null,
+  };
 }

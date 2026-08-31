@@ -39,12 +39,10 @@ export function useCreatorPost(postId: string | null): CreatorPostResult {
 
   const refresh = useCallback(() => setAttempt((n) => n + 1), []);
 
+  // A missing id is "not found", derived at the return rather than written
+  // into state so this effect stays a pure Supabase read.
   useEffect(() => {
-    if (!postId) {
-      setLoading(false);
-      setNotFound(true);
-      return;
-    }
+    if (!postId) return;
 
     let cancelled = false;
 
@@ -120,5 +118,11 @@ export function useCreatorPost(postId: string | null): CreatorPostResult {
     return () => clearInterval(timer);
   }, [encoding, refresh]);
 
-  return { post, loading, error, notFound, refresh };
+  return {
+    post: postId ? post : null,
+    loading: postId ? loading : false,
+    error: postId ? error : null,
+    notFound: postId ? notFound : true,
+    refresh,
+  };
 }

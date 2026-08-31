@@ -8,7 +8,7 @@
  * authority — drift here costs a confusing message, never a bad row.
  */
 
-import type { AspectRatio, VideoPostType } from './types';
+import type { AspectRatio, CreatorVisibility, VideoPostType } from './types';
 
 /** MIME types the dropzone accepts, for both the `accept` attr and the check. */
 export const ACCEPTED_VIDEO_TYPES = ['video/mp4', 'video/quicktime', 'video/webm'] as const;
@@ -83,3 +83,50 @@ export const ENCODING_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** Video statuses that mean "Bunny still has work to do". */
 export const IN_PROGRESS_VIDEO_STATUSES = ['pending', 'uploading', 'processing'] as const;
+
+export interface VisibilityOption {
+  value: CreatorVisibility;
+  /** Rendered as text, not as an icon font — emoji carry their own colour. */
+  emoji: string;
+  label: string;
+  /** One line under the label in the segmented control. */
+  hint: string;
+}
+
+/** The three choices on the upload/edit forms, in the order they render. */
+export const VISIBILITY_OPTIONS: VisibilityOption[] = [
+  { value: 'public', emoji: '🌍', label: 'สาธารณะ', hint: 'ใครก็ดูได้' },
+  { value: 'subscribers', emoji: '💜', label: 'สำหรับสมาชิก', hint: 'เฉพาะสมาชิกของคุณ' },
+  { value: 'ppv', emoji: '⭐', label: 'ปลดล็อก', hint: 'จ่ายด้วย Stars เพื่อดู' },
+];
+
+/** Short label for any access_level, including ones this UI cannot set. */
+export function visibilityLabel(accessLevel: string | null | undefined): string {
+  switch (accessLevel) {
+    case 'public':
+      return 'สาธารณะ';
+    case 'subscribers':
+      return 'สำหรับสมาชิก';
+    case 'ppv':
+      return 'ปลดล็อก (PPV)';
+    case 'free_preview':
+      return 'ตัวอย่างฟรี';
+    default:
+      return 'ไม่ระบุ';
+  }
+}
+
+export function visibilityEmoji(accessLevel: string | null | undefined): string {
+  switch (accessLevel) {
+    case 'public':
+      return '🌍';
+    case 'subscribers':
+      return '💜';
+    case 'ppv':
+      return '⭐';
+    case 'free_preview':
+      return '👀';
+    default:
+      return '❔';
+  }
+}

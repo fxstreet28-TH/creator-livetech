@@ -50,14 +50,11 @@ export function useCreatorPosts(creatorId: string | null): CreatorPostsResult {
 
   const refresh = useCallback(() => setAttempt((n) => n + 1), []);
 
+  // A signed-in user with no creator row is not an error — they see the
+  // "apply to be a creator" state. That shape is derived at the return rather
+  // than written into state, so this effect only ever talks to Supabase.
   useEffect(() => {
-    if (!creatorId) {
-      setPosts([]);
-      // Not an error: a signed-in user without a creator row sees the
-      // "apply to be a creator" empty state, not a failure.
-      setLoading(false);
-      return;
-    }
+    if (!creatorId) return;
 
     let cancelled = false;
 
@@ -123,5 +120,10 @@ export function useCreatorPosts(creatorId: string | null): CreatorPostsResult {
     return () => clearInterval(timer);
   }, [hasEncoding, refresh]);
 
-  return { posts, loading, error, refresh };
+  return {
+    posts: creatorId ? posts : [],
+    loading: creatorId ? loading : false,
+    error: creatorId ? error : null,
+    refresh,
+  };
 }
