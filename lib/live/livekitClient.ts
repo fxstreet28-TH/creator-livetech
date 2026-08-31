@@ -28,11 +28,12 @@ import {
 } from 'livekit-client';
 import type { BroadcastQuality, LiveChatMessage } from './types';
 import { MAX_CHAT_LENGTH, qualityOption } from './constants';
+import { REACTION_TOPIC, encodeReaction } from './reactions';
 
 export { ConnectionState, DisconnectReason, Room, RoomEvent, Track };
 export type { RemoteTrack };
 
-/** The data-channel topic chat travels on, so a future feature can share the room. */
+/** The data-channel topic chat travels on. Reactions share the room on their own. */
 const CHAT_TOPIC = 'chat';
 
 /**
@@ -197,6 +198,25 @@ export function decodeChat(payload: Uint8Array): LiveChatMessage | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Send one emoji reaction to everyone in the room.
+ *
+ * Reliable, like chat: an unreliable channel would drop exactly the packets a
+ * burst of tapping produces, and a heart that never arrives is the whole
+ * feature failing quietly. The packet is built in ./reactions — this is only
+ * the handoff to the SDK.
+ *
+ * The caller is expected to have passed its throttle first
+ * (createReactionThrottle); nothing here rate-limits.
+ */
+export async function publishReaction(room: Room, emoji: string): Promise<void> {
+  const payload = encodeReaction(emoji, room.localParticipant.identity ?? '');
+  await room.localParticipant.publishData(payload, {
+    reliable: true,
+    topic: REACTION_TOPIC,
+  });
 }
 
 /** Cameras the browser will admit to, for the picker. Empty before permission is granted. */

@@ -21,10 +21,16 @@
  *
  * Both are best-effort: a refused write is logged, never surfaced. Nothing
  * about a wrong number is worth interrupting a broadcast for.
+ *
+ * Two things sit on top of the self-view and neither touches the broadcast:
+ * the viewers' emoji reactions float up over it (received only — a creator
+ * does not throw hearts at their own stream), and the camera look is a CSS
+ * filter on the element painting the track. The look is local to this screen;
+ * see lib/live/cameraFilters.ts.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Loader2, Mic, MicOff, Video, VideoOff, WifiOff } from 'lucide-react';
+import { Loader2, Mic, MicOff, Sparkles, Video, VideoOff, WifiOff } from 'lucide-react';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
 import { markSessionLive, persistViewerCounts } from '@/lib/live/api';
 import {
@@ -44,6 +50,9 @@ import {
   type Room,
 } from '@/lib/live/livekitClient';
 import type { BroadcastQuality } from '@/lib/live/types';
+import { filterCssFor, filterLabelFor, type FilterId } from '@/lib/live/cameraFilters';
+import { CameraFilterSelector } from './CameraFilterSelector';
+import { FloatingReactionsLayer, useFloatingReactions } from './FloatingReactionsLayer';
 import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
 
 export type BroadcastPhase = 'connecting' | 'live' | 'reconnecting' | 'failed';
@@ -57,6 +66,9 @@ interface CreatorBroadcasterProps {
   videoDeviceId?: string;
   micEnabled: boolean;
   elapsedSeconds: number;
+  /** The look chosen on the setup screen; changeable from the bottom bar. */
+  filterId: FilterId;
+  onFilterIdChange: (id: FilterId) => void;
   /** Lifted so the chat panel and the stats bar can share this room. */
   onRoomChange: (room: Room | null) => void;
   onViewerCountChange: (current: number, peak: number) => void;
@@ -71,13 +83,25 @@ export function CreatorBroadcaster({
   videoDeviceId,
   micEnabled,
   elapsedSeconds,
+  filterId,
+  onFilterIdChange,
   onRoomChange,
   onViewerCountChange,
   onPhaseChange,
 }: CreatorBroadcasterProps) {
   const videoRef = useRef<HTMLDivElement | null>(null);
+  const lookButtonRef = useRef<HTMLButtonElement | null>(null);
   const roomRef = useRef<Room | null>(null);
   const peakRef = useRef(0);
+
+  /**
+   * The connected room, as state rather than the ref above.
+   *
+   * The reactions overlay is a hook that has to re-subscribe when the room
+   * changes, and a ref does not re-render. Same object, two holders.
+   */
+  const [liveRoom, setLiveRoom] = useState<Room | null>(null);
+  const [lookOpen, setLookOpen] = useState(false);
 
   const [phase, setPhase] = useState<BroadcastPhase>('connecting');
   const [error, setError] = useState<string | null>(null);
@@ -87,6 +111,8 @@ export function CreatorBroadcaster({
   const [micOn, setMicOn] = useState(micEnabled);
   /** Bumped by the manual "ลองใหม่", which restarts the whole connect effect. */
   const [attempt, setAttempt] = useState(0);
+
+  const { reactions } = useFloatingReactions(liveRoom);
 
   // These would land in the connect effect's dependency list, and a parent
   // passing inline arrows would then tear down and rebuild the room on every
@@ -198,6 +224,7 @@ export function CreatorBroadcaster({
       setCamOn(room.localParticipant.isCameraEnabled);
       setMicOn(room.localParticipant.isMicrophoneEnabled);
       setPhaseAndReport('live');
+      setLiveRoom(room);
       callbacks.current.onRoomChange(room);
       refreshViewers();
 
@@ -237,6 +264,7 @@ export function CreatorBroadcaster({
       room.off(RoomEvent.Reconnected, onReconnected);
       room.off(RoomEvent.Disconnected, onDisconnected);
       callbacks.current.onRoomChange(null);
+      setLiveRoom(null);
       roomRef.current = null;
       void leaveRoom(room);
     };
@@ -299,7 +327,20 @@ export function CreatorBroadcaster({
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
       <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-white/10 bg-black">
-        <div ref={videoRef} className="h-full w-full" aria-label="ภาพที่กำลังถ่ายทอด" />
+        {/* The filter goes on the container, not on the element inside it:
+            the <video> is built by track.attach() and replaced on every
+            reconnect, and a style written onto it would be thrown away with
+            it. A CSS filter on an ancestor paints its descendants, and the
+            badges and overlays are siblings of this div, so they stay
+            unfiltered. */}
+        <div
+          ref={videoRef}
+          className="h-full w-full"
+          aria-label="ภาพที่กำลังถ่ายทอด"
+          style={{ filter: filterCssFor(filterId) }}
+        />
+
+        <FloatingReactionsLayer reactions={reactions} />
 
         <div className="pointer-events-none absolute left-3 top-3 z-10">
           <LiveBadge pulse={phase === 'live'} />
@@ -343,7 +384,49 @@ export function CreatorBroadcaster({
           label={camOn ? 'ปิดกล้อง' : 'เปิดกล้อง'}
           icon={camOn ? <Video size={18} aria-hidden /> : <VideoOff size={18} aria-hidden />}
         />
-        <span className="ml-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs tabular-nums text-white/50">
+        <div
+          className="relative"
+          onKeyDown={(event) => {
+            if (event.key !== 'Escape' || !lookOpen) return;
+            setLookOpen(false);
+            lookButtonRef.current?.focus();
+          }}
+        >
+          {lookOpen && (
+            <>
+              {/* A transparent full-screen catcher rather than a document
+                  listener: the bottom bar is the last thing between a creator
+                  and "จบไลฟ์", and a stray listener that outlives this popover
+                  would sit over that button. */}
+              <button
+                type="button"
+                aria-label="ปิดตัวเลือกลุค"
+                onClick={() => setLookOpen(false)}
+                className="fixed inset-0 z-30 cursor-default"
+              />
+              <div className="absolute bottom-full left-0 z-40 mb-2 w-[min(22rem,80vw)] rounded-2xl border border-white/10 bg-[#0c101b] p-4 shadow-2xl shadow-black/60">
+                {/* Stays open after a choice: picking a look is comparing
+                    looks, and a popover that closes on the first tap makes
+                    trying the next one a second trip to the bottom bar. */}
+                <CameraFilterSelector value={filterId} onChange={onFilterIdChange} />
+              </div>
+            </>
+          )}
+          <button
+            ref={lookButtonRef}
+            type="button"
+            aria-expanded={lookOpen}
+            aria-haspopup="dialog"
+            onClick={() => setLookOpen((current) => !current)}
+            className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-sm font-medium text-white/80 transition hover:bg-white/[0.08] focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+          >
+            <Sparkles size={16} aria-hidden />
+            เลือกลุค
+            <span className="text-white/40">{filterLabelFor(filterId)}</span>
+          </button>
+        </div>
+
+        <span className="ml-auto rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs tabular-nums text-white/50">
           {quality}
         </span>
       </div>

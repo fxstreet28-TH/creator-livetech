@@ -17,6 +17,11 @@
  * The 👑 badge is derived from the LiveKit participant identity — which the
  * backend mints and the server asserts — never from the `sender` name inside
  * the payload, which is whatever the sender chose to call themselves.
+ *
+ * Emoji reactions share this data channel (see lib/live/reactions.ts). They
+ * arrive at the same DataReceived handler and are dropped by decodeChat, which
+ * accepts nothing but `type: 'chat'` — the panel is chat-only without needing
+ * to know reactions exist.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -30,6 +35,7 @@ import {
 } from '@/lib/live/livekitClient';
 import { MAX_CHAT_LENGTH, MAX_CHAT_MESSAGES } from '@/lib/live/constants';
 import type { LiveChatEntry } from '@/lib/live/types';
+import { ChatEmojiPicker } from './ChatEmojiPicker';
 
 interface LiveChatProps {
   /** Null until the room is connected; the input stays disabled until then. */
@@ -47,6 +53,7 @@ export function LiveChat({ room, senderName, isCreator, className = '' }: LiveCh
   const [sending, setSending] = useState(false);
 
   const listRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
   /** Data packets carry no id and two can share a millisecond. */
   const seqRef = useRef(0);
 
@@ -86,6 +93,35 @@ export function LiveChat({ room, senderName, isCreator, className = '' }: LiveCh
     const list = listRef.current;
     if (list) list.scrollTop = list.scrollHeight;
   }, [entries]);
+
+  /**
+   * Put an emoji where the caret is, not at the end.
+   *
+   * The caret is read off the input rather than tracked in state: React does
+   * not own the selection, and a controlled value that jumps to the end after
+   * every insertion makes the picker useless for anything but the last
+   * character. Restoring it has to wait for the re-render that carries the new
+   * value, hence the rAF.
+   */
+  const insertEmoji = useCallback(
+    (native: string) => {
+      const input = inputRef.current;
+      const start = input?.selectionStart ?? draft.length;
+      const end = input?.selectionEnd ?? draft.length;
+      const next = (draft.slice(0, start) + native + draft.slice(end)).slice(0, MAX_CHAT_LENGTH);
+      if (next === draft) return;
+
+      setDraft(next);
+      const caret = Math.min(start + native.length, next.length);
+      requestAnimationFrame(() => {
+        const element = inputRef.current;
+        if (!element) return;
+        element.focus();
+        element.setSelectionRange(caret, caret);
+      });
+    },
+    [draft],
+  );
 
   const send = async () => {
     const text = draft.trim();
@@ -149,7 +185,10 @@ export function LiveChat({ room, senderName, isCreator, className = '' }: LiveCh
         className="shrink-0 border-t border-white/8 p-3"
       >
         <div className="flex items-end gap-2">
+          <ChatEmojiPicker onSelect={insertEmoji} disabled={!room} />
+
           <input
+            ref={inputRef}
             type="text"
             value={draft}
             maxLength={MAX_CHAT_LENGTH}

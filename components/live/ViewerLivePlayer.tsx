@@ -16,6 +16,10 @@
  * own element; browsers routinely refuse to play it without a gesture, so
  * `canPlaybackAudio` drives an explicit "แตะเพื่อเปิดเสียง" button rather than
  * leaving a silent stream that looks broken.
+ *
+ * The reaction rail and the floating overlay sit on top of the video. A tap
+ * does both jobs — publish to the room and spawn locally — because LiveKit
+ * does not deliver a participant's own data packets back to them.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -32,6 +36,8 @@ import {
   type Room,
 } from '@/lib/live/livekitClient';
 import { VIEWER_COUNT_POLL_MS } from '@/lib/live/constants';
+import { EmojiReactionButton } from './EmojiReactionButton';
+import { FloatingReactionsLayer, useFloatingReactions } from './FloatingReactionsLayer';
 import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
 
 export type ViewerPhase = 'connecting' | 'watching' | 'reconnecting' | 'ended' | 'failed';
@@ -58,10 +64,18 @@ export function ViewerLivePlayer({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const roomRef = useRef<Room | null>(null);
 
+  /**
+   * The connected room, as state rather than the ref above: the reactions hook
+   * has to re-subscribe when it changes, and a ref does not re-render.
+   */
+  const [liveRoom, setLiveRoom] = useState<Room | null>(null);
+
   const [phase, setPhase] = useState<ViewerPhase>('connecting');
   const [error, setError] = useState<string | null>(null);
   const [viewers, setViewers] = useState(0);
   const [audioBlocked, setAudioBlocked] = useState(false);
+
+  const { reactions, spawn } = useFloatingReactions(liveRoom);
 
   const callbacks = useRef({ onRoomChange, onEnded });
   useEffect(() => {
@@ -124,6 +138,7 @@ export function ViewerLivePlayer({
       }
       if (cancelled) return;
 
+      setLiveRoom(room);
       callbacks.current.onRoomChange(room);
       setAudioBlocked(!room.canPlaybackAudio);
       refreshViewers();
@@ -162,6 +177,7 @@ export function ViewerLivePlayer({
       room.off(RoomEvent.AudioPlaybackStatusChanged, onAudioStatus);
       room.off(RoomEvent.Disconnected, onDisconnected);
       callbacks.current.onRoomChange(null);
+      setLiveRoom(null);
       roomRef.current = null;
       container?.replaceChildren();
       void leaveRoom(room);
@@ -200,11 +216,24 @@ export function ViewerLivePlayer({
         <DurationPill seconds={elapsedSeconds} />
       </div>
 
+      <FloatingReactionsLayer reactions={reactions} />
+
+      {phase === 'watching' && (
+        <EmojiReactionButton
+          room={liveRoom}
+          onSpawn={spawn}
+          className="absolute bottom-3 right-3 z-20"
+        />
+      )}
+
       {audioBlocked && phase === 'watching' && (
         <button
           type="button"
           onClick={() => void enableAudio()}
-          className="absolute bottom-3 left-1/2 z-20 inline-flex min-h-11 -translate-x-1/2 items-center gap-2 rounded-full bg-white/15 px-4 py-2 text-sm font-semibold text-white backdrop-blur-md transition hover:bg-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+          // Sits above the reaction rail rather than beside it: on a narrow
+          // phone the two would overlap at bottom-centre, and this button is
+          // the difference between a silent stream and a working one.
+          className="absolute bottom-20 left-1/2 z-20 inline-flex min-h-11 -translate-x-1/2 items-center gap-2 rounded-full bg-white/15 px-4 py-2 text-sm font-semibold text-white backdrop-blur-md transition hover:bg-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
         >
           <Volume2 size={16} aria-hidden />
           แตะเพื่อเปิดเสียง
