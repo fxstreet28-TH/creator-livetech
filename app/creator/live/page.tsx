@@ -24,10 +24,16 @@ import { useCreatorProfile } from '@/lib/hooks/useCreatorProfile';
 import { usePlatformStatus } from '@/lib/hooks/usePlatformStatus';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
 import { CREATOR_PPV_ENABLED } from '@/lib/features';
-import { describePlatformBlock } from '@/lib/platform/status';
+import { describePlatformBlock, isDegraded } from '@/lib/platform/status';
 import { createLiveSession, describeGoliveBlock, endLiveSession, fetchLiveQuota } from '@/lib/live/api';
 import type { BroadcastQuality, EndLiveResponse, LiveQuota } from '@/lib/live/types';
-import { DEFAULT_QUALITY, isQualityAllowed } from '@/lib/live/constants';
+import {
+  clampQuality,
+  DEFAULT_QUALITY,
+  DEGRADED_MAX_QUALITY,
+  isQualityAllowed,
+  lowerQuality,
+} from '@/lib/live/constants';
 import { DEFAULT_FILTER_ID, type FilterId } from '@/lib/live/cameraFilters';
 import type { Room } from '@/lib/live/livekitClient';
 import { CreatorPageShell } from '@/components/creator/CreatorPageShell';
@@ -131,6 +137,22 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
   const elapsedSeconds = useElapsedSeconds(broadcast?.startedAt ?? null);
   const errors = validateDraft(draft);
 
+  /**
+   * The quality cap actually in force, and the quality that will be sent.
+   *
+   * Derived at render rather than written back into `draft`: a 'degraded' that
+   * clears while the form is open should give the creator their 720p back,
+   * and an effect that overwrote the draft would have thrown their choice
+   * away. `effectiveQuality` is what the select shows and what go-live sends,
+   * so the two cannot disagree.
+   */
+  const qualityDegraded = isDegraded(platform.status);
+  const tierMaxQuality = quota?.maxQuality ?? null;
+  const maxQuality = qualityDegraded
+    ? lowerQuality(tierMaxQuality ?? DEGRADED_MAX_QUALITY, DEGRADED_MAX_QUALITY)
+    : tierMaxQuality;
+  const effectiveQuality = maxQuality ? clampQuality(draft.quality, maxQuality) : draft.quality;
+
   useEffect(() => {
     let cancelled = false;
 
@@ -206,7 +228,7 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
     const { data, error } = await createLiveSession(supabase, {
       title: draft.title.trim(),
       access_level: draft.visibility,
-      broadcast_quality: draft.quality,
+      broadcast_quality: effectiveQuality,
       // Recording stays off: LiveKit egress is not wired, so a session flagged
       // for recording produces nothing (non-negotiable #5).
       recording_enabled: false,
@@ -322,7 +344,6 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
     // two statuses as well, but the view's message is the one ops can reword.
     describePlatformBlock(platform.status, 'live') ??
     (quota ? describeGoliveBlock(quota) : null);
-
   return (
     <CreatorPageShell
       title="ไลฟ์สด"
@@ -350,7 +371,7 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
         <form onSubmit={handleSubmit} noValidate className="grid gap-6 lg:grid-cols-5">
           <div className="min-w-0 lg:col-span-3">
             <CameraPreview
-              quality={draft.quality}
+              quality={effectiveQuality}
               deviceId={deviceId}
               onDeviceIdChange={setDeviceId}
               micEnabled={micEnabled}
@@ -367,11 +388,16 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
           <div className="min-w-0 lg:col-span-2">
             <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur-xl">
               <GoLiveSetupForm
-                value={draft}
+                // The clamped quality is what the select shows; onChange still
+                // writes the creator's own pick back to the draft, so a
+                // 'degraded' that clears gives them their 720p back.
+                value={{ ...draft, quality: effectiveQuality }}
                 onChange={setDraft}
                 errors={showErrors ? errors : {}}
                 quota={quota}
                 quotaLoading={quotaLoading}
+                maxQuality={maxQuality}
+                qualityDegraded={qualityDegraded}
                 submitting={submitting}
                 cameraReady={cameraReady}
                 submitError={submitError}

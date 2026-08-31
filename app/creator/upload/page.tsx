@@ -30,7 +30,7 @@ import { formatDuration } from '@/lib/creator/format';
 import type { UploadRequestPayload } from '@/lib/creator/types';
 import { CREATOR_PPV_ENABLED } from '@/lib/features';
 import { describeUploadBlock } from '@/lib/creator/quota';
-import { describePlatformBlock } from '@/lib/platform/status';
+import { describePlatformBlock, isDegraded } from '@/lib/platform/status';
 import { CreatorPageShell } from '@/components/creator/CreatorPageShell';
 import { QuotaBlockedNotice } from '@/components/creator/QuotaBlockedNotice';
 import { UploadDropzone, type SelectedVideo } from '@/components/creator/UploadDropzone';
@@ -284,6 +284,18 @@ export default function CreatorUploadPage() {
         />
       ) : (
         <form onSubmit={handleSubmit} noValidate className="grid gap-6 lg:grid-cols-5">
+          {/* 'degraded' does not stop an upload — Bunny encodes what it is
+              given — but it caps the ladder it will serve, so the creator is
+              told before they wonder why their 1080p master plays back soft. */}
+          {isDegraded(platform.status) && (
+            <p
+              role="status"
+              className="rounded-2xl border border-orange-400/25 bg-orange-500/10 px-4 py-3 text-sm leading-relaxed text-orange-100 lg:col-span-5"
+            >
+              ⚠️ ขณะนี้ระบบจำกัดคุณภาพวิดีโอไว้ที่ 480p ชั่วคราวเพื่อควบคุมค่าใช้จ่ายของแพลตฟอร์ม —
+              อัปโหลดได้ตามปกติ และไฟล์ต้นฉบับของคุณยังถูกเก็บไว้ครบ
+            </p>
+          )}
           {/* 3/5 + 2/5 ≈ the 60/40 split the brief asks for, and it collapses
               to a single column below lg without a second breakpoint. */}
           <div className="min-w-0 lg:col-span-3">
