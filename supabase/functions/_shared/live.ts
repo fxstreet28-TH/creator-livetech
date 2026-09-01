@@ -314,9 +314,41 @@ function egressPreset(quality: string): string {
   return quality === '1080p' ? 'H264_1080P_30' : 'H264_720P_30';
 }
 
+/**
+ * LiveKit's EgressInfo, as it actually arrives.
+ *
+ * LiveKit's Twirp endpoints emit protobuf JSON in SNAKE_CASE — `ListEgress`
+ * answers `{"items": [], "next_page_token": null}`, not `nextPageToken`. They
+ * ACCEPT camelCase on the way in, which is what hid this: the request went
+ * through, the egress really started, LiveKit answered 200, and reading
+ * `.egressId` off the response gave `undefined`. The undefined was then written
+ * to `live_sessions.livekit_egress_id`, PostgREST dropped the key, and the
+ * column stayed NULL on every session — so live-end-session had no id to stop
+ * the egress with. Three test broadcasts on 2026-09-01 left orphaned egresses
+ * behind; LiveKit reaped them when the rooms emptied, which is luck, not
+ * design, and would not hold for a room a creator leaves open.
+ *
+ * Both spellings are declared and read so this cannot silently regress if
+ * LiveKit ever switches its JSON dialect.
+ */
+export interface EgressInfoResponse {
+  egress_id?: string;
+  egressId?: string;
+  status?: string;
+}
+
 export interface EgressInfo {
   egressId: string;
   status?: string;
+}
+
+/** Never returns a partial: an egress we cannot name is one we cannot stop. */
+function readEgressInfo(raw: EgressInfoResponse, method: string): EgressInfo {
+  const egressId = raw.egress_id ?? raw.egressId;
+  if (!egressId) {
+    throw new Error(`LiveKit ${method} returned no egress id: ${JSON.stringify(raw).slice(0, 200)}`);
+  }
+  return { egressId, status: raw.status };
 }
 
 /**
@@ -346,12 +378,22 @@ export async function startRoomCompositeEgress(
     3600,
   );
 
-  return await livekitTwirp<EgressInfo>(wsUrl, token, 'Egress', 'StartRoomCompositeEgress', {
-    roomName,
-    layout: 'single-speaker',
-    preset: egressPreset(quality),
-    streamOutputs: [{ protocol: 'RTMP', urls: [rtmpUrl] }],
-  });
+  // Sent in snake_case to match the dialect LiveKit answers in. It accepts
+  // camelCase too, which is exactly why the response casing went unnoticed.
+  const raw = await livekitTwirp<EgressInfoResponse>(
+    wsUrl,
+    token,
+    'Egress',
+    'StartRoomCompositeEgress',
+    {
+      room_name: roomName,
+      layout: 'single-speaker',
+      preset: egressPreset(quality),
+      stream_outputs: [{ protocol: 'RTMP', urls: [rtmpUrl] }],
+    },
+  );
+
+  return readEgressInfo(raw, 'StartRoomCompositeEgress');
 }
 
 /**
@@ -378,7 +420,7 @@ export async function stopEgress(
       { roomRecord: true },
       600,
     );
-    await livekitTwirp(wsUrl, token, 'Egress', 'StopEgress', { egressId });
+    await livekitTwirp(wsUrl, token, 'Egress', 'StopEgress', { egress_id: egressId });
     return true;
   } catch (err) {
     console.error('[live] stopEgress failed', err);

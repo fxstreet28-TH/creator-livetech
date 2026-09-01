@@ -79,6 +79,12 @@ Deno.serve(async (req) => {
         secrets.livekit_api_secret,
         session.livekit_egress_id,
       );
+    } else if (session.bunny_stream_id) {
+      // No id recorded for a session that HAD a Bunny stream: either the egress
+      // never started, or start_egress lost track of it. Worth a log line —
+      // this is the shape of the 2026-09-01 casing bug, and an egress nobody
+      // can name is an egress nobody can stop.
+      console.warn('[live-end-session] no egress id recorded for session', session.id);
     }
 
     /**

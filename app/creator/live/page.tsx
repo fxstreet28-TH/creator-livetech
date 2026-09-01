@@ -35,6 +35,7 @@ import type {
 } from '@/lib/live/types';
 import { DEFAULT_QUALITY, isQualityAllowed } from '@/lib/live/constants';
 import { DEFAULT_FILTER_ID, type FilterId } from '@/lib/live/cameraFilters';
+import type { LiveChannelStatus } from '@/lib/live/realtime';
 import type { FloatingReaction } from '@/lib/live/reactions';
 import { CreatorPageShell } from '@/components/creator/CreatorPageShell';
 import { CameraPreview } from '@/components/live/CameraPreview';
@@ -312,7 +313,7 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
         viewers={{ current: channel.viewerCount, peak: channel.peakViewerCount }}
         reactions={channel.reactions}
         chat={channel.chat}
-        chatEnabled={channel.connected}
+        chatStatus={channel.status}
         onSendChat={channel.sendChat}
         elapsedSeconds={elapsedSeconds}
         onEndRequest={() => setEndOpen(true)}
@@ -402,7 +403,7 @@ function BroadcastingLayout({
   viewers,
   reactions,
   chat,
-  chatEnabled,
+  chatStatus,
   onSendChat,
   elapsedSeconds,
   onEndRequest,
@@ -419,7 +420,7 @@ function BroadcastingLayout({
   viewers: { current: number; peak: number };
   reactions: FloatingReaction[];
   chat: LiveChatEntry[];
-  chatEnabled: boolean;
+  chatStatus: LiveChannelStatus;
   onSendChat: (text: string) => Promise<void>;
   elapsedSeconds: number;
   onEndRequest: () => void;
@@ -467,7 +468,7 @@ function BroadcastingLayout({
           <LiveChat
             entries={chat}
             onSend={onSendChat}
-            enabled={chatEnabled}
+            status={chatStatus}
             className="min-h-48 flex-1"
           />
         </div>

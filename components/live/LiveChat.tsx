@@ -27,6 +27,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Send } from 'lucide-react';
 import { MAX_CHAT_LENGTH } from '@/lib/live/constants';
+import type { LiveChannelStatus } from '@/lib/live/realtime';
 import type { LiveChatEntry } from '@/lib/live/types';
 import { ChatEmojiPicker } from './ChatEmojiPicker';
 
@@ -35,12 +36,19 @@ interface LiveChatProps {
   entries: LiveChatEntry[];
   /** useLiveChannel's send — it broadcasts and appends the local echo. */
   onSend: (text: string) => Promise<void>;
-  /** False until the channel subscription settles; the input stays disabled. */
-  enabled: boolean;
+  /**
+   * Where the channel is.
+   *
+   * Not a boolean, because "connecting" and "refused" need different copy.
+   * A greyed-out box that says "กำลังเชื่อมต่อ..." forever is how a channel
+   * the server rejected looks exactly like one that is about to work.
+   */
+  status: LiveChannelStatus;
   className?: string;
 }
 
-export function LiveChat({ entries, onSend, enabled, className = '' }: LiveChatProps) {
+export function LiveChat({ entries, onSend, status, className = '' }: LiveChatProps) {
+  const enabled = status === 'connected';
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
 
@@ -118,11 +126,23 @@ export function LiveChat({ entries, onSend, enabled, className = '' }: LiveChatP
         role="log"
         className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3"
       >
-        {entries.length === 0 ? (
-          <p className="px-1 py-6 text-center text-xs leading-relaxed text-white/35">
-            ยังไม่มีข้อความ
+        {status === 'error' ? (
+          <p role="alert" className="px-1 py-6 text-center text-xs leading-relaxed text-rose-200/80">
+            แชทใช้งานไม่ได้ในขณะนี้
             <br />
-            ทักทายกันได้เลย
+            กรุณารีเฟรชหน้านี้เพื่อลองใหม่
+          </p>
+        ) : entries.length === 0 ? (
+          <p className="px-1 py-6 text-center text-xs leading-relaxed text-white/35">
+            {status === 'connected' ? (
+              <>
+                ยังไม่มีข้อความ
+                <br />
+                ทักทายกันได้เลย
+              </>
+            ) : (
+              'กำลังเชื่อมต่อแชท...'
+            )}
           </p>
         ) : (
           entries.map((entry) => <ChatBubble key={entry.id} entry={entry} />)
@@ -146,7 +166,13 @@ export function LiveChat({ entries, onSend, enabled, className = '' }: LiveChatP
             maxLength={MAX_CHAT_LENGTH}
             disabled={!enabled}
             onChange={(event) => setDraft(event.target.value)}
-            placeholder={enabled ? 'พิมพ์ข้อความ...' : 'กำลังเชื่อมต่อ...'}
+            placeholder={
+              enabled
+                ? 'พิมพ์ข้อความ...'
+                : status === 'error'
+                  ? 'แชทใช้งานไม่ได้'
+                  : 'กำลังเชื่อมต่อ...'
+            }
             aria-label="ข้อความแชท"
             className="h-11 w-full min-w-0 rounded-xl border border-white/10 bg-black/30 px-3 text-sm text-white placeholder:text-white/25 focus:border-purple-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 disabled:opacity-50"
           />

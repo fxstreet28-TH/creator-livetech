@@ -42,6 +42,7 @@ import {
   bunnyRtmpDestination,
   generateLiveKitToken,
   startRoomCompositeEgress,
+  stopEgress,
 } from '../_shared/live.ts';
 
 const QUALITY_ORDER = ['360p', '480p', '720p', '1080p'];
@@ -259,7 +260,15 @@ Deno.serve(async (req) => {
       // status is promoted here rather than from the creator's browser: this
       // is the first moment the session is genuinely watchable, and it is a
       // write the server can vouch for.
-      await supabase
+      //
+      // The error IS checked, unlike most best-effort writes in this codebase,
+      // because this row is the only record of a running egress. When it does
+      // not land, live-end-session has nothing to stop and the egress bills
+      // until LiveKit reaps the empty room. Answering 200 to a caller whose
+      // egress we have just lost track of is how that goes unnoticed — which
+      // is exactly what happened on 2026-09-01, when the id was read off the
+      // wrong casing and silently written as undefined.
+      const { error: persistErr } = await supabase
         .from('live_sessions')
         .update({
           livekit_egress_id: egress.egressId,
@@ -267,6 +276,17 @@ Deno.serve(async (req) => {
           updated_at: new Date().toISOString(),
         })
         .eq('id', session.id);
+
+      if (persistErr) {
+        console.error('[live-create-session] egress started but id not persisted', {
+          egress_id: egress.egressId,
+          session_id: session.id,
+          error: persistErr.message,
+        });
+        // Stop what we cannot track, rather than leave it running unnamed.
+        await stopEgress(wsUrl, livekitKey, livekitSecret, egress.egressId);
+        return errorResponse('Failed to record delivery stream', 500, 'egress_not_persisted');
+      }
 
       return jsonResponse({ egress_id: egress.egressId, already_started: false });
     }

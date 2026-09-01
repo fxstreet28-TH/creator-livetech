@@ -176,8 +176,11 @@ export function LiveKitLivePlayer({
     }
   }, []);
 
+  // Square and borderless on a phone, where the player is edge-to-edge and a
+  // rounded border would just be a hairline of page colour around the video.
+  // Rounded again from lg, where it sits inside the padded grid.
   return (
-    <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-white/10 bg-black">
+    <div className="relative min-h-0 flex-1 overflow-hidden bg-black lg:rounded-2xl lg:border lg:border-white/10">
       <div ref={containerRef} className="absolute inset-0" aria-label={`ไลฟ์: ${title}`} />
 
       <div className="pointer-events-none absolute left-3 top-3 z-10 flex max-w-[70%] items-center gap-2">

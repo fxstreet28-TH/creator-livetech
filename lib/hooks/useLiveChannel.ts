@@ -21,9 +21,13 @@
  * still a decision rather than an omission.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
-import { openLiveChannel, type LiveChannelSender } from '@/lib/live/realtime';
+import {
+  openLiveChannel,
+  type LiveChannelSender,
+  type LiveChannelStatus,
+} from '@/lib/live/realtime';
 import { MAX_CHAT_LENGTH, MAX_CHAT_MESSAGES } from '@/lib/live/constants';
 import {
   MAX_ONSCREEN_REACTIONS,
@@ -68,6 +72,16 @@ export interface UseLiveChannelResult {
   peakViewerCount: number;
   /** False until the subscription settles; the inputs stay disabled. */
   connected: boolean;
+  /**
+   * Why the inputs are disabled, when they are.
+   *
+   * 'error' means the server refused the channel — almost always the
+   * realtime.messages policies, i.e. no access token on the join or a viewer
+   * without an entitlement. It needs different copy from 'connecting', and it
+   * is the difference between a chat panel that is about to work and one that
+   * never will.
+   */
+  status: LiveChannelStatus;
   sendChat: (text: string) => Promise<void>;
   sendReaction: (emoji: string) => void;
 }
@@ -83,7 +97,7 @@ export function useLiveChannel({
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
   const [viewerCount, setViewerCount] = useState(0);
   const [peakViewerCount, setPeakViewerCount] = useState(0);
-  const [connected, setConnected] = useState(false);
+  const [status, setStatus] = useState<LiveChannelStatus>('connecting');
 
   const senderRef = useRef<LiveChannelSender | null>(null);
   /** Payloads carry no id, and two can share a millisecond. */
@@ -124,24 +138,41 @@ export function useLiveChannel({
    * the channel when either lands would drop the subscription, re-announce
    * presence, and briefly halve everyone's viewer count for no reason.
    */
+  /**
+   * The browser client, resolved once.
+   *
+   * Held here rather than fetched inside the effect so that a misconfigured
+   * environment — which can never resolve — is a DERIVED status below instead
+   * of a setState in the effect body. The video is the feature; a live with no
+   * chat is worth more than a screen that refuses to render.
+   */
+  const supabase = useMemo(() => {
+    try {
+      return getBrowserSupabase();
+    } catch {
+      return null;
+    }
+  }, []);
+
   const latest = useRef({ displayName, creatorUserId, isCreator });
   useEffect(() => {
     latest.current = { displayName, creatorUserId, isCreator };
   }, [displayName, creatorUserId, isCreator]);
 
   useEffect(() => {
-    if (!sessionId || !userId) return;
+    if (!sessionId || !userId || !supabase) return;
 
-    let supabase;
-    try {
-      supabase = getBrowserSupabase();
-    } catch {
-      // Misconfigured environment. The video is the feature; a live without
-      // chat is worth more than a screen that refuses to render.
-      return;
-    }
+    /**
+     * Opening the channel is asynchronous now, because the access token has to
+     * reach the socket BEFORE the join is sent — see openLiveChannel. So the
+     * effect can be torn down mid-open, and the channel it was waiting for has
+     * to be closed rather than left subscribed to a session the viewer has
+     * already navigated away from.
+     */
+    let cancelled = false;
+    let close: (() => void) | null = null;
 
-    const channel = openLiveChannel(
+    void openLiveChannel(
       supabase,
       sessionId,
       { userId, displayName: latest.current.displayName, isCreator: latest.current.isCreator },
@@ -159,18 +190,30 @@ export function useLiveChannel({
           }),
         onReaction: (entry) => spawnReaction(entry.emoji),
         onViewerCount: trackViewerCount,
-        onStatusChange: setConnected,
+        onStatusChange: (next) => {
+          if (!cancelled) setStatus(next);
+        },
       },
-    );
-
-    senderRef.current = channel.sender;
+    )
+      .then((channel) => {
+        if (cancelled) {
+          channel.close();
+          return;
+        }
+        senderRef.current = channel.sender;
+        close = channel.close;
+      })
+      .catch((err) => {
+        console.error('[useLiveChannel] failed to open channel', err);
+        if (!cancelled) setStatus('error');
+      });
 
     return () => {
+      cancelled = true;
       senderRef.current = null;
-      setConnected(false);
-      channel.close();
+      close?.();
     };
-  }, [sessionId, userId, appendChat, spawnReaction, trackViewerCount]);
+  }, [supabase, sessionId, userId, appendChat, spawnReaction, trackViewerCount]);
 
   // Only runs while something is on screen: an idle broadcast should not have
   // a timer ticking for three hours.
@@ -194,7 +237,11 @@ export function useLiveChannel({
   const sendChat = useCallback(
     async (text: string) => {
       const trimmed = text.trim().slice(0, MAX_CHAT_LENGTH);
-      if (trimmed === '' || !senderRef.current) return;
+      if (trimmed === '') return;
+      // Thrown rather than dropped: LiveChat keeps the text in the box when a
+      // send fails, so the message survives and Enter retries it. Returning
+      // quietly here would clear the box and lose it.
+      if (!senderRef.current) throw new Error('Chat channel is not connected');
 
       await senderRef.current.sendChat(trimmed);
       appendChat({
@@ -222,5 +269,16 @@ export function useLiveChannel({
     [spawnReaction],
   );
 
-  return { chat, reactions, viewerCount, peakViewerCount, connected, sendChat, sendReaction };
+  const effectiveStatus: LiveChannelStatus = supabase ? status : 'error';
+
+  return {
+    chat,
+    reactions,
+    viewerCount,
+    peakViewerCount,
+    connected: effectiveStatus === 'connected',
+    status: effectiveStatus,
+    sendChat,
+    sendReaction,
+  };
 }

@@ -162,8 +162,25 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
 
   return (
     <main className="flex h-dvh flex-col overflow-hidden bg-[#0a0a15] text-white">
-      <div className="safe-x safe-top grid min-h-0 flex-1 grid-cols-1 gap-3 p-3 lg:grid-cols-[minmax(0,7fr)_minmax(0,3fr)]">
-        <div className="relative flex min-h-0 flex-col">
+      {/* MOBILE-FIRST, and the row template is the whole fix.
+          `grid-cols-1` alone left both rows content-sized, so the chat panel —
+          which has min-h-48 and flex-1 — took whatever it wanted and the video
+          got the remainder. On a phone that is a ~200px strip, which is the
+          wrong way round for a video product. Now the video row is `auto` and
+          sized by its own 16:9 box, and the chat gets `minmax(0,1fr)`: exactly
+          the space that is left, and it scrolls inside it.
+          Horizontal padding moves to the children so the video can go
+          edge-to-edge on a phone, where 12px of letterboxing on each side is
+          12px of video nobody gets. */}
+      <div className="safe-x safe-top grid min-h-0 flex-1 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] gap-3 lg:grid-cols-[minmax(0,7fr)_minmax(0,3fr)] lg:grid-rows-1 lg:p-3">
+        {/* aspect-video pins the 16:9 box on mobile. The max-height is for a
+            phone held sideways, where 16:9 of the full width is TALLER than
+            the viewport and would push the chat off a screen that cannot
+            scroll; the player is object-contain, so capping the height
+            letterboxes rather than crops. On lg the row is a fraction of the
+            viewport height instead, so the ratio is released and the player
+            fills the column. */}
+        <div className="relative flex aspect-video max-h-[55dvh] min-h-0 w-full flex-col lg:aspect-auto lg:max-h-none">
           {watch.kind === 'hls' ? (
             <HlsLivePlayer
               playbackUrl={watch.playbackUrl}
@@ -188,7 +205,7 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
           {endedWhileWatching && <EndedOverlay creator={creator} />}
         </div>
 
-        <div className="flex min-h-0 flex-col gap-3 overflow-y-auto lg:overflow-visible">
+        <div className="flex min-h-0 flex-col gap-3 overflow-y-auto px-3 pb-3 lg:overflow-visible lg:p-0">
           {creator && (
             <div className="shrink-0">
               <CreatorInlineCard
@@ -213,7 +230,7 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
           <LiveChat
             entries={channel.chat}
             onSend={channel.sendChat}
-            enabled={channel.connected}
+            status={channel.status}
             className="min-h-48 flex-1"
           />
         </div>

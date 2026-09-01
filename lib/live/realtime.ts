@@ -113,11 +113,22 @@ function decodeMessage(raw: unknown, expected: LiveMessage['type']): LiveMessage
   };
 }
 
+/**
+ * Where the subscription is.
+ *
+ * Not a boolean. A boolean cannot tell "still connecting" apart from "the
+ * server refused this channel", and those need opposite responses from the UI:
+ * one is a spinner, the other is "reload the page". The first version of this
+ * collapsed both into `connected: false`, which is how an authorization
+ * failure would have presented as an input that stayed greyed out forever.
+ */
+export type LiveChannelStatus = 'connecting' | 'connected' | 'error' | 'closed';
+
 export interface LiveChannelHandlers {
   onChat?: (entry: LiveChatReceived) => void;
   onReaction?: (entry: LiveReactionReceived) => void;
-  /** Told when the subscription settles, so the UI can enable its inputs. */
-  onStatusChange?: (connected: boolean) => void;
+  /** Told whenever the subscription changes state, with the reason on failure. */
+  onStatusChange?: (status: LiveChannelStatus, error?: Error) => void;
   /** How many viewers are on the channel, excluding the broadcaster. */
   onViewerCount?: (count: number) => void;
 }
@@ -156,25 +167,50 @@ interface LivePresence {
  * WebSocket subscription open for the life of the tab, and a viewer who
  * watches four streams in a row would end up in four channels.
  */
-export function openLiveChannel(
+export async function openLiveChannel(
   supabase: SupabaseClient,
   sessionId: string,
   identity: LiveChannelIdentity,
   handlers: LiveChannelHandlers,
-): { sender: LiveChannelSender; viewerCount: () => number; close: () => void } {
+): Promise<{ sender: LiveChannelSender; viewerCount: () => number; close: () => void }> {
   /**
-   * Private channels are authorised per-topic against realtime.messages, and
-   * Realtime needs the user's access token to do that. Recent supabase-js
-   * pulls it from the current session when called with no argument; older
-   * builds throw, and a throw here would take the whole channel down for what
-   * is a best-effort refresh.
+   * AWAITED, and that is the whole point of this function being async.
+   *
+   * `subscribe()` reads `socket.accessTokenValue` SYNCHRONOUSLY when it builds
+   * the join payload, and only attaches an `access_token` if one is already
+   * there. `setAuth()` is async — it reads the session out of storage — so
+   * firing it without awaiting and then subscribing in the same tick races: the
+   * join can go out with no token at all, `auth.uid()` is then null inside the
+   * realtime.messages policies, `can_watch_live_session` returns false, and the
+   * channel is refused. The first version did exactly that.
+   *
+   * The failure is swallowed rather than thrown: an expired token should
+   * surface as a channel error from the server, which says something useful,
+   * not as an exception here that takes the video down with the chat.
    */
-  void Promise.resolve(supabase.realtime.setAuth()).catch(() => {});
+  // Announced before the first await so a caller that re-opens the channel for
+  // a new session shows "connecting" from the same instant the old channel
+  // stops being the one on screen. The transport reporting its own state is
+  // also what keeps the consumer free of setState-in-effect.
+  handlers.onStatusChange?.('connecting');
+
+  try {
+    await supabase.realtime.setAuth();
+  } catch (err) {
+    console.error('[live/realtime] setAuth failed', err);
+  }
 
   const channel: RealtimeChannel = supabase.channel(liveChannelName(sessionId), {
     config: {
       private: true,
-      broadcast: { self: false },
+      broadcast: {
+        self: false,
+        // Wait for the server to acknowledge a broadcast. Without it `send()`
+        // resolves 'ok' the instant it is queued, so a message the server
+        // rejected is indistinguishable from one it delivered — which is the
+        // other half of how a broken channel stays invisible.
+        ack: true,
+      },
       // Keyed on the user id so one person watching in two tabs is one
       // viewer. The default key is per-connection, which would count them
       // twice and inflate the number the cost estimate is built on.
@@ -212,15 +248,29 @@ export function openLiveChannel(
     .on('presence', { event: 'sync' }, () => {
       handlers.onViewerCount?.(countViewers(channel));
     })
-    .subscribe((status) => {
-      handlers.onStatusChange?.(status === 'SUBSCRIBED');
-      if (status !== 'SUBSCRIBED') return;
-      // Tracked only once subscribed: a track() before the join is
-      // acknowledged is dropped, and the viewer would then be invisible to
-      // everyone else's count for the whole broadcast.
-      void channel
-        .track({ role: identity.isCreator ? 'creator' : 'viewer' } satisfies LivePresence)
-        .catch(() => {});
+    .subscribe((status, err) => {
+      if (status === 'SUBSCRIBED') {
+        handlers.onStatusChange?.('connected');
+        // Tracked only once subscribed: a track() before the join is
+        // acknowledged is dropped, and the viewer would then be invisible to
+        // everyone else's count for the whole broadcast.
+        void channel
+          .track({ role: identity.isCreator ? 'creator' : 'viewer' } satisfies LivePresence)
+          .catch((trackErr) => console.error('[live/realtime] presence track failed', trackErr));
+        return;
+      }
+
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        // The overwhelmingly likely cause is the realtime.messages policies
+        // refusing this topic — a missing access token, or a viewer who is not
+        // entitled to this session. `err.cause` usually carries the server's
+        // own reason, so it is logged rather than summarised away.
+        console.error(`[live/realtime] channel ${status} on ${liveChannelName(sessionId)}`, err);
+        handlers.onStatusChange?.('error', err ?? undefined);
+        return;
+      }
+
+      if (status === 'CLOSED') handlers.onStatusChange?.('closed');
     });
 
   const send = async (type: LiveMessage['type'], payload: string) => {
@@ -231,7 +281,13 @@ export function openLiveChannel(
       payload,
       ts: Date.now(),
     };
-    await channel.send({ type: 'broadcast', event: type, payload: message });
+    // With `ack: true` this resolves to the server's verdict rather than to
+    // 'ok' on queue, so a rejected message can be reported instead of
+    // disappearing.
+    const result = await channel.send({ type: 'broadcast', event: type, payload: message });
+    if (result !== 'ok') {
+      throw new Error(`Broadcast ${type} was not accepted: ${result}`);
+    }
   };
 
   return {
