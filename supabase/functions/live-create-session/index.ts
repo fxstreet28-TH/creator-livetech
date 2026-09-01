@@ -1,29 +1,36 @@
 /**
  * live-create-session v3 — open a broadcast.
  *
- * v2 minted a LiveKit token and stopped there, and every viewer joined the
- * same room. v3 keeps the LiveKit room for the PUBLISHER only and adds the
- * delivery half: a Bunny Live stream, and a LiveKit RoomComposite egress that
- * pushes the room into it over RTMP. Viewers never touch LiveKit again — they
- * pull LL-HLS off Bunny's CDN via live-get-playback-url.
+ * The creator publishes WebRTC into a LiveKit room. Where the VIEWERS get the
+ * video from is the part that moves: either LL-HLS off Bunny's CDN (cheap, and
+ * what this migration is for) or a direct subscription to the same LiveKit
+ * room (the pre-migration path, ~8x dearer per viewer).
  *
  * Bunny Live has no WHIP ingest (checked against library 740127 on
- * 2026-09-01), which is why the publisher side is still WebRTC-into-LiveKit
- * rather than the browser talking to Bunny directly. See ../_shared/live.ts.
+ * 2026-09-01), which is why the publisher side is WebRTC-into-LiveKit either
+ * way rather than the browser talking to Bunny directly. See ../_shared/live.ts.
  *
- * THREE MODES, and the third one only exists during the transition:
+ * DELIVERY IS A RUNTIME SWITCH, not a build-time one. The vault secret
+ * `live_delivery_mode` decides which of the two a session gets, and it is read
+ * on every create. Flipping it needs no deploy, which is the whole point: on
+ * 2026-09-01 Bunny was accepting the RTMP feed (it parsed the video header —
+ * width, height and framerate came back populated) and then never
+ * transitioning the stream to live or producing a playlist, so every LL-HLS
+ * viewer waited on a manifest that was never written. Until that is fixed on
+ * Bunny's side, 'livekit' is the mode that actually delivers video.
+ *
+ * THREE MODES, and the third only exists during the transition:
  *
  *   create        creator opens a session. Returns a publisher token plus
  *                 which delivery path this session got.
  *   start_egress  called once the publisher is actually connected. Starting
  *                 the egress here, rather than inside `create`, means an
  *                 abandoned go-live cannot leave an egress encoding an empty
- *                 room at $0.015/minute until somebody notices.
+ *                 room at $0.015/minute until somebody notices. Never reached
+ *                 in 'livekit' mode — there is no Bunny stream to push to.
  *   join          UNCHANGED from v2, and deliberately still here. Production
  *                 runs the pre-migration frontend until the web PR ships, and
  *                 that frontend asks for a LiveKit viewer token on this route.
- *                 Deleting it would take live streaming down between the
- *                 backend deploy and the frontend deploy.
  *                 TODO(phase 2B): remove once the LL-HLS frontend is live and
  *                 stable, together with the rest of the LiveKit viewer path.
  */
@@ -36,6 +43,7 @@ import {
   getAuthedCreator,
   getServiceClient,
   getVaultSecrets,
+  tryGetVaultSecret,
 } from '../_shared/utils.ts';
 import {
   bunnyCreateLiveStream,
@@ -46,6 +54,17 @@ import {
 } from '../_shared/live.ts';
 
 const QUALITY_ORDER = ['360p', '480p', '720p', '1080p'];
+
+/**
+ * Which pipeline carries video to viewers when the vault says nothing.
+ *
+ * 'livekit' — the pre-migration path, ~2.26 THB/viewer-hour, and the one that
+ * is known to put a picture on a viewer's screen. LL-HLS is ~8x cheaper and is
+ * what this migration is for, but a default that costs money is better than a
+ * default that shows nothing, so the cheap path has to be opted INTO by
+ * setting `live_delivery_mode` to 'llhls'.
+ */
+const DEFAULT_DELIVERY_MODE = 'livekit';
 
 /** Publisher tokens outlive a long broadcast; the egress token is minted per call. */
 const PUBLISHER_TOKEN_TTL_SECONDS = 4 * 3600;
@@ -107,34 +126,52 @@ Deno.serve(async (req) => {
         Math.min(QUALITY_ORDER.indexOf(requestedQuality), QUALITY_ORDER.indexOf(quota.max_quality))
       ];
 
-      const latencyMode = ['ultra_low', 'low_latency', 'standard'].includes(body.latency_mode)
+      const deliveryMode =
+        (await tryGetVaultSecret('live_delivery_mode')) ?? DEFAULT_DELIVERY_MODE;
+
+      /**
+       * LiveKit delivery keeps the viewer on WebRTC, so there is no CDN in the
+       * path and the latency is sub-second — which is what 'ultra_low' means
+       * to the player. Under LL-HLS the creator's own choice governs.
+       */
+      const requestedLatency = ['ultra_low', 'low_latency', 'standard'].includes(body.latency_mode)
         ? body.latency_mode
         : 'low_latency';
+      const latencyMode = deliveryMode === 'llhls' ? requestedLatency : 'ultra_low';
 
       /**
        * Bunny is created BEFORE the row so the row is written once, complete.
        *
-       * A failure here is soft on purpose. The session still works over
-       * LiveKit end to end, production is still running the pre-migration
-       * frontend that only knows that path, and refusing to go live because a
-       * CDN we are in the middle of adopting had a bad minute would be a worse
-       * trade than one expensive broadcast.
+       * Skipped entirely in 'livekit' mode: a Bunny stream nobody plays is an
+       * object to create, track and delete for nothing, and creating one would
+       * make the row claim a delivery path it is not using.
+       *
+       * When it IS attempted, a failure is soft on purpose — the session still
+       * works over LiveKit end to end, and refusing to go live because a CDN we
+       * are in the middle of adopting had a bad minute would be a worse trade
+       * than one expensive broadcast. The row records which path it got, so a
+       * fallback is visible rather than silent.
        */
       let bunny = null;
-      try {
-        bunny = await bunnyCreateLiveStream(
-          bunnyLibrary,
-          bunnyKey,
-          `Live: ${handle} - ${new Date().toISOString()}`,
-          {
-            dvrEnabled: true,
-            // Bunny cannot start recording retroactively, so this is decided
-            // here or never. It follows the creator's own choice.
-            recordVod: body.recording_enabled === true,
-          },
-        );
-      } catch (err) {
-        console.error('[live-create-session] Bunny live create failed, falling back to LiveKit delivery', err);
+      if (deliveryMode === 'llhls') {
+        try {
+          bunny = await bunnyCreateLiveStream(
+            bunnyLibrary,
+            bunnyKey,
+            `Live: ${handle} - ${new Date().toISOString()}`,
+            {
+              dvrEnabled: true,
+              // Bunny cannot start recording retroactively, so this is decided
+              // here or never. It follows the creator's own choice.
+              recordVod: body.recording_enabled === true,
+            },
+          );
+        } catch (err) {
+          console.error(
+            '[live-create-session] Bunny live create failed, falling back to LiveKit delivery',
+            err,
+          );
+        }
       }
 
       const { data: session, error: sessionErr } = await supabase

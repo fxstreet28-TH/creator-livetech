@@ -256,6 +256,7 @@ export function CreatorBroadcaster({
           quality,
           stream: filtered.stream,
           micEnabled,
+          delivery,
         });
       } catch (err) {
         if (cancelled) return;

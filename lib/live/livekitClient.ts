@@ -105,6 +105,13 @@ export interface PublisherOptions {
   stream: MediaStream;
   /** Start with the mic muted — the toggle on the setup screen. */
   micEnabled?: boolean;
+  /**
+   * Who is subscribing to this room.
+   *
+   * 'llhls' means the only subscriber is the egress worker; 'livekit' means
+   * real viewers on real connections. It decides simulcast — see below.
+   */
+  delivery?: 'llhls' | 'livekit';
 }
 
 export interface PublishedTracks {
@@ -143,12 +150,18 @@ export async function connectAsPublisher(
         maxFramerate: resolutionFor(options.quality).frameRate,
         maxBitrate: bitrateFor(options.quality),
       },
-      // Off deliberately. Simulcast exists so an SFU can give each viewer the
-      // layer their connection can take; this room has exactly one subscriber
-      // — the egress — and it always wants the top layer. Encoding two spare
-      // layers nobody receives is CPU spent on the creator's machine for
-      // nothing, and that machine is also running the filter canvas.
-      simulcast: false,
+      /**
+       * On only when real viewers subscribe to this room.
+       *
+       * Simulcast exists so an SFU can hand each viewer the layer their
+       * connection can take. Under LL-HLS the room has exactly one subscriber
+       * — the egress — and it always wants the top layer, so the two spare
+       * encodes would be CPU spent on a machine that is already running the
+       * filter canvas. Under LiveKit delivery every viewer is a subscriber, a
+       * phone on Thai mobile data cannot hold 3 Mbps, and without simulcast it
+       * gets a stuttering 720p instead of a clean 360p.
+       */
+      simulcast: options.delivery !== 'llhls',
     });
   }
 

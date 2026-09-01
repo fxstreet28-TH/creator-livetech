@@ -118,6 +118,20 @@ async function bunnyRequest(
 /**
  * Create the Bunny live stream a broadcast will be delivered through.
  *
+ * A LIVE STREAM IS NOT A VIDEO. It is created at `POST /library/{id}/live`,
+ * not `/videos`, and it is the only call that returns a `streamKey` and
+ * `ingestEndpoints` — the two things an RTMP push needs. `/videos` creates a
+ * VOD upload target with neither. The two resources do share an id space: a
+ * live stream's guid also resolves at `/videos/{guid}`, which makes it easy to
+ * conclude from a 404 there that an id is fabricated when it is simply a
+ * stream that has since been deleted — live-end-session deletes every stream
+ * that recorded nothing, so an ended session's id 404s on BOTH routes.
+ *
+ * Bunny's own id and key formats, for anyone checking: guids come back as
+ * UUIDv7 (`01a05de6-e9fa-73fd-…`, so they sort by creation time) and stream
+ * keys as `bunnylive_<32 hex>`. Both are Bunny's, not ours; nothing in this
+ * codebase generates either.
+ *
  * `recordVod` is what turns a finished live into a VOD asset, and it has to be
  * decided HERE — Bunny cannot start recording a stream retroactively, so
  * live-end-session can only report the asset, never ask for one.
@@ -177,6 +191,11 @@ export async function bunnyDeleteLiveStream(
  * The full RTMP destination: Bunny's ingest URL with the stream key as the
  * stream name. This string IS the credential — never log it, never return it
  * to a client. It exists to be handed to LiveKit's egress and nowhere else.
+ *
+ * Both halves come from Bunny's own create response — `ingestEndpoints.rtmp
+ * .primaryIngestUrl` and `streamKey`. Neither is constructed here, and neither
+ * should be: the ingest host is account- and region-dependent, so a hardcoded
+ * one would work until it silently did not.
  */
 export function bunnyRtmpDestination(stream: BunnyLiveStream): string {
   const base = stream.ingestEndpoints?.rtmp?.primaryIngestUrl;

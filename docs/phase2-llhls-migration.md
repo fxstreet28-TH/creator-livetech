@@ -257,6 +257,87 @@ The pipeline is correct and instrumented; it is waiting on the vendor.
   delivered, rather than left on a spinner forever; while waiting they see an
   elapsed counter against the stated ceiling.
 
+## 5b. Delivery is now a runtime switch, defaulting to LiveKit
+
+Because §5a is vendor-side and unresolved, viewer delivery is selected at
+runtime by the vault secret **`live_delivery_mode`**, read on every
+`live-create-session` create:
+
+| value | viewers get | cost | status |
+|---|---|---|---|
+| `livekit` (**current**) | a direct subscription to the creator's LiveKit room | ~2.26 THB/viewer-hour | known to work |
+| `llhls` | a Bunny LL-HLS playlist via hls.js | ~0.30 THB/viewer-hour | blocked on §5a |
+
+Flip it with one SQL statement — **no deploy, no code change**:
+
+```sql
+select vault.update_secret(
+  (select id from vault.secrets where name = 'live_delivery_mode'),
+  'llhls'
+);
+```
+
+In `livekit` mode `live-create-session` skips the Bunny create entirely (no
+orphan objects) and skips the egress (no wasted egress billing), and stamps the
+session `latency_mode: 'ultra_low'` because WebRTC has no CDN in the path.
+Everything else is unchanged, and nothing else needed changing — the dual-path
+design was already in place:
+
+- `live-get-playback-url` returns a LiveKit subscriber token for any session
+  with no `bunny_playback_url`.
+- `LiveWatchView` already renders `LiveKitLivePlayer` for `delivery: 'livekit'`.
+- `CreatorBroadcaster` already skips `start_egress` when delivery is not llhls.
+
+One deliberate difference between the modes: **simulcast is on only under
+LiveKit delivery.** Under LL-HLS the room's single subscriber is the egress and
+it always wants the top layer, so the spare encodes are wasted CPU on a machine
+already running the filter canvas. Under LiveKit delivery every viewer is a
+subscriber and a phone on Thai mobile data cannot hold 3 Mbps — without
+simulcast it gets a stuttering 720p instead of a clean 360p.
+
+**What is preserved in either mode:** Supabase Realtime chat and reactions,
+presence viewer counts, the chat counter, the mobile 16:9 layout, camera
+filters burned into the published track, the kill switch, and the login gate.
+
+## 5c. Correcting the record: the Bunny IDs are real
+
+A report on 2026-09-01 concluded that `live-create-session` fabricates Bunny
+IDs locally and never calls the Bunny API. It does not, and the "fix" it
+proposed — creating live streams at `POST /library/{id}/videos` and
+constructing `rtmp://ingest.b-cdn.net/{library_id}` — would have replaced
+working code with something that cannot work. Recorded here so it is not
+re-litigated:
+
+- **Nothing in the codebase generates an id.** `grep -rn 'randomUUID\|uuid\|
+  bunnylive_'` over `supabase/functions/live-*` and `_shared/live.ts` returns
+  nothing. `bunny_stream_id` is `bunny.guid`, read off the parsed HTTP
+  response; on a Bunny failure `bunny` is null and the columns are null.
+- **The formats called fabricated are Bunny's own.** A live create issued by
+  hand returned `guid: 01a05de6-e9fa-73fd-8ac8-590d807dccd4` and
+  `streamKey: bunnylive_76c47c07e6d4408ba50adb1c0d65eb85`. The guids are
+  UUIDv7, which is why they share a `01a05…` prefix — they sort by creation
+  time. The `bunnylive_` prefix is Bunny's.
+- **`playbackUrlHls` is Bunny's too**, including the filename: Bunny returns
+  `…/live/{guid}/live.m3u8`. It is stored verbatim; the app constructs no
+  playback URL.
+- **The 404s came from the wrong endpoint and from our own cleanup.** Live
+  streams live at `/library/{id}/live/{guid}`. They also resolve at
+  `/videos/{guid}` — a probe stream returned 200 on both. Ended sessions 404 on
+  both because `live-end-session` deletes every stream that recorded nothing.
+  That is the same reason the library shows zero live streams between sessions.
+- **The strongest proof is already in the database.** `metadata.bunny_final` on
+  session `0afeb2e9-…` holds a complete Bunny object — `dateCreated
+  2026-09-01T15:44:46.937`, `streamKey bunnylive_65120b0d…`, full
+  `ingestEndpoints` — fetched by an authenticated GET on that supposedly fake
+  id. A fabricated id cannot return that.
+- **"Bunny cost = 0" is our own estimator**, not a Bunny reading:
+  `durationMinutes × peakViewers × 0.0039 THB`. One viewer for two minutes is
+  0.01 THB.
+
+`POST /videos` returns no `streamKey` and no `ingestEndpoints`, so RTMP could
+not be addressed at all; and the ingest host is account- and region-dependent,
+which is why it is read from Bunny's response rather than hardcoded.
+
 ## 6. Two things to decide before launch
 
 1. **Bunny CDN token authentication is OFF.** There is no
