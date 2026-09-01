@@ -3,9 +3,10 @@
 /**
  * The viewer's reaction rail: six emoji across the bottom-right of the player.
  *
- * A tap sends one reaction to everyone in the room AND spawns one locally —
- * both, because LiveKit does not echo a participant's own data packets back to
- * them, so the local spawn is the only way the sender sees their own heart.
+ * A tap both sends and spawns locally — the Realtime channel is opened with
+ * `self: false`, so without the local echo the sender would be the one person
+ * who does not see their own heart. Both halves are useLiveChannel's job now;
+ * this component only decides WHEN to fire.
  *
  * Holding a button repeats at 3/sec. That is under the 10/sec throttle on
  * purpose: a held button should feel generous, and still leave a viewer room
@@ -17,7 +18,6 @@
  */
 
 import { useCallback, useEffect, useRef } from 'react';
-import { publishReaction, type Room } from '@/lib/live/livekitClient';
 import {
   LONG_PRESS_DELAY_MS,
   LONG_PRESS_INTERVAL_MS,
@@ -26,14 +26,14 @@ import {
 } from '@/lib/live/reactions';
 
 interface EmojiReactionButtonProps {
-  /** Null until the room is connected; the buttons stay disabled until then. */
-  room: Room | null;
-  /** Local echo — see the header. */
-  onSpawn: (emoji: string) => void;
+  /** useLiveChannel's sender. It both broadcasts and echoes locally. */
+  onReact: (emoji: string) => void;
+  /** False until the channel subscription settles; the buttons stay disabled. */
+  enabled: boolean;
   className?: string;
 }
 
-export function EmojiReactionButton({ room, onSpawn, className = '' }: EmojiReactionButtonProps) {
+export function EmojiReactionButton({ onReact, enabled, className = '' }: EmojiReactionButtonProps) {
   // One throttle for the whole rail, not one per button: the limit is per
   // participant, and six buttons with their own allowance would be six times
   // the limit.
@@ -52,20 +52,13 @@ export function EmojiReactionButton({ room, onSpawn, className = '' }: EmojiReac
 
   const fire = useCallback(
     (emoji: string) => {
-      if (!room) return;
+      if (!enabled) return;
       // Dropped, not queued: a heart that arrives a second late is not a
       // reaction to anything.
       if (!throttleRef.current()) return;
-
-      onSpawn(emoji);
-      void publishReaction(room, emoji).catch((err) => {
-        // Silent by design. The local emoji has already flown, and there is no
-        // toast system in this repo (nor is one in scope) — a failed packet
-        // costs the other participants one heart, not this viewer their tap.
-        console.error('[EmojiReactionButton] publishReaction failed', err);
-      });
+      onReact(emoji);
     },
-    [room, onSpawn],
+    [enabled, onReact],
   );
 
   const startHold = useCallback(
@@ -91,7 +84,7 @@ export function EmojiReactionButton({ room, onSpawn, className = '' }: EmojiReac
         <button
           key={option.emoji}
           type="button"
-          disabled={!room}
+          disabled={!enabled}
           aria-label={option.label}
           title={option.label}
           // pointerdown rather than click: a tap has to register on the way

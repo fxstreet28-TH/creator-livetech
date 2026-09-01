@@ -3,89 +3,57 @@
 /**
  * The chat panel, shared by the broadcaster and the viewer screens.
  *
- * Messages travel on the LiveKit data channel, not Supabase Realtime: the room
- * is already open on both sides, `live_sessions` is not in the
- * `supabase_realtime` publication (only `stars_wallet` and `messages` are — see
- * lib/creator/constants.ts), and nothing writes chat to Postgres by design
- * (non-negotiable #6). So the panel is ephemeral in the strongest sense: a
- * viewer who joins late sees an empty panel, and everything is gone when the
- * room closes.
+ * Messages travel on a Supabase Realtime broadcast channel, `live:<id>`. They
+ * used to travel on the LiveKit data channel, which worked only because every
+ * viewer was in the room — under LL-HLS a viewer is an HTTP request to a CDN,
+ * so there is no room to reach them through. The channel is private, gated by
+ * the same rule as the playback URL (see the realtime.messages policies in the
+ * migration), so only people entitled to watch can read or write it.
  *
- * LiveKit does not echo a participant's own data packets back to them, so a
- * sent message is appended locally. That local copy is the only record of it.
+ * Still ephemeral in the strongest sense: nothing writes chat to Postgres, so
+ * a viewer who joins late sees an empty panel and everything is gone when the
+ * tab closes. That was a decision under LiveKit and it is still the decision.
  *
- * The 👑 badge is derived from the LiveKit participant identity — which the
- * backend mints and the server asserts — never from the `sender` name inside
- * the payload, which is whatever the sender chose to call themselves.
+ * This component owns none of that. useLiveChannel holds the list, the
+ * subscription and the local echo (the channel does not send a participant
+ * their own messages back); the panel renders and submits.
  *
- * Emoji reactions share this data channel (see lib/live/reactions.ts). They
- * arrive at the same DataReceived handler and are dropped by decodeChat, which
- * accepts nothing but `type: 'chat'` — the panel is chat-only without needing
- * to know reactions exist.
+ * THE 👑 IS A WEAKER CLAIM THAN IT WAS. LiveKit asserted participant identity
+ * server-side, so the badge was a fact. A broadcast payload is written by its
+ * sender, so the badge now means "the id this sender claimed matches the
+ * creator id the backend told us". See lib/live/realtime.ts.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Send } from 'lucide-react';
-import {
-  RoomEvent,
-  decodeChat,
-  isCreatorIdentity,
-  publishChat,
-  type Room,
-} from '@/lib/live/livekitClient';
-import { MAX_CHAT_LENGTH, MAX_CHAT_MESSAGES } from '@/lib/live/constants';
+import { MAX_CHAT_LENGTH } from '@/lib/live/constants';
+import type { LiveChannelStatus } from '@/lib/live/realtime';
 import type { LiveChatEntry } from '@/lib/live/types';
 import { ChatEmojiPicker } from './ChatEmojiPicker';
 
 interface LiveChatProps {
-  /** Null until the room is connected; the input stays disabled until then. */
-  room: Room | null;
-  /** What this participant's messages are signed with. */
-  senderName: string;
-  /** True on the broadcaster's screen, for their own optimistic echo's badge. */
-  isCreator: boolean;
+  /** The list, from useLiveChannel. This component never mutates it. */
+  entries: LiveChatEntry[];
+  /** useLiveChannel's send — it broadcasts and appends the local echo. */
+  onSend: (text: string) => Promise<void>;
+  /**
+   * Where the channel is.
+   *
+   * Not a boolean, because "connecting" and "refused" need different copy.
+   * A greyed-out box that says "กำลังเชื่อมต่อ..." forever is how a channel
+   * the server rejected looks exactly like one that is about to work.
+   */
+  status: LiveChannelStatus;
   className?: string;
 }
 
-export function LiveChat({ room, senderName, isCreator, className = '' }: LiveChatProps) {
-  const [entries, setEntries] = useState<LiveChatEntry[]>([]);
+export function LiveChat({ entries, onSend, status, className = '' }: LiveChatProps) {
+  const enabled = status === 'connected';
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
 
   const listRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
-  /** Data packets carry no id and two can share a millisecond. */
-  const seqRef = useRef(0);
-
-  const append = useCallback((entry: Omit<LiveChatEntry, 'id'>) => {
-    seqRef.current += 1;
-    const withId: LiveChatEntry = { ...entry, id: `m${seqRef.current}` };
-    // Oldest dropped rather than kept: this is the entire history there is,
-    // and an unbounded array on a three-hour broadcast is a leak.
-    setEntries((current) => [...current, withId].slice(-MAX_CHAT_MESSAGES));
-  }, []);
-
-  useEffect(() => {
-    if (!room) return;
-
-    const onData = (payload: Uint8Array, participant?: { identity: string }) => {
-      const message = decodeChat(payload);
-      if (!message) return;
-      append({
-        text: message.text,
-        sender: message.sender,
-        timestamp: message.timestamp,
-        identity: participant?.identity ?? null,
-        isCreator: isCreatorIdentity(participant?.identity),
-        isSelf: false,
-      });
-    };
-
-    room.on(RoomEvent.DataReceived, onData);
-    return () => {
-      room.off(RoomEvent.DataReceived, onData);
-    };
-  }, [room, append]);
 
   // Follow the newest message. `block: 'nearest'` so the page itself does not
   // jump on the phone layout, where the panel is a sheet inside the viewport.
@@ -125,25 +93,17 @@ export function LiveChat({ room, senderName, isCreator, className = '' }: LiveCh
 
   const send = async () => {
     const text = draft.trim();
-    if (!room || text === '' || sending) return;
+    if (!enabled || text === '' || sending) return;
 
     setSending(true);
     try {
-      await publishChat(room, text, senderName);
-      append({
-        text: text.slice(0, MAX_CHAT_LENGTH),
-        sender: senderName,
-        timestamp: Date.now(),
-        identity: null,
-        isCreator,
-        isSelf: true,
-      });
+      await onSend(text);
       setDraft('');
     } catch (err) {
       // No toast system in this repo (and the brief forbids adding one), so a
       // failed send leaves the text in the box — the message is not lost, and
       // pressing Enter again retries it.
-      console.error('[LiveChat] publishData failed', err);
+      console.error('[LiveChat] send failed', err);
     } finally {
       setSending(false);
     }
@@ -166,11 +126,23 @@ export function LiveChat({ room, senderName, isCreator, className = '' }: LiveCh
         role="log"
         className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3"
       >
-        {entries.length === 0 ? (
-          <p className="px-1 py-6 text-center text-xs leading-relaxed text-white/35">
-            ยังไม่มีข้อความ
+        {status === 'error' ? (
+          <p role="alert" className="px-1 py-6 text-center text-xs leading-relaxed text-rose-200/80">
+            แชทใช้งานไม่ได้ในขณะนี้
             <br />
-            ทักทายกันได้เลย
+            กรุณารีเฟรชหน้านี้เพื่อลองใหม่
+          </p>
+        ) : entries.length === 0 ? (
+          <p className="px-1 py-6 text-center text-xs leading-relaxed text-white/35">
+            {status === 'connected' ? (
+              <>
+                ยังไม่มีข้อความ
+                <br />
+                ทักทายกันได้เลย
+              </>
+            ) : (
+              'กำลังเชื่อมต่อแชท...'
+            )}
           </p>
         ) : (
           entries.map((entry) => <ChatBubble key={entry.id} entry={entry} />)
@@ -185,22 +157,28 @@ export function LiveChat({ room, senderName, isCreator, className = '' }: LiveCh
         className="shrink-0 border-t border-white/8 p-3"
       >
         <div className="flex items-end gap-2">
-          <ChatEmojiPicker onSelect={insertEmoji} disabled={!room} />
+          <ChatEmojiPicker onSelect={insertEmoji} disabled={!enabled} />
 
           <input
             ref={inputRef}
             type="text"
             value={draft}
             maxLength={MAX_CHAT_LENGTH}
-            disabled={!room}
+            disabled={!enabled}
             onChange={(event) => setDraft(event.target.value)}
-            placeholder={room ? 'พิมพ์ข้อความ...' : 'กำลังเชื่อมต่อ...'}
+            placeholder={
+              enabled
+                ? 'พิมพ์ข้อความ...'
+                : status === 'error'
+                  ? 'แชทใช้งานไม่ได้'
+                  : 'กำลังเชื่อมต่อ...'
+            }
             aria-label="ข้อความแชท"
             className="h-11 w-full min-w-0 rounded-xl border border-white/10 bg-black/30 px-3 text-sm text-white placeholder:text-white/25 focus:border-purple-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 disabled:opacity-50"
           />
           <button
             type="submit"
-            disabled={!room || draft.trim() === '' || sending}
+            disabled={!enabled || draft.trim() === '' || sending}
             className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-r from-purple-500 to-cyan-400 text-white transition hover:shadow-lg hover:shadow-purple-500/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:shadow-none"
           >
             <Send size={16} aria-hidden />

@@ -1,58 +1,71 @@
 'use client';
 
 /**
- * The publisher half of /creator/live: the LiveKit room, the self-view, the
- * mic/camera controls, and everything that has to keep working when the
- * network does not.
+ * The publisher half of /creator/live: the camera, the filter canvas, the
+ * LiveKit connection, and the call that starts delivery to the CDN.
  *
- * It owns the Room object and hands it up to the page (`onRoomChange`) so the
- * chat panel can share the same connection — one room per broadcast, not two.
+ * WHAT THE PIPELINE LOOKS LIKE FROM HERE
  *
- * Two writes to `live_sessions` happen from here, and neither is incidental:
+ *   getUserMedia --> canvas (the look) --> LiveKit publish --> RoomComposite
+ *     egress --> RTMP --> Bunny Live --> LL-HLS --> viewers
  *
- *  - markSessionLive, once connected. The backend inserts the row as
- *    'waiting' and nothing else ever promotes it, so without this the session
- *    is on air with a row that says otherwise — which is what /discover and
- *    the dashboard strip read.
- *  - persistViewerCounts, on a new peak and on a timer. `peak_viewer_count`
- *    has no writer anywhere in the backend, yet live-end-session READS it to
- *    build the session summary. The broadcaster is the one participant that
- *    knows the real number.
+ * Two of those arrows are new and both matter:
  *
- * Both are best-effort: a refused write is logged, never surfaced. Nothing
- * about a wrong number is worth interrupting a broadcast for.
+ *  - THE CANVAS. The camera is opened here rather than by LiveKit's
+ *    `setCameraEnabled`, because the frames have to pass through a canvas that
+ *    applies the creator's chosen look before anything encodes them. That is
+ *    what makes the filter visible to viewers; until this migration it was a
+ *    CSS effect on the creator's own screen and the UI had to admit as much.
+ *  - THE EGRESS. Started AFTER the publisher is connected and publishing, not
+ *    at go-live. An egress bills per minute from the moment it starts, and
+ *    starting it when the session row is created would charge an abandoned
+ *    go-live for compositing an empty room.
  *
- * Two things sit on top of the self-view and neither touches the broadcast:
- * the viewers' emoji reactions float up over it (received only — a creator
- * does not throw hearts at their own stream), and the camera look is a CSS
- * filter on the element painting the track. The look is local to this screen;
- * see lib/live/cameraFilters.ts.
+ * The room contains the creator and, once delivery starts, LiveKit's egress
+ * worker. It does NOT contain the audience — viewers pull HLS from a CDN — so
+ * the viewer count and the reactions floating over the self-view both come
+ * from the Supabase Realtime channel, via the page. This component receives
+ * them as props and owns neither.
+ *
+ * One write to `live_sessions` happens from here: persistViewerCounts. The
+ * peak it maintains is what live-end-session reads to build the session
+ * summary AND to price the broadcast, and nothing else writes it. Best-effort
+ * — a refused write is logged, never surfaced. Nothing about a wrong number is
+ * worth interrupting a broadcast for.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, Mic, MicOff, Sparkles, Video, VideoOff, WifiOff } from 'lucide-react';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
-import { markSessionLive, persistViewerCounts } from '@/lib/live/api';
+import { markSessionLive, persistViewerCounts, startLiveEgress } from '@/lib/live/api';
 import {
+  EGRESS_START_DELAY_MS,
   MAX_RECONNECT_ATTEMPTS,
   RECONNECT_DELAY_MS,
-  VIEWER_COUNT_POLL_MS,
   VIEWER_PERSIST_MS,
 } from '@/lib/live/constants';
 import {
   RoomEvent,
   Track,
-  audienceCount,
   connectAsPublisher,
   createRoom,
   leaveRoom,
+  localPublication,
+  resolutionFor,
   thaiForConnectError,
+  thaiForMediaError,
   type Room,
 } from '@/lib/live/livekitClient';
-import type { BroadcastQuality } from '@/lib/live/types';
-import { filterCssFor, filterLabelFor, type FilterId } from '@/lib/live/cameraFilters';
+import type { BroadcastQuality, LiveDelivery } from '@/lib/live/types';
+import {
+  createFilteredStream,
+  filterLabelFor,
+  type FilteredStream,
+  type FilterId,
+} from '@/lib/live/cameraFilters';
+import type { FloatingReaction } from '@/lib/live/reactions';
 import { CameraFilterSelector } from './CameraFilterSelector';
-import { FloatingReactionsLayer, useFloatingReactions } from './FloatingReactionsLayer';
+import { FloatingReactionsLayer } from './FloatingReactionsLayer';
 import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
 
 export type BroadcastPhase = 'connecting' | 'live' | 'reconnecting' | 'failed';
@@ -63,15 +76,18 @@ interface CreatorBroadcasterProps {
   /** SECURITY: a LiveKit room credential. Never log it or put it in a URL. */
   token: string;
   quality: BroadcastQuality;
+  /** 'llhls' when a Bunny stream exists; 'livekit' when its create fell back. */
+  delivery: LiveDelivery;
   videoDeviceId?: string;
   micEnabled: boolean;
   elapsedSeconds: number;
   /** The look chosen on the setup screen; changeable from the bottom bar. */
   filterId: FilterId;
   onFilterIdChange: (id: FilterId) => void;
-  /** Lifted so the chat panel and the stats bar can share this room. */
-  onRoomChange: (room: Room | null) => void;
-  onViewerCountChange: (current: number, peak: number) => void;
+  /** From the Realtime channel's presence, via the page. */
+  viewerCount: number;
+  /** The viewers' reactions, floating over the self-view. Received, never sent. */
+  reactions: FloatingReaction[];
   onPhaseChange?: (phase: BroadcastPhase) => void;
 }
 
@@ -80,107 +96,65 @@ export function CreatorBroadcaster({
   wsUrl,
   token,
   quality,
+  delivery,
   videoDeviceId,
   micEnabled,
   elapsedSeconds,
   filterId,
   onFilterIdChange,
-  onRoomChange,
-  onViewerCountChange,
+  viewerCount,
+  reactions,
   onPhaseChange,
 }: CreatorBroadcasterProps) {
-  const videoRef = useRef<HTMLDivElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const lookButtonRef = useRef<HTMLButtonElement | null>(null);
   const roomRef = useRef<Room | null>(null);
-  const peakRef = useRef(0);
+  const filteredRef = useRef<FilteredStream | null>(null);
 
-  /**
-   * The connected room, as state rather than the ref above.
-   *
-   * The reactions overlay is a hook that has to re-subscribe when the room
-   * changes, and a ref does not re-render. Same object, two holders.
-   */
-  const [liveRoom, setLiveRoom] = useState<Room | null>(null);
   const [lookOpen, setLookOpen] = useState(false);
-
   const [phase, setPhase] = useState<BroadcastPhase>('connecting');
   const [error, setError] = useState<string | null>(null);
-  const [viewers, setViewers] = useState(0);
+  /**
+   * Delivery to the CDN, separately from the LiveKit connection.
+   *
+   * They fail independently and mean different things: a creator whose room is
+   * up but whose egress refused IS broadcasting — to nobody — and telling them
+   * "connected" would be a lie they only discover from an empty viewer count.
+   */
+  const [deliveryLive, setDeliveryLive] = useState(delivery !== 'llhls');
+  const [deliveryError, setDeliveryError] = useState<string | null>(null);
   const [audioLevel, setAudioLevel] = useState(0);
   const [camOn, setCamOn] = useState(true);
   const [micOn, setMicOn] = useState(micEnabled);
   /** Bumped by the manual "ลองใหม่", which restarts the whole connect effect. */
   const [attempt, setAttempt] = useState(0);
 
-  const { reactions } = useFloatingReactions(liveRoom);
-
-  // These would land in the connect effect's dependency list, and a parent
-  // passing inline arrows would then tear down and rebuild the room on every
-  // render. Kept in a ref, written in its own effect rather than during
-  // render, so the connect effect depends only on the connection's identity.
-  const callbacks = useRef({ onRoomChange, onViewerCountChange, onPhaseChange });
+  const onPhaseChangeRef = useRef(onPhaseChange);
   useEffect(() => {
-    callbacks.current = { onRoomChange, onViewerCountChange, onPhaseChange };
-  }, [onRoomChange, onViewerCountChange, onPhaseChange]);
+    onPhaseChangeRef.current = onPhaseChange;
+  }, [onPhaseChange]);
 
   const setPhaseAndReport = useCallback((next: BroadcastPhase) => {
     setPhase(next);
-    callbacks.current.onPhaseChange?.(next);
+    onPhaseChangeRef.current?.(next);
   }, []);
 
-  const persistCounts = useCallback(
-    async (current: number, peak: number) => {
-      try {
-        await persistViewerCounts(getBrowserSupabase(), liveSessionId, current, peak);
-      } catch (err) {
-        console.error('[CreatorBroadcaster] persist counts failed', err);
-      }
-    },
-    [liveSessionId],
-  );
-
-  /** Recompute the audience from LiveKit and raise the stored peak. */
-  const refreshViewers = useCallback(() => {
-    const current = audienceCount(roomRef.current);
-    setViewers(current);
-    if (current > peakRef.current) {
-      peakRef.current = current;
-      // A new maximum is written immediately rather than waiting for the
-      // timer: live-end-session reads peak_viewer_count to build the summary,
-      // and a peak set thirty seconds before "จบไลฟ์" would otherwise be lost.
-      void persistCounts(current, current);
-    }
-    callbacks.current.onViewerCountChange(current, peakRef.current);
-  }, [persistCounts]);
+  // A look change is a variable assignment inside the draw loop, not a
+  // republish — the published track is the canvas, and the canvas does not
+  // care what is drawn onto it.
+  useEffect(() => {
+    filteredRef.current?.setFilter(filterId);
+  }, [filterId]);
 
   useEffect(() => {
     let cancelled = false;
     let retries = 0;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let egressTimer: ReturnType<typeof setTimeout> | null = null;
+    let camera: MediaStream | null = null;
+    let filtered: FilteredStream | null = null;
     const room = createRoom(quality);
     roomRef.current = room;
-
-    /**
-     * Paint the local camera track into the self-view.
-     *
-     * `track.attach()` builds the <video> rather than binding a ref to one we
-     * rendered: the SDK owns the element's srcObject, muted flag and autoplay
-     * attributes, and a hand-rolled element gets one of them wrong on Safari.
-     */
-    const attachSelfView = () => {
-      const container = videoRef.current;
-      const publication = room.localParticipant.getTrackPublication(Track.Source.Camera);
-      const track = publication?.track;
-      if (!container || !track) return;
-
-      container.replaceChildren();
-      const element = track.attach() as HTMLVideoElement;
-      // Muted is not a preference: an unmuted self-view is a feedback loop.
-      element.muted = true;
-      element.playsInline = true;
-      element.className = 'h-full w-full object-contain';
-      container.appendChild(element);
-    };
 
     const onDisconnected = () => {
       if (cancelled) return;
@@ -198,17 +172,91 @@ export function CreatorBroadcaster({
       }, RECONNECT_DELAY_MS * retries);
     };
 
+    /**
+     * Ask the backend to point a LiveKit egress at this room's Bunny stream.
+     *
+     * Delayed rather than immediate: the egress composites whatever is in the
+     * room at the instant it starts, and catching the moment before the first
+     * camera frame is published makes Bunny's opening second black. Idempotent
+     * on the backend, so the reconnect path calling it again is safe.
+     */
+    const beginDelivery = async () => {
+      if (cancelled || delivery !== 'llhls') return;
+
+      const { error: egressError } = await startLiveEgress(
+        getBrowserSupabase(),
+        liveSessionId,
+      );
+      if (cancelled) return;
+
+      if (egressError) {
+        console.error('[CreatorBroadcaster] start egress failed', egressError);
+        setDeliveryError(egressError.message);
+        return;
+      }
+      setDeliveryError(null);
+      setDeliveryLive(true);
+    };
+
     async function connect() {
       setError(null);
       setPhaseAndReport(retries === 0 ? 'connecting' : 'reconnecting');
+
+      // The camera is opened once and reused across reconnects. Re-opening it
+      // per attempt is how you hit "camera is in use by another application"
+      // on Windows Chrome, which holds a device briefly after release.
+      if (!camera) {
+        try {
+          const { width, height, frameRate } = resolutionFor(quality);
+          camera = await navigator.mediaDevices.getUserMedia({
+            video: {
+              ...(videoDeviceId ? { deviceId: { exact: videoDeviceId } } : {}),
+              width: { ideal: width },
+              height: { ideal: height },
+              frameRate: { ideal: frameRate },
+            },
+            audio: true,
+          });
+        } catch (err) {
+          if (cancelled) return;
+          console.error('[CreatorBroadcaster] getUserMedia failed', err);
+          setError(thaiForMediaError(err));
+          setPhaseAndReport('failed');
+          return;
+        }
+      }
+
+      if (!filtered) {
+        try {
+          filtered = await createFilteredStream(camera, filterId, resolutionFor(quality).frameRate);
+          filteredRef.current = filtered;
+        } catch (err) {
+          if (cancelled) return;
+          console.error('[CreatorBroadcaster] filter pipeline failed', err);
+          setError('เปิดฟิลเตอร์กล้องไม่สำเร็จ กรุณาลองใหม่');
+          setPhaseAndReport('failed');
+          return;
+        }
+      }
+
+      // The self-view shows the CANVAS, not the camera — so what the creator
+      // is looking at is exactly the frames the audience receives, filter
+      // included. Muted is not a preference: an unmuted self-view is a
+      // feedback loop.
+      if (videoRef.current) {
+        videoRef.current.srcObject = filtered.stream;
+        videoRef.current.muted = true;
+        void videoRef.current.play().catch(() => {});
+      }
 
       try {
         await connectAsPublisher(room, {
           wsUrl,
           token,
           quality,
-          videoDeviceId,
+          stream: filtered.stream,
           micEnabled,
+          delivery,
         });
       } catch (err) {
         if (cancelled) return;
@@ -220,14 +268,15 @@ export function CreatorBroadcaster({
       if (cancelled) return;
 
       retries = 0;
-      attachSelfView();
-      setCamOn(room.localParticipant.isCameraEnabled);
-      setMicOn(room.localParticipant.isMicrophoneEnabled);
+      setCamOn(true);
+      setMicOn(micEnabled);
       setPhaseAndReport('live');
-      setLiveRoom(room);
-      callbacks.current.onRoomChange(room);
-      refreshViewers();
 
+      egressTimer = setTimeout(() => void beginDelivery(), EGRESS_START_DELAY_MS);
+
+      // A backstop only: start_egress promotes the row server-side. It still
+      // matters for a session delivered over LiveKit, where no egress starts
+      // and so nothing else would move it off 'waiting'.
       try {
         await markSessionLive(getBrowserSupabase(), liveSessionId);
       } catch (err) {
@@ -236,14 +285,8 @@ export function CreatorBroadcaster({
     }
 
     const onReconnecting = () => setPhaseAndReport('reconnecting');
-    const onReconnected = () => {
-      setPhaseAndReport('live');
-      attachSelfView();
-    };
+    const onReconnected = () => setPhaseAndReport('live');
 
-    room.on(RoomEvent.ParticipantConnected, refreshViewers);
-    room.on(RoomEvent.ParticipantDisconnected, refreshViewers);
-    room.on(RoomEvent.LocalTrackPublished, attachSelfView);
     room.on(RoomEvent.Reconnecting, onReconnecting);
     room.on(RoomEvent.Reconnected, onReconnected);
     room.on(RoomEvent.Disconnected, onDisconnected);
@@ -253,43 +296,50 @@ export function CreatorBroadcaster({
     return () => {
       cancelled = true;
       if (retryTimer) clearTimeout(retryTimer);
+      if (egressTimer) clearTimeout(egressTimer);
       // Each handler is removed by reference rather than with
       // removeAllListeners(): the Room is an EventEmitter the SDK also hands
       // to its own internals, and tearing down every listener on it is a
       // bigger hammer than unsubscribing what this component subscribed.
-      room.off(RoomEvent.ParticipantConnected, refreshViewers);
-      room.off(RoomEvent.ParticipantDisconnected, refreshViewers);
-      room.off(RoomEvent.LocalTrackPublished, attachSelfView);
       room.off(RoomEvent.Reconnecting, onReconnecting);
       room.off(RoomEvent.Reconnected, onReconnected);
       room.off(RoomEvent.Disconnected, onDisconnected);
-      callbacks.current.onRoomChange(null);
-      setLiveRoom(null);
       roomRef.current = null;
+      filteredRef.current = null;
       void leaveRoom(room);
+      // Order matters: the filter stops its draw loop and its canvas track,
+      // then the camera itself is released. Stopping the camera first leaves
+      // the loop drawing a dead <video>.
+      filtered?.stop();
+      camera?.getTracks().forEach((track) => track.stop());
     };
-    // micEnabled is the STARTING mic state only — toggling it afterwards goes
-    // through the button below, not through a reconnect.
+    // micEnabled and filterId are the STARTING values only — both are changed
+    // afterwards through the controls below, not through a reconnect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveSessionId, wsUrl, token, quality, videoDeviceId, attempt]);
+  }, [liveSessionId, wsUrl, token, quality, videoDeviceId, delivery, attempt]);
 
-  // The backstop for a participant that left without a clean disconnect, whose
-  // event never arrives.
+  /**
+   * Write the audience size back to the row.
+   *
+   * The number comes from the Realtime channel's presence, which is the only
+   * thing that knows it now that viewers are not room participants.
+   * live-end-session reads the resulting peak to build the summary and price
+   * the broadcast, so without this every session reports zero viewers and
+   * bills as if nobody watched.
+   */
   useEffect(() => {
     if (phase !== 'live') return;
-    const timer = setInterval(refreshViewers, VIEWER_COUNT_POLL_MS);
-    return () => clearInterval(timer);
-  }, [phase, refreshViewers]);
 
-  // The row only feeds the discover card and the summary, so it is written far
-  // more slowly than the number on screen is refreshed.
-  useEffect(() => {
-    if (phase !== 'live') return;
-    const timer = setInterval(() => {
-      void persistCounts(audienceCount(roomRef.current), peakRef.current);
-    }, VIEWER_PERSIST_MS);
+    const write = () => {
+      void persistViewerCounts(getBrowserSupabase(), liveSessionId, viewerCount).catch((err) => {
+        console.error('[CreatorBroadcaster] persist counts failed', err);
+      });
+    };
+
+    write();
+    const timer = setInterval(write, VIEWER_PERSIST_MS);
     return () => clearInterval(timer);
-  }, [phase, persistCounts]);
+  }, [phase, liveSessionId, viewerCount]);
 
   /** The bottom-left level meter, polled off the local participant. */
   useEffect(() => {
@@ -300,54 +350,65 @@ export function CreatorBroadcaster({
     return () => clearInterval(timer);
   }, [phase]);
 
-  const toggleCamera = async () => {
-    const room = roomRef.current;
-    if (!room) return;
-    const next = !room.localParticipant.isCameraEnabled;
+  /**
+   * Camera and mic are toggled by MUTING the publication, not by unpublishing.
+   *
+   * Unpublishing would renegotiate, and the egress composites the room live —
+   * a track that comes and goes makes Bunny's ingest reconnect, which every
+   * viewer sees as a stall. A muted track keeps the connection and sends
+   * black or silence, which is what "camera off" should look like anyway.
+   */
+  const toggleTrack = async (source: Track.Source, next: boolean) => {
+    const publication = localPublication(roomRef.current, source);
+    if (!publication) return;
     try {
-      await room.localParticipant.setCameraEnabled(next);
-      setCamOn(next);
+      if (next) await publication.unmute();
+      else await publication.mute();
     } catch (err) {
-      console.error('[CreatorBroadcaster] toggle camera failed', err);
+      console.error('[CreatorBroadcaster] toggle track failed', err);
     }
   };
 
+  const toggleCamera = async () => {
+    const next = !camOn;
+    await toggleTrack(Track.Source.Camera, next);
+    setCamOn(next);
+  };
+
   const toggleMic = async () => {
-    const room = roomRef.current;
-    if (!room) return;
-    const next = !room.localParticipant.isMicrophoneEnabled;
-    try {
-      await room.localParticipant.setMicrophoneEnabled(next);
-      setMicOn(next);
-    } catch (err) {
-      console.error('[CreatorBroadcaster] toggle mic failed', err);
-    }
+    const next = !micOn;
+    await toggleTrack(Track.Source.Microphone, next);
+    setMicOn(next);
   };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
       <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-white/10 bg-black">
-        {/* The filter goes on the container, not on the element inside it:
-            the <video> is built by track.attach() and replaced on every
-            reconnect, and a style written onto it would be thrown away with
-            it. A CSS filter on an ancestor paints its descendants, and the
-            badges and overlays are siblings of this div, so they stay
-            unfiltered. */}
-        <div
+        {/* No CSS filter on this element any more. The look is already in the
+            pixels — this is the canvas stream, which is what the encoder, the
+            egress, Bunny and every viewer receive. */}
+        <video
           ref={videoRef}
-          className="h-full w-full"
+          autoPlay
+          muted
+          playsInline
           aria-label="ภาพที่กำลังถ่ายทอด"
-          style={{ filter: filterCssFor(filterId) }}
+          className="h-full w-full object-contain"
         />
 
         <FloatingReactionsLayer reactions={reactions} />
 
-        <div className="pointer-events-none absolute left-3 top-3 z-10">
+        <div className="pointer-events-none absolute left-3 top-3 z-10 flex items-center gap-2">
           <LiveBadge pulse={phase === 'live'} />
+          {phase === 'live' && !deliveryLive && (
+            <span className="rounded-full bg-amber-500/85 px-2.5 py-1 text-[11px] font-semibold text-black">
+              กำลังเริ่มส่งสัญญาณ...
+            </span>
+          )}
         </div>
 
         <div className="pointer-events-none absolute right-3 top-3 z-10 flex items-center gap-2">
-          <ViewerCountPill count={viewers} />
+          <ViewerCountPill count={viewerCount} />
           <DurationPill seconds={elapsedSeconds} />
         </div>
 
@@ -370,6 +431,17 @@ export function CreatorBroadcaster({
 
         {phase !== 'live' && <ConnectionOverlay phase={phase} error={error} onRetry={() => setAttempt((n) => n + 1)} />}
       </div>
+
+      {/* Delivery failed but the room is up. Said out loud rather than left to
+          be inferred from a viewer count that never moves. */}
+      {deliveryError && phase === 'live' && (
+        <div
+          role="alert"
+          className="shrink-0 rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-100"
+        >
+          {deliveryError} — ผู้ชมยังดูไม่ได้ในขณะนี้
+        </div>
+      )}
 
       <div className="flex shrink-0 items-center gap-2">
         <ControlButton

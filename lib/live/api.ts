@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Typed wrappers around the two deployed `live-*` Edge Functions, plus the
+ * Typed wrappers around the three deployed `live-*` Edge Functions, plus the
  * handful of direct `live_sessions` reads and writes the live screens need.
  *
  * The functions answer failures in the same envelope as the `content-*`
@@ -15,7 +15,13 @@
  * module does the same two jobs lib/creator/api.ts does: read the nested
  * envelope, and map the outcome onto Thai copy the UI can render as-is. It is
  * not merged with that module because the failure vocabularies do not overlap
- * — nothing here is about Bunny, storage, or a monthly video count.
+ * — nothing there is about an egress or a CDN playlist.
+ *
+ * A viewer no longer asks to `join` anything. Since the LL-HLS migration the
+ * one entry point is fetchLivePlayback, which is also the only place the
+ * backend decides entitlement — the old design had that ladder written out in
+ * the join function, in the RLS policies, and (nearly) a third time in the
+ * chat channel.
  */
 
 import { FunctionsHttpError, type SupabaseClient } from '@supabase/supabase-js';
@@ -23,13 +29,13 @@ import type {
   CreateLiveRequest,
   CreateLiveResponse,
   EndLiveResponse,
-  JoinLiveRequest,
-  JoinLiveResponse,
+  LivePlaybackResponse,
   LiveQuota,
   LiveSessionDetail,
   LiveStatus,
+  StartEgressResponse,
 } from './types';
-import { DEFAULT_QUALITY, isBroadcastQuality } from './constants';
+import { DEFAULT_QUALITY, isBroadcastQuality, isLatencyMode } from './constants';
 
 export interface LiveError {
   /** Machine-readable: the backend's `code`, or a local pseudo-code. */
@@ -127,6 +133,27 @@ function thaiForLiveError(code: string, message: string, status: number): LiveEr
   if (code === 'not_active') {
     return { code, message: 'ไลฟ์นี้จบแล้ว', detail: message, status };
   }
+  // The platform kill switch, seen from the viewer's side. The creator's side
+  // of the same switch arrives as quota_exceeded from check_creator_can_golive.
+  if (code === 'platform_unavailable') {
+    return {
+      code,
+      message: 'ระบบไลฟ์ปิดให้บริการชั่วคราว กรุณาลองใหม่ภายหลัง',
+      detail: message,
+      status,
+    };
+  }
+  // The Bunny stream exists but LiveKit would not start pushing to it. The
+  // creator IS on air — to nobody — so the copy says to retry rather than
+  // implying the broadcast is over.
+  if (code === 'egress_failed' || code === 'no_bunny_stream') {
+    return {
+      code,
+      message: 'เริ่มส่งสัญญาณไปยังผู้ชมไม่สำเร็จ กรุณาลองใหม่อีกครั้ง',
+      detail: message,
+      status,
+    };
+  }
   if (status === 401) {
     return {
       code: 'unauthenticated',
@@ -206,14 +233,39 @@ export function createLiveSession(
   });
 }
 
-/** Mint a subscriber token for a session that is 'waiting' or 'live'. */
-export function joinLiveSession(
+/**
+ * Start delivery to the CDN.
+ *
+ * Called by the broadcaster once it is actually connected and publishing, NOT
+ * at go-live: the egress bills per minute from the moment it starts, and
+ * starting it at create time would charge an abandoned go-live for encoding an
+ * empty room. Idempotent on the backend, so the reconnect path can call it
+ * again without risking two egresses feeding one Bunny stream.
+ */
+export function startLiveEgress(
   supabase: SupabaseClient,
-  payload: Omit<JoinLiveRequest, 'mode'>,
-): Promise<LiveResult<JoinLiveResponse>> {
-  return invokeLive<JoinLiveResponse>(supabase, 'live-create-session', {
-    ...payload,
-    mode: 'join',
+  liveSessionId: string,
+): Promise<LiveResult<StartEgressResponse>> {
+  return invokeLive<StartEgressResponse>(supabase, 'live-create-session', {
+    mode: 'start_egress',
+    live_session_id: liveSessionId,
+  });
+}
+
+/**
+ * Everything a viewer needs to watch: the login gate, the entitlement check,
+ * the kill switch, and a URL or a token.
+ *
+ * Replaces `joinLiveSession`. The response is a discriminated union on
+ * `delivery` because the two pipelines need different things — see
+ * LivePlaybackResponse.
+ */
+export function fetchLivePlayback(
+  supabase: SupabaseClient,
+  sessionId: string,
+): Promise<LiveResult<LivePlaybackResponse>> {
+  return invokeLive<LivePlaybackResponse>(supabase, 'live-get-playback-url', {
+    session_id: sessionId,
   });
 }
 
@@ -227,9 +279,14 @@ export function joinLiveSession(
 export function endLiveSession(
   supabase: SupabaseClient,
   liveSessionId: string,
+  chatMessageCount = 0,
 ): Promise<LiveResult<EndLiveResponse>> {
   return invokeLive<EndLiveResponse>(supabase, 'live-end-session', {
     live_session_id: liveSessionId,
+    // The only source there is. Chat is a Realtime broadcast and nothing
+    // persists it, so `live_sessions.chat_message_count` has no writer — the
+    // broadcaster's own tally is what stops every summary reporting zero.
+    chat_message_count: chatMessageCount,
   });
 }
 
@@ -281,7 +338,7 @@ export function thaiForQuotaRefusal(reason: string | null): string {
 const SESSION_COLUMNS =
   'id, creator_id, room_name, title, description, cover_image_url, access_level, ' +
   'ppv_price_stars, status, current_viewer_count, peak_viewer_count, ' +
-  'tip_stars_received, started_at, ended_at, broadcast_quality';
+  'tip_stars_received, started_at, ended_at, broadcast_quality, latency_mode';
 
 function toSessionDetail(row: Record<string, unknown>): LiveSessionDetail {
   const quality = row.broadcast_quality;
@@ -306,6 +363,7 @@ function toSessionDetail(row: Record<string, unknown>): LiveSessionDetail {
     started_at: text(row.started_at),
     ended_at: text(row.ended_at),
     broadcast_quality: isBroadcastQuality(quality) ? quality : null,
+    latency_mode: isLatencyMode(row.latency_mode) ? row.latency_mode : null,
   };
 }
 
@@ -362,8 +420,11 @@ export async function fetchLiveSession(
  * minutes is worth less than interrupting a broadcast that is already running,
  * and the feed query accepts 'waiting' too, so the session stays discoverable
  * either way.
- * TODO(post-launch): move this to a LiveKit `room_started` webhook, which
- * observes the room rather than trusting the broadcaster's browser.
+ * Since the LL-HLS migration this is a BACKSTOP rather than the mechanism:
+ * `live-create-session mode=start_egress` promotes the row server-side at the
+ * moment delivery actually begins, which is a write the server can vouch for.
+ * This one still matters for a session delivered over LiveKit, where no egress
+ * starts and so nothing else would move the row.
  */
 export async function markSessionLive(
   supabase: SupabaseClient,
@@ -379,20 +440,27 @@ export async function markSessionLive(
 }
 
 /**
- * Write the viewer counts LiveKit reports back to the row.
+ * Write the audience size back to the row.
  *
  * Two things depend on this and nothing else provides them:
  *
- *  - `peak_viewer_count` has no writer anywhere in the backend, and
- *    live-end-session READS it to build the session summary. Without this
- *    write every summary reports a peak of 0.
- *  - `current_viewer_count` is only ever incremented, by the join function,
- *    and never decremented, so the number on the discover card climbs forever
- *    as viewers come and go.
+ *  - `peak_viewer_count` has no other writer, and live-end-session READS it to
+ *    build the session summary AND to price the broadcast. Without this write
+ *    every summary reports a peak of 0 and every session bills as if nobody
+ *    watched.
+ *  - `current_viewer_count` is what the discover card and the dashboard strip
+ *    show.
  *
- * The broadcaster is the one participant that knows the true count, so it is
- * the one that writes it. `peak` is raised, never lowered, so a slow write
- * cannot walk the maximum backwards.
+ * The number comes from Realtime presence on the `live:<session_id>` channel
+ * (see ./realtime.ts), which is the only place that knows how many people are
+ * watching now that viewers are CDN requests rather than room participants.
+ * The broadcaster is the one client positioned to write it.
+ *
+ * Goes through an RPC rather than a direct UPDATE so the peak is raised with
+ * GREATEST inside Postgres: the previous client-side guard refused the whole
+ * write — the current count included — whenever the stored peak was already
+ * higher, which froze the number on the discover card for the rest of the
+ * broadcast.
  *
  * Best-effort for the same reason as markSessionLive: an inaccurate count is
  * not worth a broken broadcast.
@@ -401,23 +469,35 @@ export async function persistViewerCounts(
   supabase: SupabaseClient,
   sessionId: string,
   current: number,
-  peak: number,
 ): Promise<void> {
-  const { error } = await supabase
-    .from('live_sessions')
-    .update({
-      current_viewer_count: current,
-      peak_viewer_count: peak,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', sessionId)
-    // Never lower a stored peak, and never touch a session that has already
-    // been closed — a write still in flight when "จบไลฟ์" lands would
-    // otherwise put a live viewer count back on an ended row.
-    .lte('peak_viewer_count', peak)
-    .in('status', ['waiting', 'live']);
+  const { error } = await supabase.rpc('set_live_viewer_counts', {
+    p_session_id: sessionId,
+    p_current: current,
+  });
 
   if (error) console.error('[live/api] persistViewerCounts failed', error);
+}
+
+/**
+ * The audience size as Postgres currently has it.
+ *
+ * For a VIEWER's screen. A viewer is on the Realtime channel and could count
+ * presence themselves, but presence only sees who else is on that channel —
+ * and the row is the number the rest of the product (discover, dashboard)
+ * agrees on, so the player shows the same one.
+ */
+export async function fetchLiveViewerCount(
+  supabase: SupabaseClient,
+  sessionId: string,
+): Promise<number | null> {
+  const { data, error } = await supabase
+    .from('live_sessions')
+    .select('current_viewer_count')
+    .eq('id', sessionId)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return typeof data.current_viewer_count === 'number' ? data.current_viewer_count : null;
 }
 
 /**

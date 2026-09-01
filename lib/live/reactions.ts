@@ -1,25 +1,18 @@
 /**
- * Emoji reactions, as they travel over the LiveKit data channel.
+ * Emoji reactions: the palette, the pacing, and the shape of one on screen.
  *
- * Same contract as chat (see LiveChatMessage in ./types): nothing here is
- * written to Postgres. A reaction exists for the three seconds it takes to
- * float up the screen and then it is gone — there is no history to join late
- * into, and no count anywhere. Aggregating them for analytics is a separate
- * feature with a separate write path, not a flag on this one.
+ * They used to travel over the LiveKit data channel. Since the LL-HLS
+ * migration viewers are not in a room, so the transport is a Supabase Realtime
+ * broadcast channel — see ./realtime.ts, which owns the wire format. What is
+ * left here is the domain: which emoji exist, how fast one participant may
+ * send them, and how many may be on screen at once.
  *
- * The packet shape and the byte encoding live here; the one line that hands
- * the bytes to the SDK lives in ./livekitClient, which stays the only file in
- * the app that talks to livekit-client.
- *
- * Reactions ride the same reliable data channel as chat and are told apart by
- * their `type` field — that field, not the topic, is what every receiver keys
- * off, so a packet that arrives on an unexpected topic is still routed
- * correctly. The separate topic is there so a receiver can ignore traffic it
- * does not care about without parsing it.
+ * The contract that has not changed: nothing is written to Postgres. A
+ * reaction exists for the three seconds it takes to float up the screen and
+ * then it is gone — there is no history to join late into, and no count
+ * anywhere. Aggregating them for analytics is a separate feature with a
+ * separate write path, not a flag on this one.
  */
-
-/** The data-channel topic reactions travel on. Chat uses 'chat'. */
-export const REACTION_TOPIC = 'reactions';
 
 /**
  * The palette a viewer can throw, in the order the buttons render.
@@ -46,33 +39,15 @@ export function isReactionEmoji(value: unknown): value is ReactionEmoji {
   return typeof value === 'string' && ALLOWED_EMOJI.has(value);
 }
 
-/** One reaction, on the wire. */
-export interface ReactionPacket {
-  type: 'reaction';
-  /** One of REACTION_OPTIONS. Anything else is dropped on receive. */
-  emoji: string;
-  /**
-   * The sender's LiveKit participant identity.
-   *
-   * Carried for a future moderation view, and NOT trusted: like the `sender`
-   * name on a chat line this is whatever the sender wrote. The trustworthy
-   * identity is the one LiveKit attaches to the DataReceived event, which the
-   * server asserts.
-   */
-  sender_id: string;
-  /** Client clock, so a late packet can be aged out rather than animated. */
-  timestamp: number;
-}
-
 /**
  * Ceiling on how many reactions one participant may send per second.
  *
  * Client-side only, and deliberately so: this is politeness plus a brake on an
  * accidental flood (a stuck finger, a trackpad with a repeat), not a security
- * boundary — a modified client can ignore it, and LiveKit's own data-channel
- * limits are what actually stand behind that. The on-screen cap below is the
- * thing that keeps a hostile sender from costing every other viewer their
- * frame rate.
+ * boundary — a modified client can ignore it, and Supabase Realtime's own
+ * per-connection message limits are what actually stand behind it. The
+ * on-screen cap below is the thing that keeps a hostile sender from costing
+ * every other viewer their frame rate.
  */
 export const MAX_REACTIONS_PER_SECOND = 10;
 
@@ -88,56 +63,6 @@ export const LONG_PRESS_INTERVAL_MS = 333;
 /** How long a press is held before it starts repeating. */
 export const LONG_PRESS_DELAY_MS = 350;
 
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-
-/**
- * Bytes for one reaction, ready for publishData.
- *
- * The `<ArrayBuffer>` argument is not decoration: livekit-client's publishData
- * takes `Uint8Array<ArrayBuffer>` specifically, and a bare `Uint8Array` widens
- * to `ArrayBufferLike` (which admits a SharedArrayBuffer) and is rejected.
- */
-export function encodeReaction(emoji: string, senderId: string): Uint8Array<ArrayBuffer> {
-  const packet: ReactionPacket = {
-    type: 'reaction',
-    emoji,
-    sender_id: senderId.slice(0, 64),
-    timestamp: Date.now(),
-  };
-  return encoder.encode(JSON.stringify(packet));
-}
-
-/**
- * Read a data packet as a reaction, or null if it is not one.
- *
- * Every field is re-validated rather than trusted, for the same reason
- * decodeChat does it: a data packet is arbitrary bytes from another
- * participant, and this app is not the only thing that can connect to a
- * LiveKit room. The emoji check is the important one — it is the only part of
- * the payload that reaches the screen.
- */
-export function decodeReaction(payload: Uint8Array): ReactionPacket | null {
-  try {
-    const parsed = JSON.parse(decoder.decode(payload)) as unknown;
-    if (!parsed || typeof parsed !== 'object') return null;
-    const packet = parsed as Partial<ReactionPacket>;
-    if (packet.type !== 'reaction' || !isReactionEmoji(packet.emoji)) return null;
-
-    return {
-      type: 'reaction',
-      emoji: packet.emoji,
-      sender_id: typeof packet.sender_id === 'string' ? packet.sender_id.slice(0, 64) : '',
-      timestamp:
-        typeof packet.timestamp === 'number' && Number.isFinite(packet.timestamp)
-          ? packet.timestamp
-          : Date.now(),
-    };
-  } catch {
-    return null;
-  }
-}
-
 /**
  * A sliding one-second window. Returns false when the caller has already spent
  * its allowance, which is the signal to drop the reaction rather than queue it
@@ -151,5 +76,43 @@ export function createReactionThrottle(maxPerSecond = MAX_REACTIONS_PER_SECOND):
     if (sent.length >= maxPerSecond) return false;
     sent.push(now);
     return true;
+  };
+}
+
+/**
+ * One reaction as the overlay draws it.
+ *
+ * Lives here rather than beside the component because two things build these
+ * now — a received broadcast, and the local echo a sender needs because the
+ * channel does not send them their own messages back.
+ */
+export interface FloatingReaction {
+  /** Local and monotonic: payloads carry no id and two can share a millisecond. */
+  id: string;
+  emoji: string;
+  /** Where it starts, as a percentage of the video width. */
+  leftPct: number;
+  /** Amplitude of the horizontal sine, in px. Signed. */
+  driftPx: number;
+  /** When it may be dropped from the list. */
+  expiresAt: number;
+}
+
+/**
+ * Where one reaction starts and how it sways.
+ *
+ * Randomised so two simultaneous hearts do not travel as one column. The
+ * centre 60% of the width, because the edges are where the live badge, the
+ * viewer count and the reaction buttons themselves live.
+ */
+export function newFloatingReaction(id: string, emoji: string): FloatingReaction {
+  return {
+    id,
+    emoji,
+    leftPct: 20 + Math.random() * 60,
+    // ±10-26px. Enough to separate them, small enough to stay inside the
+    // video on a phone.
+    driftPx: (10 + Math.random() * 16) * (Math.random() < 0.5 ? -1 : 1),
+    expiresAt: Date.now() + REACTION_RISE_MS,
   };
 }

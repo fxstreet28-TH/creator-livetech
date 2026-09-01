@@ -4,17 +4,35 @@
  * The thin layer between this app and `livekit-client`.
  *
  * Everything the SDK is used for lives here — room construction, connecting as
- * publisher or subscriber, the chat data channel, device enumeration, and the
- * Thai text for every way those can fail — so the components stay React and
- * the SDK stays in one file. That is the same split as lib/creator/uploader.ts,
- * which owns the XHR the upload screen does not want to know about.
+ * publisher, device enumeration, and the Thai text for every way those can
+ * fail — so the components stay React and the SDK stays in one file. That is
+ * the same split as lib/creator/uploader.ts, which owns the XHR the upload
+ * screen does not want to know about.
+ *
+ * SINCE THE LL-HLS MIGRATION THIS IS THE PUBLISHER'S SDK, NOT THE PLATFORM'S.
+ *
+ * The creator still publishes WebRTC into a LiveKit room because Bunny Live
+ * has no WHIP ingest and a browser cannot speak RTMP. But a viewer is now an
+ * HTTP request to a CDN, so three things that used to live here are gone:
+ *
+ *  - the chat and reaction data channel, which moved to a Supabase Realtime
+ *    broadcast channel (./realtime.ts). Viewers are not in the room, so a data
+ *    channel could not reach them.
+ *  - viewerCountForViewer, replaced by presence on that same channel — a
+ *    better number, because it goes down when someone leaves.
+ *  - isCreatorIdentity, which asserted who the broadcaster was. That claim is
+ *    now made by comparing against the creator id the backend returns; see the
+ *    security note in ./realtime.ts.
+ *
+ * connectAsSubscriber survives only for a session with no Bunny stream — a row
+ * from before the migration, or one whose Bunny create fell back.
+ * TODO(phase 2B): remove it, and this dependency, once no such session can be
+ * running.
  *
  * `@livekit/components-react` is deliberately NOT a dependency. Its prebuilt
- * conference UI is a different product from the two bespoke layouts this
- * sprint needs, it ships its own stylesheet that would fight the aurora theme,
- * and it declares `@livekit/krisp-noise-filter` as a peer — three costs for a
- * `<VideoTrack>` that is eleven lines of `track.attach()` here. Raw
- * `livekit-client` is explicitly allowed by the brief.
+ * conference UI is a different product from the bespoke layouts here, it ships
+ * its own stylesheet that would fight the aurora theme, and it declares
+ * `@livekit/krisp-noise-filter` as a peer.
  */
 
 import {
@@ -26,15 +44,11 @@ import {
   type LocalTrackPublication,
   type RemoteTrack,
 } from 'livekit-client';
-import type { BroadcastQuality, LiveChatMessage } from './types';
-import { MAX_CHAT_LENGTH, qualityOption } from './constants';
-import { REACTION_TOPIC, encodeReaction } from './reactions';
+import type { BroadcastQuality } from './types';
+import { qualityOption } from './constants';
 
 export { ConnectionState, DisconnectReason, Room, RoomEvent, Track };
 export type { RemoteTrack };
-
-/** The data-channel topic chat travels on. Reactions share the room on their own. */
-const CHAT_TOPIC = 'chat';
 
 /**
  * Capture resolution for a quality choice.
@@ -79,26 +93,107 @@ export interface PublisherOptions {
   wsUrl: string;
   token: string;
   quality: BroadcastQuality;
-  /** From the camera picker. Undefined means "whatever the browser prefers". */
-  videoDeviceId?: string;
+  /**
+   * The stream to publish.
+   *
+   * This is the canvas-composited stream from createFilteredStream, not the
+   * camera — publishing it is what makes the creator's chosen look reach
+   * viewers instead of stopping at their own preview. The tracks are published
+   * explicitly rather than through `setCameraEnabled`, which would open the
+   * camera a second time and publish the unfiltered frames.
+   */
+  stream: MediaStream;
   /** Start with the mic muted — the toggle on the setup screen. */
   micEnabled?: boolean;
+  /**
+   * Who is subscribing to this room.
+   *
+   * 'llhls' means the only subscriber is the egress worker; 'livekit' means
+   * real viewers on real connections. It decides simulcast — see below.
+   */
+  delivery?: 'llhls' | 'livekit';
+}
+
+export interface PublishedTracks {
+  video: LocalTrackPublication | undefined;
+  audio: LocalTrackPublication | undefined;
 }
 
 /**
- * Connect and start publishing camera + mic.
+ * Connect and publish the supplied stream.
  *
- * Camera and mic are enabled in sequence rather than in parallel: Safari
- * rejects overlapping getUserMedia calls, and a creator who has just granted
- * permission would see the second one fail for no visible reason.
+ * Tracks go up in sequence rather than in parallel: LiveKit negotiates once
+ * per publish, and two overlapping negotiations on a fresh connection is the
+ * shape of bug that appears only on a slow network.
+ *
+ * The video track is marked `Source.Camera` even though it comes from a canvas
+ * — that source is what LiveKit's `single-speaker` egress layout looks for
+ * when deciding what to composite, and an unlabelled track composites as a
+ * screen share.
  */
-export async function connectAsPublisher(room: Room, options: PublisherOptions): Promise<void> {
+export async function connectAsPublisher(
+  room: Room,
+  options: PublisherOptions,
+): Promise<PublishedTracks> {
   await room.connect(options.wsUrl, options.token);
-  await room.localParticipant.setCameraEnabled(true, {
-    resolution: resolutionFor(options.quality),
-    ...(options.videoDeviceId ? { deviceId: { exact: options.videoDeviceId } } : {}),
-  });
-  await room.localParticipant.setMicrophoneEnabled(options.micEnabled ?? true);
+
+  const [videoTrack] = options.stream.getVideoTracks();
+  const [audioTrack] = options.stream.getAudioTracks();
+
+  let video: LocalTrackPublication | undefined;
+  let audio: LocalTrackPublication | undefined;
+
+  if (videoTrack) {
+    video = await room.localParticipant.publishTrack(videoTrack, {
+      source: Track.Source.Camera,
+      videoEncoding: {
+        maxFramerate: resolutionFor(options.quality).frameRate,
+        maxBitrate: bitrateFor(options.quality),
+      },
+      /**
+       * On only when real viewers subscribe to this room.
+       *
+       * Simulcast exists so an SFU can hand each viewer the layer their
+       * connection can take. Under LL-HLS the room has exactly one subscriber
+       * — the egress — and it always wants the top layer, so the two spare
+       * encodes would be CPU spent on a machine that is already running the
+       * filter canvas. Under LiveKit delivery every viewer is a subscriber, a
+       * phone on Thai mobile data cannot hold 3 Mbps, and without simulcast it
+       * gets a stuttering 720p instead of a clean 360p.
+       */
+      simulcast: options.delivery !== 'llhls',
+    });
+  }
+
+  if (audioTrack) {
+    audio = await room.localParticipant.publishTrack(audioTrack, {
+      source: Track.Source.Microphone,
+    });
+    if (options.micEnabled === false) await audio.mute();
+  }
+
+  return { video, audio };
+}
+
+/**
+ * Target bitrate per quality rung.
+ *
+ * This is the number the cost model is built on: BUNNY_LIVE_THB_PER_VIEWER_MINUTE
+ * in the Edge Functions assumes 3 Mbps at 720p, and letting the encoder pick
+ * its own ceiling would make the projected bill fiction. Bunny transcodes down
+ * from whatever arrives, so this caps the ingest, not what a viewer receives.
+ */
+function bitrateFor(quality: BroadcastQuality): number {
+  switch (quality) {
+    case '1080p':
+      return 4_500_000;
+    case '720p':
+      return 3_000_000;
+    case '480p':
+      return 1_500_000;
+    default:
+      return 800_000;
+  }
 }
 
 /** Connect as a viewer. The token carries canPublish: false, so nothing is captured. */
@@ -111,112 +206,15 @@ export async function connectAsSubscriber(
 }
 
 /**
- * How many people are watching.
+ * The room's other participants.
  *
- * `remoteParticipants` excludes the local participant, so on the broadcaster's
- * screen this is exactly the audience. A viewer counts themselves back in —
- * see viewerCountForViewer.
+ * NOT the audience any more. On a broadcast this is the egress worker — the
+ * one participant LiveKit adds to composite the room for Bunny — so it is a
+ * useful signal that delivery is actually attached, and useless as a viewer
+ * count. The audience comes from Realtime presence; see ./realtime.ts.
  */
-export function audienceCount(room: Room | null): number {
+export function remoteParticipantCount(room: Room | null): number {
   return room?.remoteParticipants.size ?? 0;
-}
-
-/**
- * The number a viewer should see: everyone else in the room, plus themselves,
- * minus the broadcaster — who is a participant but not a viewer.
- */
-export function viewerCountForViewer(room: Room | null): number {
-  if (!room) return 0;
-  let broadcasters = 0;
-  for (const participant of room.remoteParticipants.values()) {
-    if (isCreatorIdentity(participant.identity)) broadcasters += 1;
-  }
-  return Math.max(0, room.remoteParticipants.size - broadcasters + 1);
-}
-
-/**
- * Whether a participant is the room's broadcaster.
- *
- * The backend mints identities as `creator-<creators.id>` for the publisher
- * and `viewer-<auth.users.id>` for everyone else, and LiveKit — not the
- * client — is what asserts them. So this is a trustworthy check, unlike the
- * `sender` name carried inside a chat payload, which is whatever the sender
- * typed.
- */
-export function isCreatorIdentity(identity: string | null | undefined): boolean {
-  return typeof identity === 'string' && identity.startsWith('creator-');
-}
-
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-
-/** Send one chat line to everyone in the room. Reliable: a dropped line is a bug. */
-export async function publishChat(room: Room, text: string, sender: string): Promise<void> {
-  const payload: LiveChatMessage = {
-    type: 'chat',
-    text: text.slice(0, MAX_CHAT_LENGTH),
-    sender,
-    timestamp: Date.now(),
-  };
-  await room.localParticipant.publishData(encoder.encode(JSON.stringify(payload)), {
-    reliable: true,
-    topic: CHAT_TOPIC,
-  });
-}
-
-/**
- * Read a data packet as a chat line, or null if it is not one.
- *
- * Every field is re-validated and re-truncated rather than trusted: a data
- * packet is arbitrary bytes from another participant, and this app is not the
- * only thing that can be connected to a LiveKit room. Nothing here is rendered
- * as HTML — React escapes it — but an unbounded string would still let one
- * viewer push everyone else's panel off the screen.
- */
-export function decodeChat(payload: Uint8Array): LiveChatMessage | null {
-  try {
-    const parsed = JSON.parse(decoder.decode(payload)) as unknown;
-    if (!parsed || typeof parsed !== 'object') return null;
-    const message = parsed as Partial<LiveChatMessage>;
-    if (message.type !== 'chat' || typeof message.text !== 'string') return null;
-
-    const text = message.text.slice(0, MAX_CHAT_LENGTH).trim();
-    if (text === '') return null;
-
-    return {
-      type: 'chat',
-      text,
-      sender:
-        typeof message.sender === 'string' && message.sender.trim() !== ''
-          ? message.sender.slice(0, 40)
-          : 'ผู้ชม',
-      timestamp:
-        typeof message.timestamp === 'number' && Number.isFinite(message.timestamp)
-          ? message.timestamp
-          : Date.now(),
-    };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Send one emoji reaction to everyone in the room.
- *
- * Reliable, like chat: an unreliable channel would drop exactly the packets a
- * burst of tapping produces, and a heart that never arrives is the whole
- * feature failing quietly. The packet is built in ./reactions — this is only
- * the handoff to the SDK.
- *
- * The caller is expected to have passed its throttle first
- * (createReactionThrottle); nothing here rate-limits.
- */
-export async function publishReaction(room: Room, emoji: string): Promise<void> {
-  const payload = encodeReaction(emoji, room.localParticipant.identity ?? '');
-  await room.localParticipant.publishData(payload, {
-    reliable: true,
-    topic: REACTION_TOPIC,
-  });
 }
 
 /** Cameras the browser will admit to, for the picker. Empty before permission is granted. */

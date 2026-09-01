@@ -2,7 +2,7 @@
 
 /**
  * The right-hand column of /creator/live's setup state: what the live is
- * called, who may watch it, and at what quality.
+ * called, who may watch it, at what quality, and how close to real time.
  *
  * Same shape as PostMetadataForm — controlled value, validation exported
  * beside the fields, no submit button of its own — but not the same component:
@@ -11,11 +11,11 @@
  * genuinely share is the access-level control, so <VisibilityToggle> is reused
  * verbatim, including its CREATOR_PPV_ENABLED gate.
  *
- * That gate is right for live too, for a parallel reason: `mode: 'join'` in
- * live-create-session grants access for 'public' and checks a subscription for
- * 'subscribers', and has no branch at all for 'ppv' — every viewer of a PPV
- * live is refused, with no way to pay. A creator who picked PPV today would
- * broadcast to an audience that cannot be let in.
+ * That gate is right for live too, for a parallel reason: `can_watch_live_session`
+ * grants access for 'public' and checks a subscription for 'subscribers', and
+ * returns false for 'ppv' — every viewer of a PPV live is refused, with no way
+ * to pay. A creator who picked PPV today would broadcast to an audience that
+ * cannot be let in.
  */
 
 import { useId } from 'react';
@@ -28,10 +28,11 @@ import {
   MAX_TITLE_LENGTH,
   MIN_PPV_PRICE_STARS,
   MIN_TITLE_LENGTH,
+  LATENCY_LABELS,
   QUALITY_OPTIONS,
   isQualityAllowed,
 } from '@/lib/live/constants';
-import type { BroadcastQuality, LiveQuota } from '@/lib/live/types';
+import type { BroadcastQuality, LatencyMode, LiveQuota } from '@/lib/live/types';
 
 export interface GoLiveDraft {
   title: string;
@@ -42,6 +43,7 @@ export interface GoLiveDraft {
   /** Stars, as typed. Empty while blank. */
   ppvPrice: string;
   quality: BroadcastQuality;
+  latency: LatencyMode;
 }
 
 export interface GoLiveErrors {
@@ -61,6 +63,10 @@ export const EMPTY_DRAFT: GoLiveDraft = {
   visibility: 'public',
   ppvPrice: '',
   quality: '720p',
+  // 3-5s: the latency the product promises, and the figure the cost model is
+  // built on. 'standard' is the dial to reach for when a stream stutters —
+  // exposed here so that is a choice a creator can make rather than a deploy.
+  latency: 'low_latency',
 };
 
 /**
@@ -144,6 +150,7 @@ export function GoLiveSetupForm({
   const coverId = useId();
   const coverErrorId = useId();
   const qualityId = useId();
+  const latencyId = useId();
 
   const set = <K extends keyof GoLiveDraft>(key: K, next: GoLiveDraft[K]) =>
     onChange({ ...value, [key]: next });
@@ -244,6 +251,31 @@ export function GoLiveSetupForm({
             );
           })}
         </select>
+      </div>
+
+      <div className="min-w-0">
+        <label htmlFor={latencyId} className="block text-sm font-medium text-white/75">
+          ความหน่วงของภาพ
+        </label>
+        <select
+          id={latencyId}
+          value={value.latency}
+          disabled={disabled}
+          onChange={(event) => set('latency', event.target.value as LatencyMode)}
+          className={`mt-2 h-12 ${INPUT_CLASS} py-0`}
+        >
+          {/* Every option is available to every tier: this is how much buffer
+              the VIEWER's player keeps, not how much bandwidth the platform
+              pays for, so there is nothing to gate. */}
+          {(['ultra_low', 'low_latency', 'standard'] as LatencyMode[]).map((mode) => (
+            <option key={mode} value={mode}>
+              {LATENCY_LABELS[mode]}
+            </option>
+          ))}
+        </select>
+        <p className="mt-2 text-[11px] leading-relaxed text-white/35">
+          ยิ่งหน่วงน้อย ยิ่งคุยกับผู้ชมได้ทันที แต่ภาพอาจสะดุดง่ายกว่าเมื่อเน็ตไม่นิ่ง
+        </p>
       </div>
 
       <div className="min-w-0">
