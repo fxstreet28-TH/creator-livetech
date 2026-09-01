@@ -1,25 +1,25 @@
 /**
  * The "look" presets a creator can put on their camera.
  *
- * Pure CSS `filter:` strings applied to the <video> element that renders the
- * local track. No canvas, no WebGL, no face tracking, nothing that reads a
- * pixel — the browser compositor does all of it, which is why this costs
- * nothing on a machine that is already encoding a broadcast.
+ * Plain CSS `filter:` strings. No WebGL, no face tracking, no per-pixel
+ * JavaScript — which is what keeps them affordable on a machine that is
+ * already encoding a broadcast.
  *
- * IMPORTANT — this is a LOCAL preview effect only. A CSS filter styles the
- * element that paints the track; it does not touch the track. The frames
- * LiveKit encodes and sends come from the MediaStreamTrack, so viewers see the
- * raw camera. The creator sees the filter on their own screen and nowhere
- * else, and the UI says so (LOCAL_ONLY_NOTICE below) rather than letting them
- * find out from a viewer.
+ * Two things use these strings, and the difference matters:
  *
- * TODO(post-launch): Implement canvas-based track processor to broadcast filter
- * to viewers. Current implementation is local-preview only — the filter would
- * have to be drawn to a canvas per frame and that canvas captured as the
- * published track, which means a requestAnimationFrame loop for the length of
- * the broadcast plus its own memory and mobile-thermal budget. That is a
- * feature, not a tweak. See livekit-client TrackProcessor API:
- * https://docs.livekit.io/client-sdk-js/interfaces/TrackProcessor.html
+ *  - The SETUP PREVIEW puts the string straight on the <video> element's
+ *    `filter` style. The compositor does all of it and it costs nothing.
+ *  - The BROADCAST draws each camera frame onto a canvas with the same string
+ *    as `ctx.filter`, and publishes THAT canvas as the video track. See
+ *    createFilteredStream below.
+ *
+ * The second one is why viewers now see the look. Until this migration the
+ * filter was a preview-only effect — a CSS filter styles the element painting
+ * a track, it does not touch the track, so what LiveKit encoded was always the
+ * raw camera and the UI had to admit it. Redirecting the publisher through a
+ * canvas was worth doing here because the go-live path was being rewritten
+ * anyway: the frames now reach the encoder already filtered, so they reach the
+ * egress filtered, so they reach Bunny filtered.
  */
 
 export const CAMERA_FILTERS = {
@@ -57,6 +57,117 @@ export function filterLabelFor(id: FilterId | null | undefined): string {
   return id && isFilterId(id) ? CAMERA_FILTERS[id].label : CAMERA_FILTERS.none.label;
 }
 
-/** Shown wherever the presets are, so nobody ships a look they think viewers can see. */
-export const LOCAL_ONLY_NOTICE =
-  'ผู้ชมจะเห็นภาพต้นฉบับ • ฟิลเตอร์นี้แสดงเฉพาะสำหรับคุณ (จะแพร่ภาพจริงได้ในเวอร์ชั่นต่อไป)';
+/** Shown wherever the presets are, so a creator knows what the audience gets. */
+export const BROADCAST_NOTICE = 'ผู้ชมจะเห็นฟิลเตอร์นี้ด้วย';
+
+/**
+ * A camera stream with the look burned into its frames.
+ *
+ * `stream` is what gets published. Its video track comes from a canvas that
+ * this module redraws once per camera frame with `ctx.filter` set; its audio
+ * tracks are the SOURCE's, passed through untouched — canvas.captureStream()
+ * produces video only, and forgetting to carry the audio across is the classic
+ * way to ship a silent broadcast.
+ *
+ * `setFilter` swaps the look mid-broadcast with no republish: the track is the
+ * canvas, and the canvas does not care what is being drawn onto it. That is
+ * the whole reason the look is changeable from the broadcast bottom bar.
+ *
+ * COST: one draw per camera frame for the length of the broadcast. That is
+ * real, and it is why /creator/live tells creators to broadcast from a
+ * computer. `requestVideoFrameCallback` is used where available so the loop
+ * runs at the CAMERA's rate (30fps) rather than the display's — on a 120Hz
+ * screen a requestAnimationFrame loop would do four times the work for the
+ * same output.
+ */
+export interface FilteredStream {
+  /** Publish this. Video from the canvas, audio from the source. */
+  stream: MediaStream;
+  setFilter: (id: FilterId) => void;
+  /** Stops the draw loop and the canvas track. Does NOT stop the source. */
+  stop: () => void;
+}
+
+export async function createFilteredStream(
+  source: MediaStream,
+  initialFilter: FilterId,
+  frameRate = 30,
+): Promise<FilteredStream> {
+  const [sourceVideoTrack] = source.getVideoTracks();
+  if (!sourceVideoTrack) throw new Error('No video track to filter');
+
+  const settings = sourceVideoTrack.getSettings();
+  const width = settings.width ?? 1280;
+  const height = settings.height ?? 720;
+
+  // A detached <video> is the only way to get decodable frames out of a
+  // MediaStreamTrack that drawImage will accept. It is never added to the
+  // document — muted and playsInline so autoplay policies leave it alone.
+  const video = document.createElement('video');
+  video.srcObject = new MediaStream([sourceVideoTrack]);
+  video.muted = true;
+  video.playsInline = true;
+  await video.play();
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  // `alpha: false` — the camera has no transparency, and telling the browser
+  // so lets it skip compositing work on every single frame.
+  const ctx = canvas.getContext('2d', { alpha: false });
+  if (!ctx) throw new Error('Canvas 2D is unavailable');
+
+  let currentFilter = initialFilter;
+  let running = true;
+  let rafId: number | null = null;
+  let frameCallbackId: number | null = null;
+
+  const draw = () => {
+    if (!running) return;
+    // Set per frame rather than once: ctx.filter is part of the drawing state
+    // and a look change has to take effect on the very next frame.
+    ctx.filter = filterCssFor(currentFilter);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    schedule();
+  };
+
+  const schedule = () => {
+    if (!running) return;
+    const withFrameCallback = video as HTMLVideoElement & {
+      requestVideoFrameCallback?: (cb: () => void) => number;
+      cancelVideoFrameCallback?: (id: number) => void;
+    };
+    if (typeof withFrameCallback.requestVideoFrameCallback === 'function') {
+      frameCallbackId = withFrameCallback.requestVideoFrameCallback(draw);
+      return;
+    }
+    rafId = requestAnimationFrame(draw);
+  };
+
+  draw();
+
+  const stream = canvas.captureStream(frameRate);
+  // Audio is not optional here — see the note above.
+  for (const audioTrack of source.getAudioTracks()) stream.addTrack(audioTrack);
+
+  return {
+    stream,
+    setFilter: (id) => {
+      currentFilter = id;
+    },
+    stop: () => {
+      running = false;
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      const withFrameCallback = video as HTMLVideoElement & {
+        cancelVideoFrameCallback?: (id: number) => void;
+      };
+      if (frameCallbackId !== null && withFrameCallback.cancelVideoFrameCallback) {
+        withFrameCallback.cancelVideoFrameCallback(frameCallbackId);
+      }
+      // Only the canvas track: the source belongs to whoever opened the
+      // camera, and stopping it here would take the preview with it.
+      stream.getVideoTracks().forEach((track) => track.stop());
+      video.srcObject = null;
+    },
+  };
+}

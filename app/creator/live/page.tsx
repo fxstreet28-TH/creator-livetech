@@ -15,19 +15,27 @@
  * a WebView that will not open a camera.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Loader2 } from 'lucide-react';
 import { AuthPending, useRequireAuth } from '@/lib/hooks/useRequireAuth';
 import { useCreatorProfile } from '@/lib/hooks/useCreatorProfile';
+import { useDashboardUser } from '@/lib/hooks/useDashboardUser';
+import { useLiveChannel } from '@/lib/hooks/useLiveChannel';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
 import { CREATOR_PPV_ENABLED } from '@/lib/features';
 import { createLiveSession, endLiveSession, fetchLiveQuota, thaiForQuotaRefusal } from '@/lib/live/api';
-import type { BroadcastQuality, EndLiveResponse, LiveQuota } from '@/lib/live/types';
+import type {
+  BroadcastQuality,
+  EndLiveResponse,
+  LiveChatEntry,
+  LiveDelivery,
+  LiveQuota,
+} from '@/lib/live/types';
 import { DEFAULT_QUALITY, isQualityAllowed } from '@/lib/live/constants';
 import { DEFAULT_FILTER_ID, type FilterId } from '@/lib/live/cameraFilters';
-import type { Room } from '@/lib/live/livekitClient';
+import type { FloatingReaction } from '@/lib/live/reactions';
 import { CreatorPageShell } from '@/components/creator/CreatorPageShell';
 import { CameraPreview } from '@/components/live/CameraPreview';
 import {
@@ -49,6 +57,14 @@ interface ActiveBroadcast {
   token: string;
   quality: BroadcastQuality;
   maxViewers: number;
+  /**
+   * Which pipeline is carrying this session.
+   *
+   * 'livekit' means the Bunny stream could not be created and the backend fell
+   * back so the creator could still broadcast. The broadcaster skips the
+   * egress call in that case — there is nothing to push to.
+   */
+  delivery: LiveDelivery;
   /**
    * When the row was created, not when LiveKit connected.
    *
@@ -93,6 +109,7 @@ export default function CreatorLivePage() {
 
 function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName: string }) {
   const router = useRouter();
+  const { user } = useDashboardUser();
 
   const [draft, setDraft] = useState<GoLiveDraft>(EMPTY_DRAFT);
   const [showErrors, setShowErrors] = useState(false);
@@ -116,8 +133,6 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
   const [quotaLoading, setQuotaLoading] = useState(true);
 
   const [broadcast, setBroadcast] = useState<ActiveBroadcast | null>(null);
-  const [room, setRoom] = useState<Room | null>(null);
-  const [viewers, setViewers] = useState({ current: 0, peak: 0 });
 
   const [endOpen, setEndOpen] = useState(false);
   const [ending, setEnding] = useState(false);
@@ -126,6 +141,23 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
 
   const elapsedSeconds = useElapsedSeconds(broadcast?.startedAt ?? null);
   const errors = validateDraft(draft);
+
+  /**
+   * The session's Realtime channel: the viewers' chat and reactions, and the
+   * audience count.
+   *
+   * The creator is a participant in this channel but not in their own
+   * audience — `isCreator` keeps them out of the count and marks their chat
+   * lines for everyone else's 👑. Nothing about it depends on the video
+   * pipeline, which is why it is the same channel a viewer opens.
+   */
+  const channel = useLiveChannel({
+    sessionId: broadcast?.liveSessionId ?? null,
+    userId: user?.id ?? null,
+    displayName: creatorName,
+    isCreator: true,
+    creatorUserId: user?.id ?? null,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -203,6 +235,7 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
       title: draft.title.trim(),
       access_level: draft.visibility,
       broadcast_quality: draft.quality,
+      latency_mode: draft.latency,
       // Recording stays off: LiveKit egress is not wired, so a session flagged
       // for recording produces nothing (non-negotiable #5).
       recording_enabled: false,
@@ -228,6 +261,7 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
       token: data.access_token,
       quality: data.broadcast_quality,
       maxViewers: data.max_viewers,
+      delivery: data.delivery,
       startedAt: new Date().toISOString(),
     });
     setSubmitting(false);
@@ -264,28 +298,23 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
     // confirmation rather than racing it.
     setSummary(data);
     setBroadcast(null);
-    setRoom(null);
     setEnding(false);
   };
-
-  const handleViewerCount = useCallback((current: number, peak: number) => {
-    setViewers({ current, peak });
-  }, []);
 
   if (broadcast || summary) {
     return (
       <BroadcastingLayout
         broadcast={broadcast}
-        room={room}
         videoDeviceId={deviceId || undefined}
         micEnabled={micEnabled}
         filterId={filterId}
         onFilterIdChange={setFilterId}
-        creatorName={creatorName}
-        viewers={viewers}
+        viewers={{ current: channel.viewerCount, peak: channel.peakViewerCount }}
+        reactions={channel.reactions}
+        chat={channel.chat}
+        chatEnabled={channel.connected}
+        onSendChat={channel.sendChat}
         elapsedSeconds={elapsedSeconds}
-        onRoomChange={setRoom}
-        onViewerCountChange={handleViewerCount}
         onEndRequest={() => setEndOpen(true)}
         endDialog={
           endOpen || summary ? (
@@ -366,21 +395,20 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
  */
 function BroadcastingLayout({
   broadcast,
-  room,
   videoDeviceId,
   micEnabled,
   filterId,
   onFilterIdChange,
-  creatorName,
   viewers,
+  reactions,
+  chat,
+  chatEnabled,
+  onSendChat,
   elapsedSeconds,
-  onRoomChange,
-  onViewerCountChange,
   onEndRequest,
   endDialog,
 }: {
   broadcast: ActiveBroadcast | null;
-  room: Room | null;
   /** The camera picked on the setup screen. */
   videoDeviceId?: string;
   /** The mic toggle's state when the creator pressed go-live. */
@@ -388,11 +416,12 @@ function BroadcastingLayout({
   /** The look picked on the setup screen, still changeable mid-broadcast. */
   filterId: FilterId;
   onFilterIdChange: (id: FilterId) => void;
-  creatorName: string;
   viewers: { current: number; peak: number };
+  reactions: FloatingReaction[];
+  chat: LiveChatEntry[];
+  chatEnabled: boolean;
+  onSendChat: (text: string) => Promise<void>;
   elapsedSeconds: number;
-  onRoomChange: (room: Room | null) => void;
-  onViewerCountChange: (current: number, peak: number) => void;
   onEndRequest: () => void;
   endDialog: React.ReactNode;
 }) {
@@ -406,13 +435,14 @@ function BroadcastingLayout({
               wsUrl={broadcast.wsUrl}
               token={broadcast.token}
               quality={broadcast.quality}
+              delivery={broadcast.delivery}
               videoDeviceId={videoDeviceId}
               micEnabled={micEnabled}
               elapsedSeconds={elapsedSeconds}
               filterId={filterId}
               onFilterIdChange={onFilterIdChange}
-              onRoomChange={onRoomChange}
-              onViewerCountChange={onViewerCountChange}
+              viewerCount={viewers.current}
+              reactions={reactions}
             />
           ) : (
             // The session has ended and the summary dialog is on top of this.
@@ -434,7 +464,12 @@ function BroadcastingLayout({
           {/* On a phone this drops under the video as the second row of the
               single-column grid, which is the bottom-sheet position without a
               sheet to drag. min-h keeps it usable when the video is tall. */}
-          <LiveChat room={room} senderName={creatorName} isCreator className="min-h-48 flex-1" />
+          <LiveChat
+            entries={chat}
+            onSend={onSendChat}
+            enabled={chatEnabled}
+            className="min-h-48 flex-1"
+          />
         </div>
       </div>
 

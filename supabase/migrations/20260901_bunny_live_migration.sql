@@ -206,37 +206,55 @@ CREATE POLICY "live_channel_send"
   );
 
 -- ---------------------------------------------------------------------------
--- 5. Viewer counting without a read-modify-write
+-- 5. The broadcaster writes the audience size
 -- ---------------------------------------------------------------------------
 --
--- The LiveKit join function incremented current_viewer_count by SELECTing it
--- and writing back value+1, which loses increments whenever two viewers arrive
--- in the same instant — exactly the moment a popular stream starts. An HLS
--- audience arrives in bigger, tighter bursts than a WebRTC one did, so the
--- increment moves into the database where it can be atomic.
+-- Counting viewers got harder and then easier. Under LiveKit the broadcaster
+-- could just ask the room. Under LL-HLS a viewer is an HTTP request to a CDN
+-- and there is no room to ask — so the count now comes from Realtime PRESENCE
+-- on the `live:<session_id>` channel, which every viewer is already subscribed
+-- to for chat and reactions, and which drops a viewer automatically when their
+-- socket closes. That is a better number than the LiveKit one was: it clears
+-- itself, where current_viewer_count previously only ever climbed.
 --
--- Still only ever counts UP. The broadcaster is what writes the true figure
--- back (persistViewerCounts on the client), because it is the only party that
--- can tell the difference between a viewer who left and one who stopped
--- polling.
+-- This RPC is how that number is written. It exists rather than a plain UPDATE
+-- because the peak has to be raised with GREATEST server-side: two writes in
+-- flight at once (the broadcaster's timer and its new-peak write) could
+-- otherwise walk the maximum backwards, and live-end-session reads that peak
+-- to build the session summary and the bill.
 
-CREATE OR REPLACE FUNCTION public.increment_live_viewer_count(p_session_id UUID)
+CREATE OR REPLACE FUNCTION public.set_live_viewer_counts(
+  p_session_id UUID,
+  p_current INTEGER
+)
 RETURNS VOID
-LANGUAGE sql
+LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path TO 'public'
 AS $$
+DECLARE
+  v_owner UUID;
+BEGIN
+  -- Only the broadcaster may write their own audience size. Without this an
+  -- authenticated stranger could set any creator's viewer count to anything,
+  -- which lands on the discover card AND in the cost estimate.
+  SELECT c.user_id INTO v_owner
+  FROM public.live_sessions s
+  JOIN public.creators c ON c.id = s.creator_id
+  WHERE s.id = p_session_id;
+
+  IF v_owner IS NULL OR v_owner <> auth.uid() THEN
+    RETURN;
+  END IF;
+
   UPDATE public.live_sessions
-  SET current_viewer_count = current_viewer_count + 1,
-      peak_viewer_count = GREATEST(peak_viewer_count, current_viewer_count + 1),
+  SET current_viewer_count = GREATEST(0, p_current),
+      peak_viewer_count = GREATEST(peak_viewer_count, GREATEST(0, p_current)),
       updated_at = now()
   WHERE id = p_session_id
-    AND ended_at IS NULL
     AND status IN ('waiting', 'live');
+END;
 $$;
 
--- Service role only: this is called from live-get-playback-url after the
--- entitlement check has passed. A client that could call it directly could
--- inflate any creator's viewer count.
-REVOKE ALL ON FUNCTION public.increment_live_viewer_count(UUID) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.increment_live_viewer_count(UUID) TO service_role;
+REVOKE ALL ON FUNCTION public.set_live_viewer_counts(UUID, INTEGER) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.set_live_viewer_counts(UUID, INTEGER) TO authenticated, service_role;

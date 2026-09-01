@@ -19,7 +19,7 @@ import { Info } from 'lucide-react';
 import {
   CAMERA_FILTERS,
   FILTER_ORDER,
-  LOCAL_ONLY_NOTICE,
+  BROADCAST_NOTICE,
   type FilterId,
 } from '@/lib/live/cameraFilters';
 
@@ -67,7 +67,7 @@ export function CameraFilterSelector({
 
       <p id={noticeId} className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-white/40">
         <Info size={13} className="mt-0.5 shrink-0" aria-hidden />
-        <span>{LOCAL_ONLY_NOTICE}</span>
+        <span>{BROADCAST_NOTICE}</span>
       </p>
     </fieldset>
   );

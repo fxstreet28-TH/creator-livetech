@@ -160,12 +160,13 @@ Deno.serve(async (req) => {
     const tokenKey = await tryGetVaultSecret('bunny_stream_token_key');
     const playbackUrl = await signBunnyUrl(session.bunny_playback_url, tokenKey, expiresAtUnix);
 
-    // Best-effort, and never awaited into the response: a viewer should not
-    // wait on a counter. Only ever incremented here — the broadcaster is what
-    // writes the true count back (see persistViewerCounts on the client).
-    supabase
-      .rpc('increment_live_viewer_count', { p_session_id: session.id })
-      .then(() => {}, () => {});
+    // NO VIEWER COUNTING HERE. An increment on this call could only ever go
+    // up — an HLS viewer closing a tab tells the server nothing — so it would
+    // report a session's peak as its total number of arrivals, and that peak
+    // is what live-end-session prices the broadcast from. The count comes from
+    // Realtime presence on the `live:<session_id>` channel instead, which
+    // drops a viewer when their socket does; the broadcaster writes it back
+    // via set_live_viewer_counts.
 
     return jsonResponse({
       delivery: 'llhls',

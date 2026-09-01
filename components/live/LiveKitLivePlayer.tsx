@@ -1,25 +1,28 @@
 'use client';
 
 /**
- * The subscriber half of /live/[sessionId]: the LiveKit room a viewer joins,
- * the video it renders, and the two ways it can stop.
+ * The LiveKit viewer — the pre-migration playback path, kept as a fallback.
  *
- * Like CreatorBroadcaster it owns the Room and hands it up (`onRoomChange`) so
- * the chat panel shares one connection. Unlike the broadcaster it writes
- * nothing: the join Edge Function has already incremented
- * `current_viewer_count`, and a viewer has no RLS write access to the row
- * anyway.
+ * Almost every viewer now watches over LL-HLS (see HlsLivePlayer); this
+ * component only renders for a session with no Bunny stream, which means one
+ * of two things:
  *
- * Tracks are attached with `track.attach()` rather than bound to elements we
- * render, because the SDK owns srcObject, autoplay and the muted flag — and a
- * hand-rolled <video> gets one of those wrong on Safari. Audio arrives as its
- * own element; browsers routinely refuse to play it without a gesture, so
- * `canPlaybackAudio` drives an explicit "แตะเพื่อเปิดเสียง" button rather than
- * leaving a silent stream that looks broken.
+ *  - the row was created before the migration and is still running, or
+ *  - `live-create-session` could not reach Bunny and fell back so that the
+ *    creator could still broadcast.
  *
- * The reaction rail and the floating overlay sit on top of the video. A tap
- * does both jobs — publish to the room and spawn locally — because LiveKit
- * does not deliver a participant's own data packets back to them.
+ * Keeping it is what lets those sessions play instead of showing an error for
+ * something that is not the viewer's problem, and it is the partial-rollback
+ * lever in the migration plan: a session forced down this path works exactly
+ * as it did before.
+ *
+ * It is NOT a full copy of the old component. Chat and reactions have moved to
+ * the Supabase Realtime channel for every delivery path, so nothing here
+ * touches a data channel — the overlay is passed in, and this file's only job
+ * is to put remote tracks on the screen.
+ *
+ * TODO(phase 2B): delete this, together with connectAsSubscriber and the
+ * livekit-client dependency, once no session can still be delivered this way.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -31,56 +34,46 @@ import {
   createRoom,
   leaveRoom,
   thaiForConnectError,
-  viewerCountForViewer,
   type RemoteTrack,
-  type Room,
 } from '@/lib/live/livekitClient';
-import { VIEWER_COUNT_POLL_MS } from '@/lib/live/constants';
-import { EmojiReactionButton } from './EmojiReactionButton';
-import { FloatingReactionsLayer, useFloatingReactions } from './FloatingReactionsLayer';
 import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
 
 export type ViewerPhase = 'connecting' | 'watching' | 'reconnecting' | 'ended' | 'failed';
 
-interface ViewerLivePlayerProps {
+interface LiveKitLivePlayerProps {
   wsUrl: string;
   /** SECURITY: a LiveKit room credential. Never log it or put it in a URL. */
   token: string;
   title: string;
   elapsedSeconds: number;
-  onRoomChange: (room: Room | null) => void;
+  /** From the Realtime channel's presence, like every other screen. */
+  viewerCount: number;
+  /** The floating reactions and the reaction rail, owned by the page. */
+  overlay?: React.ReactNode;
   /** Fired when the broadcast stops, so the page can offer somewhere to go. */
   onEnded: () => void;
 }
 
-export function ViewerLivePlayer({
+export function LiveKitLivePlayer({
   wsUrl,
   token,
   title,
   elapsedSeconds,
-  onRoomChange,
+  viewerCount,
+  overlay,
   onEnded,
-}: ViewerLivePlayerProps) {
+}: LiveKitLivePlayerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const roomRef = useRef<Room | null>(null);
-
-  /**
-   * The connected room, as state rather than the ref above: the reactions hook
-   * has to re-subscribe when it changes, and a ref does not re-render.
-   */
-  const [liveRoom, setLiveRoom] = useState<Room | null>(null);
+  const roomRef = useRef<ReturnType<typeof createRoom> | null>(null);
 
   const [phase, setPhase] = useState<ViewerPhase>('connecting');
   const [error, setError] = useState<string | null>(null);
-  const [viewers, setViewers] = useState(0);
   const [audioBlocked, setAudioBlocked] = useState(false);
 
-  const { reactions, spawn } = useFloatingReactions(liveRoom);
-
-  const callbacks = useRef({ onRoomChange, onEnded });
+  const onEndedRef = useRef(onEnded);
   useEffect(() => {
-    callbacks.current = { onRoomChange, onEnded };
-  }, [onRoomChange, onEnded]);
+    onEndedRef.current = onEnded;
+  }, [onEnded]);
 
   useEffect(() => {
     let cancelled = false;
@@ -90,8 +83,9 @@ export function ViewerLivePlayer({
     // the elements to tear down are the ones this effect appended.
     const container = containerRef.current;
 
-    const refreshViewers = () => setViewers(viewerCountForViewer(room));
-
+    // Tracks are attached with `track.attach()` rather than bound to elements
+    // we render, because the SDK owns srcObject, autoplay and the muted flag —
+    // and a hand-rolled <video> gets one of those wrong on Safari.
     const onSubscribed = (track: RemoteTrack) => {
       if (!container) return;
 
@@ -106,7 +100,6 @@ export function ViewerLivePlayer({
       }
       container.appendChild(element);
       setPhase('watching');
-      refreshViewers();
     };
 
     const onUnsubscribed = (track: RemoteTrack) => {
@@ -123,7 +116,7 @@ export function ViewerLivePlayer({
     const onDisconnected = () => {
       if (cancelled) return;
       setPhase('ended');
-      callbacks.current.onEnded();
+      onEndedRef.current();
     };
 
     async function connect() {
@@ -131,18 +124,14 @@ export function ViewerLivePlayer({
         await connectAsSubscriber(room, wsUrl, token);
       } catch (err) {
         if (cancelled) return;
-        console.error('[ViewerLivePlayer] connect failed', err);
+        console.error('[LiveKitLivePlayer] connect failed', err);
         setError(thaiForConnectError(err));
         setPhase('failed');
         return;
       }
       if (cancelled) return;
 
-      setLiveRoom(room);
-      callbacks.current.onRoomChange(room);
       setAudioBlocked(!room.canPlaybackAudio);
-      refreshViewers();
-
       // A viewer who arrives before the broadcaster has published anything
       // sits on 'connecting' until TrackSubscribed fires, which is honest:
       // there is nothing to watch yet.
@@ -155,8 +144,6 @@ export function ViewerLivePlayer({
 
     room.on(RoomEvent.TrackSubscribed, onSubscribed);
     room.on(RoomEvent.TrackUnsubscribed, onUnsubscribed);
-    room.on(RoomEvent.ParticipantConnected, refreshViewers);
-    room.on(RoomEvent.ParticipantDisconnected, refreshViewers);
     room.on(RoomEvent.Reconnecting, onReconnecting);
     room.on(RoomEvent.Reconnected, onReconnected);
     room.on(RoomEvent.AudioPlaybackStatusChanged, onAudioStatus);
@@ -166,37 +153,26 @@ export function ViewerLivePlayer({
 
     return () => {
       cancelled = true;
-      // By reference rather than removeAllListeners() — see the same note in
-      // CreatorBroadcaster.
+      // By reference rather than removeAllListeners() — the Room is an
+      // EventEmitter the SDK also hands to its own internals.
       room.off(RoomEvent.TrackSubscribed, onSubscribed);
       room.off(RoomEvent.TrackUnsubscribed, onUnsubscribed);
-      room.off(RoomEvent.ParticipantConnected, refreshViewers);
-      room.off(RoomEvent.ParticipantDisconnected, refreshViewers);
       room.off(RoomEvent.Reconnecting, onReconnecting);
       room.off(RoomEvent.Reconnected, onReconnected);
       room.off(RoomEvent.AudioPlaybackStatusChanged, onAudioStatus);
       room.off(RoomEvent.Disconnected, onDisconnected);
-      callbacks.current.onRoomChange(null);
-      setLiveRoom(null);
       roomRef.current = null;
       container?.replaceChildren();
       void leaveRoom(room);
     };
   }, [wsUrl, token]);
 
-  // Backstop for a participant that left without a clean disconnect.
-  useEffect(() => {
-    if (phase !== 'watching') return;
-    const timer = setInterval(() => setViewers(viewerCountForViewer(roomRef.current)), VIEWER_COUNT_POLL_MS);
-    return () => clearInterval(timer);
-  }, [phase]);
-
   const enableAudio = useCallback(async () => {
     try {
       await roomRef.current?.startAudio();
       setAudioBlocked(false);
     } catch (err) {
-      console.error('[ViewerLivePlayer] startAudio failed', err);
+      console.error('[LiveKitLivePlayer] startAudio failed', err);
     }
   }, []);
 
@@ -212,27 +188,19 @@ export function ViewerLivePlayer({
       </div>
 
       <div className="pointer-events-none absolute right-3 top-3 z-10 flex items-center gap-2">
-        <ViewerCountPill count={viewers} />
+        <ViewerCountPill count={viewerCount} />
         <DurationPill seconds={elapsedSeconds} />
       </div>
 
-      <FloatingReactionsLayer reactions={reactions} />
-
-      {phase === 'watching' && (
-        <EmojiReactionButton
-          room={liveRoom}
-          onSpawn={spawn}
-          className="absolute bottom-3 right-3 z-20"
-        />
-      )}
+      {overlay}
 
       {audioBlocked && phase === 'watching' && (
         <button
           type="button"
           onClick={() => void enableAudio()}
-          // Sits above the reaction rail rather than beside it: on a narrow
-          // phone the two would overlap at bottom-centre, and this button is
-          // the difference between a silent stream and a working one.
+          // Above the reaction rail rather than beside it: on a narrow phone
+          // the two would overlap at bottom-centre, and this button is the
+          // difference between a silent stream and a working one.
           className="absolute bottom-20 left-1/2 z-20 inline-flex min-h-11 -translate-x-1/2 items-center gap-2 rounded-full bg-white/15 px-4 py-2 text-sm font-semibold text-white backdrop-blur-md transition hover:bg-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
         >
           <Volume2 size={16} aria-hidden />
