@@ -79,6 +79,9 @@ export function hasNativeHls(video: HTMLVideoElement): boolean {
 const MANIFEST_RETRY_LIMIT = 40;
 const MANIFEST_RETRY_DELAY_MS = 3_000;
 
+/** How long the retry budget above adds up to, for the copy on screen. */
+export const MANIFEST_RETRY_BUDGET_MS = MANIFEST_RETRY_LIMIT * MANIFEST_RETRY_DELAY_MS;
+
 export interface HlsAttachOptions {
   video: HTMLVideoElement;
   playbackUrl: string;
@@ -237,10 +240,44 @@ export function attachHlsStream(options: HlsAttachOptions): HlsHandle {
       data.details === Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT ||
       data.details === Hls.ErrorDetails.MANIFEST_PARSING_ERROR;
 
+    /**
+     * A 403 is not "not started yet" and must never be retried as one.
+     *
+     * 404 means Bunny has no playlist because no frames have arrived — the
+     * normal state of a viewer who is early, and worth waiting through. 403
+     * means the CDN is REFUSING this viewer: a token that does not match, an
+     * expired `expires`, or a pull-zone rule (hotlink protection, geo, IP
+     * blocking). Retrying that for two minutes and then saying "the creator
+     * has not started" would be a lie, and it is the specific confusion that
+     * cost an afternoon of debugging on 2026-09-01.
+     */
+    const httpStatus = data.response?.code;
+    if (isManifestMissing && httpStatus === 403) {
+      console.error('[live/hls] CDN refused the playlist (403)', data.response);
+      onPhaseChange('error');
+      onError('ไม่มีสิทธิ์เข้าถึงสตรีม กรุณาโหลดหน้านี้ใหม่');
+      return;
+    }
+
     if (isManifestMissing && manifestRetries < MANIFEST_RETRY_LIMIT) {
       manifestRetries += 1;
       onPhaseChange('waiting');
       retryTimer = setTimeout(load, MANIFEST_RETRY_DELAY_MS);
+      return;
+    }
+
+    /**
+     * The budget is spent and there is still no playlist.
+     *
+     * Said plainly rather than left on a spinner: two minutes of RTMP with no
+     * playlist at the end of it is not a slow creator, it is a stream that is
+     * not being produced, and the viewer should be told so instead of being
+     * asked to keep waiting.
+     */
+    if (isManifestMissing) {
+      console.error('[live/hls] no playlist after the full retry budget', data.details, data.response);
+      onPhaseChange('error');
+      onError('ไลฟ์นี้ยังไม่ส่งสัญญาณ กรุณาลองใหม่อีกครั้งภายหลัง');
       return;
     }
 

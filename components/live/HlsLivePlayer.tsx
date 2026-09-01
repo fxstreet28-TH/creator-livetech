@@ -29,7 +29,12 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, Volume2, WifiOff } from 'lucide-react';
-import { attachHlsStream, type HlsHandle, type HlsPhase } from '@/lib/live/hlsPlayer';
+import {
+  MANIFEST_RETRY_BUDGET_MS,
+  attachHlsStream,
+  type HlsHandle,
+  type HlsPhase,
+} from '@/lib/live/hlsPlayer';
 import type { LatencyMode } from '@/lib/live/types';
 import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
 
@@ -57,19 +62,51 @@ export function HlsLivePlayer({
   const [phase, setPhase] = useState<HlsPhase>('loading');
   const [error, setError] = useState<string | null>(null);
   const [audioBlocked, setAudioBlocked] = useState(false);
+  /**
+   * When the current wait began, and a tick to re-render against it.
+   *
+   * The elapsed time is DERIVED from the start rather than accumulated in
+   * state: a counter incremented from an effect is a cascading render every
+   * second, and it drifts whenever the tab is throttled in the background —
+   * which is exactly when a viewer is most likely to be waiting.
+   *
+   * Shown at all because an indefinite spinner tells a viewer nothing: they
+   * cannot tell "the creator is 5 seconds away" from "this will never work",
+   * so they either leave too early or stare at it too long. A counter against
+   * a stated ceiling answers both.
+   */
+  const waitStartedAtRef = useRef<number | null>(null);
+  const [waitingSeconds, setWaitingSeconds] = useState(0);
+
+  /**
+   * Phase changes come from the player, which is the external system this
+   * component is synchronising with — so the wait clock is started and cleared
+   * here, in its callback, rather than in an effect watching `phase`.
+   */
+  const handlePhaseChange = useCallback((next: HlsPhase) => {
+    if (next === 'waiting') {
+      // Only on entering the wait: a stream that stalls, recovers and stalls
+      // again should count from the start of the CURRENT wait, and the retry
+      // loop reports 'waiting' repeatedly while one wait is still running.
+      waitStartedAtRef.current ??= Date.now();
+    } else {
+      waitStartedAtRef.current = null;
+      setWaitingSeconds(0);
+    }
+    setPhase(next);
+  }, []);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
-    setPhase('loading');
     setError(null);
 
     const handle = attachHlsStream({
       video,
       playbackUrl,
       latencyMode,
-      onPhaseChange: setPhase,
+      onPhaseChange: handlePhaseChange,
       onError: setError,
       onAudioBlocked: setAudioBlocked,
     });
@@ -82,7 +119,23 @@ export function HlsLivePlayer({
       // bandwidth after the component has gone.
       handle.destroy();
     };
-  }, [playbackUrl, latencyMode]);
+  }, [playbackUrl, latencyMode, handlePhaseChange]);
+
+  /**
+   * Recomputed from the start time on every tick rather than incremented.
+   *
+   * A `+ 1` per second silently under-counts whenever the browser throttles
+   * background timers — which is precisely the tab a viewer leaves open while
+   * waiting for a creator to appear.
+   */
+  useEffect(() => {
+    if (phase !== 'waiting') return;
+    const timer = setInterval(() => {
+      const startedAt = waitStartedAtRef.current;
+      if (startedAt !== null) setWaitingSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [phase]);
 
   /**
    * Coming back from a backgrounded tab.
@@ -149,9 +202,17 @@ export function HlsLivePlayer({
         </button>
       )}
 
-      {phase !== 'playing' && <PlayerOverlay phase={phase} error={error} />}
+      {phase !== 'playing' && (
+        <PlayerOverlay phase={phase} error={error} waitingSeconds={waitingSeconds} />
+      )}
     </div>
   );
+}
+
+/** m:ss, for the wait counter. */
+function formatWait(seconds: number): string {
+  const whole = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
 }
 
 /**
@@ -162,7 +223,15 @@ export function HlsLivePlayer({
  * creator's frames reached Bunny, and telling them something went wrong would
  * be both wrong and enough to make them leave.
  */
-function PlayerOverlay({ phase, error }: { phase: HlsPhase; error: string | null }) {
+function PlayerOverlay({
+  phase,
+  error,
+  waitingSeconds,
+}: {
+  phase: HlsPhase;
+  error: string | null;
+  waitingSeconds: number;
+}) {
   if (phase === 'error') {
     return (
       <div role="alert" className="absolute inset-0 z-20 grid place-items-center bg-black/85 px-6 text-center">
@@ -184,6 +253,11 @@ function PlayerOverlay({ phase, error }: { phase: HlsPhase; error: string | null
         <p className="mt-3 text-sm text-white/80" role="status">
           {phase === 'waiting' ? 'กำลังรอสัญญาณจาก Creator...' : 'กำลังโหลดไลฟ์...'}
         </p>
+        {phase === 'waiting' && (
+          <p className="mt-1 text-xs tabular-nums text-white/40">
+            {formatWait(waitingSeconds)} / รอสูงสุด {formatWait(MANIFEST_RETRY_BUDGET_MS / 1000)}
+          </p>
+        )}
       </div>
     </div>
   );

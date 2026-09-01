@@ -63,6 +63,19 @@ export interface UseLiveChannelResult {
   /** How many viewers are on the channel. Excludes the broadcaster. */
   viewerCount: number;
   /**
+   * Chat lines seen this session, sent and received.
+   *
+   * Chat is broadcast-only — nothing writes it to Postgres — so
+   * `live_sessions.chat_message_count` has no writer and every session summary
+   * reported 0 messages however busy the chat had been. This count is what the
+   * broadcaster hands to live-end-session when it closes the session.
+   *
+   * It is what THIS client saw: a creator who joined the channel late, or
+   * whose socket dropped, undercounts. That is the honest ceiling on a metric
+   * nobody persists, and it beats a hard-coded zero.
+   */
+  chatMessageCount: number;
+  /**
    * The highest count seen this session.
    *
    * Tracked here, where the counts arrive, rather than derived by a consumer:
@@ -97,6 +110,7 @@ export function useLiveChannel({
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
   const [viewerCount, setViewerCount] = useState(0);
   const [peakViewerCount, setPeakViewerCount] = useState(0);
+  const [chatMessageCount, setChatMessageCount] = useState(0);
   const [status, setStatus] = useState<LiveChannelStatus>('connecting');
 
   const senderRef = useRef<LiveChannelSender | null>(null);
@@ -127,6 +141,9 @@ export function useLiveChannel({
     // Oldest dropped rather than kept: this is the entire history there is,
     // and an unbounded array on a three-hour broadcast is a leak.
     setChat((current) => [...current, { ...entry, id: nextId() }].slice(-MAX_CHAT_MESSAGES));
+    // Counted separately from the list, which is capped at MAX_CHAT_MESSAGES —
+    // a busy broadcast would otherwise report its total as 100 forever.
+    setChatMessageCount((current) => current + 1);
   }, []);
 
   /**
@@ -276,6 +293,7 @@ export function useLiveChannel({
     reactions,
     viewerCount,
     peakViewerCount,
+    chatMessageCount,
     connected: effectiveStatus === 'connected',
     status: effectiveStatus,
     sendChat,

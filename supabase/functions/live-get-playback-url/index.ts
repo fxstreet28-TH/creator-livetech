@@ -33,7 +33,7 @@ import {
   getVaultSecrets,
   tryGetVaultSecret,
 } from '../_shared/utils.ts';
-import { generateLiveKitToken, signBunnyUrl } from '../_shared/live.ts';
+import { bunnyGetLiveStream, generateLiveKitToken, signBunnyUrl } from '../_shared/live.ts';
 
 /**
  * How long a playback URL stays valid.
@@ -131,6 +131,8 @@ Deno.serve(async (req) => {
       'livekit_ws_url',
       'livekit_api_key',
       'livekit_api_secret',
+      'bunny_stream_api_key',
+      'bunny_stream_library_id',
     ]);
 
     // ---- Legacy / fallback delivery ---------------------------------------
@@ -156,6 +158,47 @@ Deno.serve(async (req) => {
     }
 
     // ---- LL-HLS -----------------------------------------------------------
+
+    /**
+     * Has Bunny actually started ingesting?
+     *
+     * `startedAt` stays null and `status` stays 1 until Bunny's live pipeline
+     * has accepted the RTMP feed and begun producing renditions. That single
+     * field is the difference between "the creator has not gone live yet",
+     * which is normal and worth waiting through, and "the feed is arriving but
+     * Bunny is not turning it into a playlist", which is a broken stream no
+     * amount of client-side retrying will fix.
+     *
+     * Asked here because this is where a viewer already waits on a round trip,
+     * and because NOT having this signal is what turned a vendor-side failure
+     * into an afternoon of guessing: the egress reported success, the row
+     * looked complete, and the only evidence anything was wrong lived in a
+     * field nobody read. Best-effort — a viewer is never blocked on it.
+     */
+    let ingestReady: boolean | null = null;
+    let bunnyStatus: number | null = null;
+    if (session.bunny_stream_id) {
+      try {
+        const stream = await bunnyGetLiveStream(
+          secrets.bunny_stream_library_id,
+          secrets.bunny_stream_api_key,
+          session.bunny_stream_id,
+        );
+        const raw = stream as unknown as Record<string, unknown> | null;
+        bunnyStatus = typeof raw?.status === 'number' ? raw.status : null;
+        ingestReady = raw ? raw.startedAt !== null && raw.startedAt !== undefined : null;
+        if (ingestReady === false) {
+          console.warn('[live-get-playback-url] Bunny has not started ingest', {
+            session_id: session.id,
+            bunny_stream_id: session.bunny_stream_id,
+            bunny_status: bunnyStatus,
+          });
+        }
+      } catch (err) {
+        console.error('[live-get-playback-url] Bunny status read failed', err);
+      }
+    }
+
     const expiresAtUnix = Math.floor(Date.now() / 1000) + PLAYBACK_TTL_SECONDS;
     const tokenKey = await tryGetVaultSecret('bunny_stream_token_key');
     const playbackUrl = await signBunnyUrl(session.bunny_playback_url, tokenKey, expiresAtUnix);
@@ -181,6 +224,9 @@ Deno.serve(async (req) => {
       // it. Surfaced so this is visible in a response rather than only in a
       // vault listing.
       signed: tokenKey !== null,
+      // null when Bunny could not be reached. See the note above.
+      ingest_ready: ingestReady,
+      bunny_status: bunnyStatus,
     });
   } catch (err) {
     console.error('Error:', err);

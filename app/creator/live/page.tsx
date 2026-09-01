@@ -282,7 +282,11 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
       return;
     }
 
-    const { data, error } = await endLiveSession(supabase, broadcast.liveSessionId);
+    const { data, error } = await endLiveSession(
+      supabase,
+      broadcast.liveSessionId,
+      channel.chatMessageCount,
+    );
 
     if (error || !data) {
       console.error('[creator/live] end failed', error);

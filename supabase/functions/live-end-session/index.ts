@@ -47,6 +47,24 @@ Deno.serve(async (req) => {
     const body = await req.json();
     if (!body.live_session_id) return errorResponse('live_session_id required', 400);
 
+    /**
+     * How many chat lines the broadcaster saw.
+     *
+     * Chat is a Realtime broadcast and nothing persists it, so
+     * `live_sessions.chat_message_count` has no other writer and every session
+     * summary reported 0 however busy the chat was. The broadcaster's own
+     * tally is the only number that exists.
+     *
+     * Clamped rather than trusted: it is a client-supplied figure on a vanity
+     * metric, so the cost of a wrong one is a wrong number on one creator's
+     * own summary — but an unbounded integer would still be an unbounded
+     * integer going into a column.
+     */
+    const reportedChatCount = Math.max(
+      0,
+      Math.min(1_000_000, Math.floor(Number(body.chat_message_count) || 0)),
+    );
+
     const supabase = getServiceClient();
 
     const { data: session, error: sessionErr } = await supabase
@@ -141,6 +159,10 @@ Deno.serve(async (req) => {
         duration_seconds: durationSeconds,
         estimated_cost_thb: cost.totalThb,
         current_viewer_count: 0,
+        // Never lowered: a reconnected broadcaster restarts its tally at zero,
+        // and a summary that forgets the first half of the chat is worse than
+        // one that keeps the best figure anyone reported.
+        chat_message_count: Math.max(session.chat_message_count ?? 0, reportedChatCount),
         updated_at: endedAt.toISOString(),
         metadata: {
           ...(session.metadata && typeof session.metadata === 'object' ? session.metadata : {}),
@@ -217,7 +239,7 @@ Deno.serve(async (req) => {
       duration_seconds: durationSeconds,
       duration_minutes: Math.round(durationMinutes * 100) / 100,
       peak_viewers: peakViewers,
-      chat_messages: session.chat_message_count ?? 0,
+      chat_messages: Math.max(session.chat_message_count ?? 0, reportedChatCount),
       tips_received_stars: session.tip_stars_received ?? 0,
       estimated_cost_thb: Math.round(cost.totalThb * 100) / 100,
       cost_breakdown_thb: {

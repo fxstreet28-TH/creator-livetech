@@ -153,9 +153,12 @@ only in production.
   lookup. A malformed body answers `malformed_request` instead.
 - `npx tsc --noEmit`, `npm run lint` (no new problems), `npm run build`.
 
-**Not verified — needs a real broadcast:**
+**Since proven broken (see §5a):**
 
-- End-to-end video: camera → canvas → LiveKit → egress → Bunny → hls.js.
+- End-to-end video. Every stage up to and including Bunny's ingest works;
+  Bunny does not produce a playlist from it.
+
+**Not verified — needs a real broadcast once §5a is resolved:**
 - Actual glass-to-glass latency against the <5s target.
 - Whether Bunny's live playlist is genuinely LL-HLS (partial segments) or plain
   HLS. If plain, latency lands nearer 6s and `latency_mode` is the dial.
@@ -164,6 +167,95 @@ only in production.
 - Cost per viewer-hour against the ~0.30 THB projection.
 
 ---
+
+## 5a. BLOCKER: Bunny accepts the RTMP feed but never produces a playlist
+
+Found 2026-09-01 after three live tests where the viewer sat on
+"กำลังรอสัญญาณจาก Creator..." for the whole broadcast while chat worked fine.
+
+**LiveKit is not the problem.** The egress record for the 2:24 session:
+
+```
+EG_vJWbPiuo9fbU   status EGRESS_COMPLETE   error ""   error_code 0
+stream.info[0]    rtmp://global.rtmp.mediadelivery.net/live/{bun…99d}
+                  status FINISHED   duration 133.42s   error ""   retries 0
+```
+
+133 seconds of RTMP delivered to Bunny, no errors, no retries.
+
+**Bunny received it and read the video header.** `metadata.bunny_final` on that
+session has `width: 1280, height: 720, framerate: 30` — and on the session
+before it, `1920x1080`, matching the creator's quality choice. A Bunny live
+stream that has never been ingested has all three as `null` (verified twice on
+throwaway streams). Nothing in the create payload sends a resolution, so the
+only way Bunny knows is from the RTMP handshake.
+
+**And then it does nothing with it.** On the same object, at end of session:
+
+```
+status: 1            (still "created" — never went live)
+startedAt: null
+durationSeconds: null
+availableResolutions: null
+```
+
+Bunny also fires webhook `Status: 14` at go-live and `Status: 15` exactly
+~16 seconds later, in every session, while the broadcast runs on for minutes.
+A fixed 16-second interval is a timeout, not a stream ending.
+
+So: **ingest accepted, header parsed, no transcode, no playlist.** The viewer's
+404-retry loop was correct and there was simply never anything to fetch.
+
+### What this is almost certainly not
+
+- Not the URL suffix. `bunny_playback_url` is stored verbatim from Bunny's own
+  `playbackUrlHls`; nothing is constructed client-side.
+- Not player patience. The retry budget is 40 × 3s = 120s, longer than one of
+  the failing sessions.
+- Not LL-HLS vs standard HLS. That would change latency, not produce zero
+  segments.
+
+### What could not be tested from here
+
+The pull zone (`vz-46d7a368-5c3.b-cdn.net`) returns **403 to this
+infrastructure for every path**, including a known-good VOD playlist that the
+app plays fine. So no manifest can be fetched for diagnosis from a server;
+that has to be done from a browser.
+
+`GET https://api.bunny.net/videolibrary/740127` — which would show the
+library's live-streaming configuration — returns **401** with
+`bunny_stream_api_key`, because that key is library-scoped. Reading library
+settings needs the ACCOUNT-level API key, which is not in the vault.
+
+### What CEO Por needs to check (5 minutes, dashboard)
+
+1. `dash.bunny.net/stream/740127` → is this library actually **enrolled in the
+   Live Streaming preview**? Bunny gates it per-library behind a signup banner.
+   The API accepting `POST /library/740127/live` does not prove the transcoding
+   pipeline is provisioned — everything observed is consistent with the API
+   being available and the pipeline not being.
+2. In the same dashboard, open the live stream while broadcasting and see
+   whether Bunny shows a preview. If Bunny's own player shows nothing, this is
+   entirely vendor-side and no client change will fix it.
+3. If it is enrolled: raise a Bunny support ticket with stream guid
+   `01a05da4-f559-715a-a872-a387a766c34d` and the fact that ingest was accepted
+   (width/height populated) but `startedAt` stayed null.
+4. Optional but useful: add the **account-level** Bunny API key to the vault so
+   library settings can be read programmatically instead of by hand.
+
+### What shipped anyway
+
+The pipeline is correct and instrumented; it is waiting on the vendor.
+
+- `live-get-playback-url` now returns `ingest_ready` and `bunny_status`, read
+  from Bunny per request, and logs a warning when Bunny has not started. That
+  single field is what would have identified this in seconds.
+- The player tells a 403 apart from a 404. A 403 is the CDN refusing the viewer
+  (token, expiry, hotlink or geo rule) and is now a real error instead of being
+  retried for two minutes as if the creator were late.
+- After the retry budget is spent the viewer is told the stream is not being
+  delivered, rather than left on a spinner forever; while waiting they see an
+  elapsed counter against the stated ceiling.
 
 ## 6. Two things to decide before launch
 

@@ -279,9 +279,14 @@ export function fetchLivePlayback(
 export function endLiveSession(
   supabase: SupabaseClient,
   liveSessionId: string,
+  chatMessageCount = 0,
 ): Promise<LiveResult<EndLiveResponse>> {
   return invokeLive<EndLiveResponse>(supabase, 'live-end-session', {
     live_session_id: liveSessionId,
+    // The only source there is. Chat is a Realtime broadcast and nothing
+    // persists it, so `live_sessions.chat_message_count` has no writer — the
+    // broadcaster's own tally is what stops every summary reporting zero.
+    chat_message_count: chatMessageCount,
   });
 }
 
