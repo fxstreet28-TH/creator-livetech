@@ -21,6 +21,8 @@ import { Camera, Mic, MicOff, RefreshCw } from 'lucide-react';
 import type { BroadcastQuality } from '@/lib/live/types';
 import { resolutionFor, thaiForMediaError } from '@/lib/live/livekitClient';
 import { filterCssFor, type FilterId } from '@/lib/live/cameraFilters';
+import { shouldFlipPreview, type CameraOrientation } from '@/lib/live/cameraOrientation';
+import { CameraControlsMenu } from './CameraControlsMenu';
 import { CameraFilterSelector } from './CameraFilterSelector';
 
 interface CameraPreviewProps {
@@ -37,6 +39,18 @@ interface CameraPreviewProps {
    */
   filterId: FilterId;
   onFilterIdChange: (id: FilterId) => void;
+  /**
+   * The camera-orientation switches. Lifted for the same reason as the look,
+   * and restored from localStorage by the page.
+   *
+   * Only `mirrorPreview` shows here: this preview renders the raw camera, not
+   * the broadcast canvas, so there is nothing yet for `flipOutput` to flip.
+   * The switch is still offered — a creator setting up wants both decided
+   * before they go live, not after — and it takes effect the moment the
+   * canvas exists.
+   */
+  orientation: CameraOrientation;
+  onOrientationChange: (next: CameraOrientation) => void;
   /** Told whether a usable camera track is live, so the form can gate its CTA. */
   onReadyChange?: (ready: boolean) => void;
 }
@@ -49,6 +63,8 @@ export function CameraPreview({
   onMicEnabledChange,
   filterId,
   onFilterIdChange,
+  orientation,
+  onOrientationChange,
   onReadyChange,
 }: CameraPreviewProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -197,7 +213,13 @@ export function CameraPreview({
           // is a feedback loop through the laptop speakers.
           muted
           aria-label="ภาพตัวอย่างจากกล้อง"
-          className="h-full w-full object-cover"
+          className={[
+            'h-full w-full object-cover',
+            // `false` because this element shows the raw camera: nothing has
+            // flipped these frames yet, so the creator's preference is the
+            // only thing deciding which way round they appear.
+            shouldFlipPreview(orientation.mirrorPreview, false) ? 'scale-x-[-1]' : '',
+          ].join(' ')}
           // Local rendering only — the MediaStreamTrack underneath is
           // untouched, and so is what LiveKit will publish from it.
           style={{ filter: filterCssFor(filterId) }}
@@ -253,6 +275,12 @@ export function CameraPreview({
         )}
 
         <CameraFilterSelector value={filterId} onChange={onFilterIdChange} />
+
+        <CameraControlsMenu
+          value={orientation}
+          onChange={onOrientationChange}
+          className="rounded-2xl border border-white/10 bg-white/[0.03] p-3"
+        />
 
         <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-3">
           <button

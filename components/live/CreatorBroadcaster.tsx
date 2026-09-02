@@ -35,7 +35,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Loader2, Mic, MicOff, Sparkles, Video, VideoOff, WifiOff } from 'lucide-react';
+import { Camera, Loader2, Mic, MicOff, Sparkles, Video, VideoOff, WifiOff } from 'lucide-react';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
 import { markSessionLive, persistViewerCounts, startLiveEgress } from '@/lib/live/api';
 import {
@@ -63,7 +63,13 @@ import {
   type FilteredStream,
   type FilterId,
 } from '@/lib/live/cameraFilters';
+import {
+  isDefaultOrientation,
+  shouldFlipPreview,
+  type CameraOrientation,
+} from '@/lib/live/cameraOrientation';
 import type { FloatingReaction } from '@/lib/live/reactions';
+import { CameraControlsMenu, OrientationChangedBadge } from './CameraControlsMenu';
 import { CameraFilterSelector } from './CameraFilterSelector';
 import { FloatingReactionsLayer } from './FloatingReactionsLayer';
 import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
@@ -84,6 +90,15 @@ interface CreatorBroadcasterProps {
   /** The look chosen on the setup screen; changeable from the bottom bar. */
   filterId: FilterId;
   onFilterIdChange: (id: FilterId) => void;
+  /**
+   * Which way round the picture faces, for the creator and for viewers.
+   *
+   * Held by the page (and persisted there) for the same reason the look is:
+   * this component mounts at go-live, and a preference chosen on the setup
+   * screen has to survive the swap.
+   */
+  orientation: CameraOrientation;
+  onOrientationChange: (next: CameraOrientation) => void;
   /** From the Realtime channel's presence, via the page. */
   viewerCount: number;
   /** The viewers' reactions, floating over the self-view. Received, never sent. */
@@ -102,16 +117,32 @@ export function CreatorBroadcaster({
   elapsedSeconds,
   filterId,
   onFilterIdChange,
+  orientation,
+  onOrientationChange,
   viewerCount,
   reactions,
   onPhaseChange,
 }: CreatorBroadcasterProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const lookButtonRef = useRef<HTMLButtonElement | null>(null);
+  const cameraButtonRef = useRef<HTMLButtonElement | null>(null);
   const roomRef = useRef<Room | null>(null);
   const filteredRef = useRef<FilteredStream | null>(null);
+  /**
+   * The orientation the connect effect should start the canvas with.
+   *
+   * A ref, not a dependency: `orientation` changes while the broadcast runs,
+   * and putting it in the effect's list would tear the room down and
+   * reconnect every time a creator flicked a switch. The live changes go
+   * through setFlipped below; this only matters for the first paint and for
+   * a reconnect, which rebuilds the pipeline from scratch.
+   */
+  const orientationRef = useRef(orientation);
+  useEffect(() => {
+    orientationRef.current = orientation;
+  }, [orientation]);
 
-  const [lookOpen, setLookOpen] = useState(false);
+  const [openMenu, setOpenMenu] = useState<'look' | 'camera' | null>(null);
   const [phase, setPhase] = useState<BroadcastPhase>('connecting');
   const [error, setError] = useState<string | null>(null);
   /**
@@ -145,6 +176,12 @@ export function CreatorBroadcaster({
   useEffect(() => {
     filteredRef.current?.setFilter(filterId);
   }, [filterId]);
+
+  // Same story for the viewer-facing flip: it is a variable in the same draw
+  // loop, so turning it on mid-broadcast costs nothing and never renegotiates.
+  useEffect(() => {
+    filteredRef.current?.setFlipped(orientation.flipOutput);
+  }, [orientation.flipOutput]);
 
   useEffect(() => {
     let cancelled = false;
@@ -228,7 +265,12 @@ export function CreatorBroadcaster({
 
       if (!filtered) {
         try {
-          filtered = await createFilteredStream(camera, filterId, resolutionFor(quality).frameRate);
+          filtered = await createFilteredStream(
+            camera,
+            filterId,
+            resolutionFor(quality).frameRate,
+            orientationRef.current.flipOutput,
+          );
           filteredRef.current = filtered;
         } catch (err) {
           if (cancelled) return;
@@ -381,19 +423,33 @@ export function CreatorBroadcaster({
     setMicOn(next);
   };
 
+  // The self-view is the canvas, so the output flip is already in these
+  // frames — which is exactly why the creator's own preference cannot be read
+  // off `mirrorPreview` alone.
+  const previewFlipped = shouldFlipPreview(orientation.mirrorPreview, orientation.flipOutput);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
       <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-white/10 bg-black">
         {/* No CSS filter on this element any more. The look is already in the
             pixels — this is the canvas stream, which is what the encoder, the
-            egress, Bunny and every viewer receive. */}
+            egress, Bunny and every viewer receive.
+
+            The transform is the one thing that is still local. It exists so
+            the two switches stay independent: the frames here may already be
+            flipped for viewers, and the creator's preference about their own
+            preview has to survive that. shouldFlipPreview works out which
+            way round this element has to be for both to hold at once. */}
         <video
           ref={videoRef}
           autoPlay
           muted
           playsInline
           aria-label="ภาพที่กำลังถ่ายทอด"
-          className="h-full w-full object-contain"
+          className={[
+            'h-full w-full object-contain',
+            previewFlipped ? 'scale-x-[-1]' : '',
+          ].join(' ')}
         />
 
         <FloatingReactionsLayer reactions={reactions} />
@@ -443,7 +499,57 @@ export function CreatorBroadcaster({
         </div>
       )}
 
-      <div className="flex shrink-0 items-center gap-2">
+      {/*
+        The control row, and the panel that opens above it.
+
+        The panel is anchored to the ROW rather than to the button that opened
+        it, which is what lets it be a full-width sheet on a phone and a 22rem
+        dropdown on a desktop from one piece of markup. Anchored to the button
+        instead, a 22rem panel hanging off the third control in the row runs
+        straight off a 360px screen.
+
+        flex-wrap because the row now carries four controls plus the quality
+        pill: on a narrow phone they wrap onto a second line rather than
+        squeezing past the edge.
+      */}
+      <div
+        className="relative flex shrink-0 flex-wrap items-center gap-2"
+        onKeyDown={(event) => {
+          if (event.key !== 'Escape' || !openMenu) return;
+          const trigger = openMenu === 'look' ? lookButtonRef : cameraButtonRef;
+          setOpenMenu(null);
+          trigger.current?.focus();
+        }}
+      >
+        {openMenu && (
+          <>
+            {/* A transparent full-screen catcher rather than a document
+                listener: the bottom bar is the last thing between a creator
+                and "จบไลฟ์", and a stray listener that outlives this popover
+                would sit over that button.
+
+                The trigger buttons are lifted above it (z-50) so that tapping
+                the other menu switches to it in one tap instead of spending
+                the first tap dismissing this. */}
+            <button
+              type="button"
+              aria-label={openMenu === 'look' ? 'ปิดตัวเลือกลุค' : 'ปิดตัวเลือกกล้อง'}
+              onClick={() => setOpenMenu(null)}
+              className="fixed inset-0 z-30 cursor-default"
+            />
+            <div className="absolute bottom-full left-0 z-40 mb-2 w-full rounded-2xl border border-white/10 bg-[#0c101b] p-4 shadow-2xl shadow-black/60 sm:w-[min(22rem,80vw)]">
+              {openMenu === 'look' ? (
+                // Stays open after a choice: picking a look is comparing
+                // looks, and a popover that closes on the first tap makes
+                // trying the next one a second trip to the bottom bar.
+                <CameraFilterSelector value={filterId} onChange={onFilterIdChange} />
+              ) : (
+                <CameraControlsMenu value={orientation} onChange={onOrientationChange} />
+              )}
+            </div>
+          </>
+        )}
+
         <ControlButton
           onClick={toggleMic}
           active={micOn}
@@ -456,53 +562,78 @@ export function CreatorBroadcaster({
           label={camOn ? 'ปิดกล้อง' : 'เปิดกล้อง'}
           icon={camOn ? <Video size={18} aria-hidden /> : <VideoOff size={18} aria-hidden />}
         />
-        <div
-          className="relative"
-          onKeyDown={(event) => {
-            if (event.key !== 'Escape' || !lookOpen) return;
-            setLookOpen(false);
-            lookButtonRef.current?.focus();
-          }}
-        >
-          {lookOpen && (
-            <>
-              {/* A transparent full-screen catcher rather than a document
-                  listener: the bottom bar is the last thing between a creator
-                  and "จบไลฟ์", and a stray listener that outlives this popover
-                  would sit over that button. */}
-              <button
-                type="button"
-                aria-label="ปิดตัวเลือกลุค"
-                onClick={() => setLookOpen(false)}
-                className="fixed inset-0 z-30 cursor-default"
-              />
-              <div className="absolute bottom-full left-0 z-40 mb-2 w-[min(22rem,80vw)] rounded-2xl border border-white/10 bg-[#0c101b] p-4 shadow-2xl shadow-black/60">
-                {/* Stays open after a choice: picking a look is comparing
-                    looks, and a popover that closes on the first tap makes
-                    trying the next one a second trip to the bottom bar. */}
-                <CameraFilterSelector value={filterId} onChange={onFilterIdChange} />
-              </div>
-            </>
-          )}
-          <button
-            ref={lookButtonRef}
-            type="button"
-            aria-expanded={lookOpen}
-            aria-haspopup="dialog"
-            onClick={() => setLookOpen((current) => !current)}
-            className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-sm font-medium text-white/80 transition hover:bg-white/[0.08] focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
-          >
-            <Sparkles size={16} aria-hidden />
-            เลือกลุค
-            <span className="text-white/40">{filterLabelFor(filterId)}</span>
-          </button>
-        </div>
+
+        <MenuButton
+          ref={lookButtonRef}
+          open={openMenu === 'look'}
+          onToggle={() => setOpenMenu((current) => (current === 'look' ? null : 'look'))}
+          icon={<Sparkles size={16} aria-hidden />}
+          label="เลือกลุค"
+          value={filterLabelFor(filterId)}
+        />
+        <MenuButton
+          ref={cameraButtonRef}
+          open={openMenu === 'camera'}
+          onToggle={() => setOpenMenu((current) => (current === 'camera' ? null : 'camera'))}
+          icon={<Camera size={16} aria-hidden />}
+          label="กล้อง"
+          // The dot says "one of these is not on its default" without making
+          // the creator open the menu to find out.
+          badge={!isDefaultOrientation(orientation)}
+        />
 
         <span className="ml-auto rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs tabular-nums text-white/50">
           {quality}
         </span>
       </div>
     </div>
+  );
+}
+
+/**
+ * A bottom-bar button that opens one of the row's panels.
+ *
+ * Positioned and lifted above the click-catcher so it stays tappable while a
+ * panel is open — see the catcher's note. The panel itself belongs to the
+ * row, not to this button.
+ */
+function MenuButton({
+  ref,
+  open,
+  onToggle,
+  icon,
+  label,
+  value,
+  badge = false,
+}: {
+  ref: React.Ref<HTMLButtonElement>;
+  open: boolean;
+  onToggle: () => void;
+  icon: React.ReactNode;
+  label: string;
+  /** The current setting, shown next to the label. Optional. */
+  value?: string;
+  badge?: boolean;
+}) {
+  return (
+    <button
+      ref={ref}
+      type="button"
+      aria-expanded={open}
+      aria-haspopup="dialog"
+      onClick={onToggle}
+      className={[
+        'relative z-50 inline-flex min-h-11 items-center gap-2 rounded-xl border px-3 text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400',
+        open
+          ? 'border-white/20 bg-white/[0.10] text-white'
+          : 'border-white/10 bg-white/[0.04] text-white/80 hover:bg-white/[0.08]',
+      ].join(' ')}
+    >
+      {icon}
+      {label}
+      {value && <span className="text-white/40">{value}</span>}
+      {badge && <OrientationChangedBadge />}
+    </button>
   );
 }
 
