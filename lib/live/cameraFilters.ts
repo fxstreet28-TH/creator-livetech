@@ -84,6 +84,16 @@ export interface FilteredStream {
   /** Publish this. Video from the canvas, audio from the source. */
   stream: MediaStream;
   setFilter: (id: FilterId) => void;
+  /**
+   * Mirror the published frames horizontally, or stop mirroring them.
+   *
+   * Same deal as setFilter: one variable read by the draw loop, no republish.
+   * The flip happens HERE, in the same canvas that applies the look, rather
+   * than in a second canvas chained after it — one draw per frame is already
+   * the expensive part of this pipeline and doubling it to turn a picture
+   * around would be absurd.
+   */
+  setFlipped: (flipped: boolean) => void;
   /** Stops the draw loop and the canvas track. Does NOT stop the source. */
   stop: () => void;
 }
@@ -92,6 +102,7 @@ export async function createFilteredStream(
   source: MediaStream,
   initialFilter: FilterId,
   frameRate = 30,
+  initialFlipped = false,
 ): Promise<FilteredStream> {
   const [sourceVideoTrack] = source.getVideoTracks();
   if (!sourceVideoTrack) throw new Error('No video track to filter');
@@ -118,16 +129,27 @@ export async function createFilteredStream(
   if (!ctx) throw new Error('Canvas 2D is unavailable');
 
   let currentFilter = initialFilter;
+  let currentFlipped = initialFlipped;
   let running = true;
   let rafId: number | null = null;
   let frameCallbackId: number | null = null;
 
   const draw = () => {
     if (!running) return;
-    // Set per frame rather than once: ctx.filter is part of the drawing state
-    // and a look change has to take effect on the very next frame.
+    // save/restore around the whole paint: both the filter and the transform
+    // are drawing state, and a flip that leaked into the next frame would
+    // flip it back. Set per frame rather than once, so a look or a flip
+    // changed mid-broadcast takes effect on the very next frame.
+    ctx.save();
     ctx.filter = filterCssFor(currentFilter);
+    if (currentFlipped) {
+      // Move the origin to the right edge, then draw leftwards. Scaling
+      // without the translate would put the picture off-canvas.
+      ctx.translate(canvas.width, 0);
+      ctx.scale(-1, 1);
+    }
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    ctx.restore();
     schedule();
   };
 
@@ -154,6 +176,9 @@ export async function createFilteredStream(
     stream,
     setFilter: (id) => {
       currentFilter = id;
+    },
+    setFlipped: (flipped) => {
+      currentFlipped = flipped;
     },
     stop: () => {
       running = false;

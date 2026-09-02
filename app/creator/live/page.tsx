@@ -23,6 +23,7 @@ import { AuthPending, useRequireAuth } from '@/lib/hooks/useRequireAuth';
 import { useCreatorProfile } from '@/lib/hooks/useCreatorProfile';
 import { useDashboardUser } from '@/lib/hooks/useDashboardUser';
 import { useLiveChannel } from '@/lib/hooks/useLiveChannel';
+import { useCameraOrientation } from '@/lib/hooks/useCameraOrientation';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
 import { CREATOR_PPV_ENABLED } from '@/lib/features';
 import { createLiveSession, endLiveSession, fetchLiveQuota, thaiForQuotaRefusal } from '@/lib/live/api';
@@ -35,6 +36,7 @@ import type {
 } from '@/lib/live/types';
 import { DEFAULT_QUALITY, isQualityAllowed } from '@/lib/live/constants';
 import { DEFAULT_FILTER_ID, type FilterId } from '@/lib/live/cameraFilters';
+import type { CameraOrientation } from '@/lib/live/cameraOrientation';
 import type { LiveChannelStatus } from '@/lib/live/realtime';
 import type { FloatingReaction } from '@/lib/live/reactions';
 import { CreatorPageShell } from '@/components/creator/CreatorPageShell';
@@ -129,6 +131,12 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
    * state the brief asks for; it is one useState, not a store.
    */
   const [filterId, setFilterId] = useState<FilterId>(DEFAULT_FILTER_ID);
+  /**
+   * The two camera-orientation switches — unlike the look, remembered between
+   * sessions. The hook owns the localStorage round trip; this page just passes
+   * the value to both screens that show the camera.
+   */
+  const [orientation, setOrientation] = useCameraOrientation();
 
   const [quota, setQuota] = useState<LiveQuota | null>(null);
   const [quotaLoading, setQuotaLoading] = useState(true);
@@ -314,6 +322,8 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
         micEnabled={micEnabled}
         filterId={filterId}
         onFilterIdChange={setFilterId}
+        orientation={orientation}
+        onOrientationChange={setOrientation}
         viewers={{ current: channel.viewerCount, peak: channel.peakViewerCount }}
         reactions={channel.reactions}
         chat={channel.chat}
@@ -364,6 +374,8 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
             onMicEnabledChange={setMicEnabled}
             filterId={filterId}
             onFilterIdChange={setFilterId}
+            orientation={orientation}
+            onOrientationChange={setOrientation}
             onReadyChange={setCameraReady}
           />
           <p className="mt-3 text-[11px] leading-relaxed text-white/35">
@@ -404,6 +416,8 @@ function BroadcastingLayout({
   micEnabled,
   filterId,
   onFilterIdChange,
+  orientation,
+  onOrientationChange,
   viewers,
   reactions,
   chat,
@@ -421,6 +435,9 @@ function BroadcastingLayout({
   /** The look picked on the setup screen, still changeable mid-broadcast. */
   filterId: FilterId;
   onFilterIdChange: (id: FilterId) => void;
+  /** The camera-orientation switches, restored from localStorage by the page. */
+  orientation: CameraOrientation;
+  onOrientationChange: (next: CameraOrientation) => void;
   viewers: { current: number; peak: number };
   reactions: FloatingReaction[];
   chat: LiveChatEntry[];
@@ -446,6 +463,8 @@ function BroadcastingLayout({
               elapsedSeconds={elapsedSeconds}
               filterId={filterId}
               onFilterIdChange={onFilterIdChange}
+              orientation={orientation}
+              onOrientationChange={onOrientationChange}
               viewerCount={viewers.current}
               reactions={reactions}
             />
