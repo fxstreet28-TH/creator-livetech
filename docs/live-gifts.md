@@ -16,6 +16,27 @@ on the session's existing private `live:<session_id>` Realtime channel →
 it, identically on the creator's studio, every viewer's page, and the OBS
 browser source.
 
+## FREE PREVIEW is on — every gift costs 0 stars
+
+`gift_tiers.price_stars` is `0` for all seven tiers. A gift priced at 0 skips
+the spend, the creator credit, the ledger row and the AML stars-per-minute
+ceiling; the 30-sends-per-minute ceiling and the self-gift refusal still apply.
+
+**Turning a tier back on is one statement, with no deploy:**
+
+```sql
+update public.gift_tiers set price_stars = 100 where slug = 'nova';
+```
+
+There is no flag to unset. The price IS the switch, so the drawer's `ฟรี ·
+ทดสอบ` badges, its `โหมดทดสอบ` banner, the missing `+N ⭐` fragments and the
+creator's `โหมดทดสอบ` chip all follow the data and stop by themselves.
+
+One consequence worth knowing: with every price at 0 the fullscreen queue's
+"most valuable first" rule ties on every comparison, so the broadcast payload
+carries `gift_tiers.sort_order` and the queue breaks the tie on it. See
+deviation 13.
+
 ## Operator steps before Phase E works
 
 **One vault secret is required.** `supabase_jwt_secret` must hold the project's
@@ -24,9 +45,9 @@ JWT secret (Dashboard → Settings → API → JWT Secret). Until it is set,
 says so on the canvas in Thai. Nothing else in this feature depends on it —
 Phases A–D work without it.
 
-**Pricing is placeholder.** Every `gift_tiers.price_stars` value is a stand-in.
-Set the real ones with an `UPDATE`; no deploy is needed, and nothing client-side
-hardcodes a price.
+**Pricing is 0 across the board** — see the free-preview section above. Set the
+real prices with an `UPDATE` when launch approaches; no deploy is needed, and
+nothing client-side hardcodes a price.
 
 **Tiers 05–07 have no name.** They are seeded `TBD` and all three render the
 generic float animation. Naming one is an `UPDATE`; giving one its own animation
@@ -171,14 +192,61 @@ CSS cannot divide a length by a length to produce one.)
 The repo has exactly one toast component and its own comments say a second one
 should not be added. `ส่งของขวัญแล้ว 🎁` renders through it.
 
+### 13. The fullscreen tiebreak ranks `sort_order` DESCENDING, not ascending
+
+The follow-up brief specifies `price_stars desc, sort_order asc` for the
+fullscreen queue. Ascending is wrong for its own QA gate: with every price at 0
+it puts Stardust (sort_order 1) ahead of Nova (4), the exact reverse of the
+"Nova plays first" behaviour the same brief lists as gate 3. The gate expresses
+the intent — the bigger gift goes first — so the tiebreak follows the intent and
+ranks downward.
+
+### 14. The bench's production gate is a Server Component
+
+The follow-up brief asked for `process.env.VERCEL_ENV !== 'production'` on
+`/dev/gifts`, which was a `'use client'` page. `VERCEL_ENV` is not
+`NEXT_PUBLIC_`, so that reference compiles to `undefined` in a client bundle —
+and `undefined !== 'production'` is **true**, which would have left the bench
+open on production behind a gate that looked correct. The page is now a Server
+Component that reads the real value and calls `notFound()`; the client bench
+moved to `GiftBench.tsx` beside it.
+
 ---
+
+## BLOCKED: the real art has still not reached the repository
+
+The follow-up brief said the CEO had uploaded the reference HTML, the mascot
+PNGs and three video clips to `main` in Thai-named folders at the repo root.
+**None of it is in the repository.** Checked on 2026-09-03, after `git fetch`:
+
+- `main` is at `199520e` (2026-09-02). No commits after it.
+- The GitHub API's listing of the repo root on `refs/heads/main` has 18 entries
+  and no Thai-named folder.
+- `git ls-tree -r` over **all 42 remote branches**, matching
+  `mascot|tier0|stardust|moonlight|comet|nova|IMG_02`: zero hits on every branch
+  except this one (whose hits are the placeholder PNGs and the component names).
+- The only open PRs are #43 (this one) and #40 (unrelated).
+
+So three sections of that brief could not be started, and nothing about them was
+guessed at:
+
+- **§1 relocate** — nothing to `git mv`.
+- **§2 port tiers 01–04 from the reference HTML** — no reference HTML, so the
+  authored animations stand. They remain authored from the written
+  descriptions, not ported.
+- **§3 video tiers 05–07** — no clips to probe, re-encode, poster or wire.
+  `TierVideoClip` does not exist, `gift_tiers.animation_key` for 5–7 is still
+  `generic`, and those tiers still render `TierGenericFloat`.
+
+The placeholder art under `public/gifts/` is therefore still in place, and
+`public/gifts/README.md` still documents the contract the real files must meet.
 
 ## Things the brief asked for that are deliberately absent
 
-None. Every item in the brief's scope shipped; the list above is only about
-*how*, not *whether*. The non-goals (cross-session leaderboards, gift bundling,
-per-creator catalogues, refunds, native sfx/haptics, a CRM price editor) were not
-built.
+Nothing was dropped by choice. Every item in scope shipped except the three
+sections above, which are blocked on files that do not exist. The non-goals
+(cross-session leaderboards, gift bundling, per-creator catalogues, refunds,
+native sfx/haptics, a CRM price editor) were not built.
 
 ---
 
@@ -212,8 +280,16 @@ project, and there are no test-account credentials available to it. So:
   and `body` compute to fully transparent, and an unauthenticated overlay paints
   nothing at all.
 
-**Still needs the two-browser pass** (creator + viewer, fresh incognito):
-the HTTP surface of `live-send-gift` and `live-overlay-token`, a gift travelling
-end-to-end over a live Realtime channel, the drawer against a real wallet, the
-creator's stats and top-gifters against real events, the wallet history line,
-the end-live summary, and OBS pointed at a real overlay URL.
+**Proven in production since.** A real gift went through the deployed UI at
+`2026-09-03T09:38:23Z`, before free preview was applied: Stardust ×1 with a
+message, from the viewer account to `porforex599`'s session. Wallet 10 → 9,
+`total_spent` 1, one `live_gift` ledger row at −1 with `creator_id` set,
+`live_sessions` gift_count 1 / gift_stars_total 1 / tip_stars_received 1, and one
+`realtime.messages` broadcast row on the session's topic. That closes the HTTP
+surface of `live-send-gift`, the RPC, the ledger, the counters and the broadcast.
+
+**Still needs the two-browser pass**: a gift seen travelling end-to-end over a
+live Realtime channel on both screens at once, the creator's stats and
+top-gifters against real events, the wallet history line rendering, the end-live
+summary, and OBS pointed at a real overlay URL (which also needs the vault
+secret above).
