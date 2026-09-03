@@ -658,3 +658,52 @@
   60%  { opacity: 1; }
   100% { opacity: 0; }
 }
+
+/* ---------------------------------------------------------------------------
+   The OBS browser source (/overlay/live/[sessionId]).
+   ---------------------------------------------------------------------------
+   OBS composites this page OVER the creator's scene, so anything the page
+   paints that is not a gift is something covering their camera. The class is
+   put on <html> by OverlayClient rather than being scoped to the route,
+   because the background that has to go is `body{background:var(--bg)}` in
+   @layer base above — a route-level rule cannot reach it, and `!important` is
+   how a base-layer declaration is overridden from a later layer.
+
+   `color-scheme: normal` matters too: a browser in dark mode paints its own
+   canvas behind a transparent body, and OBS captures that paint. */
+html.aurum-overlay-transparent,
+html.aurum-overlay-transparent body {
+  background: transparent !important;
+  background-color: transparent !important;
+  color-scheme: normal;
+}
+
+.aurum-overlay-root {
+  position: fixed;
+  inset: 0;
+  /* Overrides `main{min-height:100dvh;background:radial-gradient(...)}` from
+     the landing-page base styles, which would otherwise paint a purple wash
+     across the whole broadcast. */
+  background: none !important;
+  overflow: hidden;
+  /* The whole page is decoration over someone else's video. Nothing here is
+     clickable, and OBS forwards no clicks anyway. */
+  pointer-events: none;
+}
+
+/* The only thing this page ever draws besides a gift, and only for the two
+   states a person has to act on. Deliberately loud: it is on air. */
+.aurum-overlay-notice {
+  position: absolute;
+  left: 48px;
+  top: 48px;
+  max-width: 520px;
+  margin: 0;
+  padding: 14px 18px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 120, 120, 0.5);
+  background: rgba(30, 8, 14, 0.88);
+  color: #ffd7d7;
+  font-size: 15px;
+  line-height: 1.5;
+}

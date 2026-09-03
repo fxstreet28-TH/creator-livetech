@@ -57,6 +57,7 @@ import {
   type GiftTotals,
 } from '@/components/live/gifts/CreatorGiftPanel';
 import { GiftOverlay } from '@/components/live/gifts/GiftOverlay';
+import { OverlayLinkCard } from '@/components/live/gifts/OverlayLinkCard';
 import { useGiftSound } from '@/lib/hooks/useGiftSound';
 import type { LiveGiftEvent } from '@/lib/live/gifts';
 
@@ -555,6 +556,10 @@ function BroadcastingLayout({
             soundEnabled={soundEnabled}
             onSoundToggle={onSoundToggle}
           />
+
+          {/* Only once there is a session to point at: the overlay URL contains
+              the session id, so there is no such thing as one before go-live. */}
+          {broadcast && <OverlayLinkCard sessionId={broadcast.liveSessionId} />}
           {/* On a phone this drops under the video as the second row of the
               single-column grid, which is the bottom-sheet position without a
               sheet to drag. min-h keeps it usable when the video is tall. */}

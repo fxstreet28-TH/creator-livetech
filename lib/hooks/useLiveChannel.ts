@@ -22,6 +22,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
 import {
   openLiveChannel,
@@ -67,6 +68,19 @@ export interface UseLiveChannelOptions {
    * than a trusted flag on the message.
    */
   creatorUserId?: string | null;
+  /**
+   * An explicit Realtime token, for a client with no auth session.
+   *
+   * Only the OBS overlay passes one. See LiveChannelIdentity.accessToken.
+   */
+  accessToken?: string;
+  /**
+   * A Supabase client to use instead of the shared browser one.
+   *
+   * Also only the overlay: it holds a client built around a minted token rather
+   * than around the signed-in session, and the shared singleton has neither.
+   */
+  client?: SupabaseClient | null;
 }
 
 export interface UseLiveChannelResult {
@@ -136,6 +150,8 @@ export function useLiveChannel({
   displayName,
   isCreator = false,
   creatorUserId = null,
+  accessToken,
+  client,
 }: UseLiveChannelOptions): UseLiveChannelResult {
   const [chat, setChat] = useState<LiveChatEntry[]>([]);
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
@@ -196,13 +212,18 @@ export function useLiveChannel({
    * of a setState in the effect body. The video is the feature; a live with no
    * chat is worth more than a screen that refuses to render.
    */
-  const supabase = useMemo(() => {
+  const browserClient = useMemo(() => {
     try {
       return getBrowserSupabase();
     } catch {
       return null;
     }
   }, []);
+
+  // An explicitly supplied client wins. `client === null` means "the caller is
+  // still building one" and is NOT a fallback to the browser singleton — the
+  // overlay has no session, so the singleton would be refused the channel.
+  const supabase = client !== undefined ? client : browserClient;
 
   const latest = useRef({ displayName, creatorUserId, isCreator });
   useEffect(() => {
@@ -268,7 +289,12 @@ export function useLiveChannel({
     void openLiveChannel(
       supabase,
       sessionId,
-      { userId, displayName: latest.current.displayName, isCreator: latest.current.isCreator },
+      {
+        userId,
+        displayName: latest.current.displayName,
+        isCreator: latest.current.isCreator,
+        accessToken,
+      },
       {
         onChat: (entry) =>
           appendChat({
@@ -307,7 +333,7 @@ export function useLiveChannel({
       senderRef.current = null;
       close?.();
     };
-  }, [supabase, sessionId, userId, appendChat, spawnReaction, trackViewerCount, receiveGift]);
+  }, [supabase, sessionId, userId, accessToken, appendChat, spawnReaction, trackViewerCount, receiveGift]);
 
   // Only runs while something is on screen: an idle broadcast should not have
   // a timer ticking for three hours.

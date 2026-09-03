@@ -166,6 +166,17 @@ export interface LiveChannelIdentity {
   userId: string;
   displayName: string;
   /**
+   * An explicit Realtime access token, for a client that has no auth session.
+   *
+   * Only the OBS overlay uses it: that page runs in a bare Chromium with no
+   * login, and its token comes from `live-overlay-token` rather than from
+   * storage. Everyone else omits it and `setAuth()` reads the signed-in
+   * session, which is the path that must stay untouched — a browser tab
+   * passing its own token here would be a second source of truth for who the
+   * viewer is.
+   */
+  accessToken?: string;
+  /**
    * True on the broadcaster's screen.
    *
    * Two effects: the creator is not counted in their own audience, and their
@@ -219,7 +230,10 @@ export async function openLiveChannel(
   handlers.onStatusChange?.('connecting');
 
   try {
-    await supabase.realtime.setAuth();
+    // With an argument for the overlay, without one for everybody else — the
+    // no-argument form reads the session out of storage, which a client with no
+    // session does not have.
+    await supabase.realtime.setAuth(identity.accessToken);
   } catch (err) {
     console.error('[live/realtime] setAuth failed', err);
   }
