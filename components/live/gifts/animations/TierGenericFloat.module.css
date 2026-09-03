@@ -1,0 +1,124 @@
+/*
+ * The fallback animation: tiers 05-07, and anything whose `animation_key` the
+ * registry does not recognise.
+ *
+ * น้อง Aurum rises from the bottom, floats, its antenna pulses, and twelve
+ * sparkles drift off. Deliberately plainer than the four named tiers — this is
+ * a placeholder for art that does not exist yet, and a placeholder that tries
+ * to out-do the real thing is one nobody replaces.
+ *
+ * It is also the safety net. A tier added to `gift_tiers` with an
+ * `animation_key` no deploy has shipped a component for still animates, rather
+ * than rendering an empty box for a gift somebody paid 3,000 stars for.
+ *
+ * Master timeline: 0-18% rise, 18-82% float, 82-100% out.
+ */
+
+.stage {
+  position: relative;
+  width: 300px;
+  height: 300px;
+  isolation: isolate;
+}
+
+.layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+
+.body {
+  transform-origin: 50% 80%;
+  animation: floatEnter var(--cycle) cubic-bezier(0.2, 0.9, 0.3, 1) 1 forwards;
+}
+
+/*
+ * The antenna pulse.
+ *
+ * Positioned over the bulb at the top of the mascot — 300px stage, bulb centred
+ * at (150, 28) — so it moves with the body's transform because it is inside the
+ * same stacking context and shares the timeline, not because it is parented to
+ * it.
+ */
+.antenna {
+  position: absolute;
+  left: 50%;
+  top: 9.3%;
+  width: 54px;
+  height: 54px;
+  margin: -27px 0 0 -27px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--tint, #ffffff) 0%, rgba(255, 255, 255, 0) 68%);
+  opacity: 0;
+  animation: antennaPulse var(--cycle) ease-in-out 1 forwards;
+}
+
+.glow {
+  position: absolute;
+  inset: 14%;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--tint, #ffffff) 0%, rgba(255, 255, 255, 0) 66%);
+  opacity: 0;
+  animation: floatGlow var(--cycle) ease-out 1 forwards;
+}
+
+.sparkle {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #ffffff 0%, var(--tint, #ffffff) 48%, rgba(255, 255, 255, 0) 74%);
+  opacity: 0;
+  animation: floatDrift var(--cycle) ease-out 1 forwards;
+  animation-delay: calc(var(--cycle) * var(--delay) * 0.5);
+}
+
+@keyframes floatEnter {
+  0% { opacity: 0; transform: translateY(70%) scale(0.7); }
+  18% { opacity: 1; transform: translateY(0) scale(1.04); }
+  26% { transform: translateY(0) scale(1); }
+  44% { transform: translateY(-4%) rotate(-2deg); }
+  62% { transform: translateY(0) rotate(2deg); }
+  82% { transform: translateY(-3%) rotate(0deg); opacity: 1; }
+  100% { transform: translateY(-26%) scale(0.88); opacity: 0; }
+}
+
+@keyframes antennaPulse {
+  0%, 14% { opacity: 0; transform: scale(0.4); }
+  26% { opacity: 0.95; transform: scale(1.1); }
+  44% { opacity: 0.45; transform: scale(0.85); }
+  62% { opacity: 0.95; transform: scale(1.1); }
+  82% { opacity: 0.5; transform: scale(0.9); }
+  100% { opacity: 0; transform: scale(0.7); }
+}
+
+@keyframes floatGlow {
+  0%, 10% { opacity: 0; transform: scale(0.6); }
+  30% { opacity: 0.7; transform: scale(1.04); }
+  82% { opacity: 0.4; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.16); }
+}
+
+@keyframes floatDrift {
+  0% { opacity: 0; transform: translate(0, 0) scale(0); }
+  20% { opacity: 1; transform: translate(calc(var(--dx) * 0.25), calc(var(--dy) * 0.25)) scale(var(--scale)); }
+  72% { opacity: 0.6; transform: translate(calc(var(--dx) * 0.8), calc(var(--dy) * 0.8)) scale(calc(var(--scale) * 0.7)); }
+  100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(0.15); }
+}
+
+.still .body,
+.still .antenna,
+.still .glow {
+  animation: none;
+  transform: none;
+}
+
+.still .body { opacity: 1; }
+.still .antenna { opacity: 0.7; }
+.still .glow { opacity: 0.5; }
+.still .sparkle { display: none; }

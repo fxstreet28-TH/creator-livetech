@@ -1,0 +1,157 @@
+/*
+ * Tier 03 — Comet (epic, gold). Fullscreen.
+ *
+ * น้อง Aurum comes in from the left as a comet, brakes into the middle, the
+ * tail catches up and dissipates, and a shockwave ring goes out.
+ *
+ * Master timeline:
+ *
+ *    0-20%    the streak in, tail stretched
+ *   20-28%    the brake and the impact ring
+ *   28-76%    hovering, tail fading, streaks trailing off
+ *   76-100%   out, upward
+ *
+ * The tail is a separate PNG rather than a CSS gradient because it has to
+ * SQUASH as the mascot brakes — the visual cue that the comet stopped rather
+ * than simply arrived — and that means scaling one layer on X while the body
+ * holds its own scale.
+ */
+
+.stage {
+  position: relative;
+  width: 300px;
+  height: 300px;
+  isolation: isolate;
+}
+
+.layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+
+.flight {
+  position: absolute;
+  inset: 0;
+  animation: cometFlight var(--cycle) cubic-bezier(0.1, 0.85, 0.2, 1) 1 forwards;
+}
+
+.body {
+  transform-origin: 50% 50%;
+  animation: cometBody var(--cycle) ease-out 1 forwards;
+}
+
+.tail {
+  transform-origin: 78% 50%;
+  animation: cometTail var(--cycle) ease-out 1 forwards;
+}
+
+.ring {
+  position: absolute;
+  left: 50%;
+  top: 52%;
+  width: 120px;
+  height: 120px;
+  margin: -60px 0 0 -60px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 206, 92, 0.9);
+  opacity: 0;
+  animation: cometRing var(--cycle) cubic-bezier(0.1, 0.7, 0.3, 1) 1 forwards;
+}
+
+.ringLate {
+  animation-delay: calc(var(--cycle) * 0.06);
+  border-color: rgba(255, 240, 190, 0.6);
+}
+
+.glow {
+  position: absolute;
+  inset: 10%;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 206, 92, 0.55) 0%, rgba(255, 206, 92, 0) 66%);
+  opacity: 0;
+  animation: cometGlow var(--cycle) ease-out 1 forwards;
+}
+
+.sparkle {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #fffbe8 0%, #ffce5c 46%, rgba(255, 206, 92, 0) 74%);
+  opacity: 0;
+  animation: cometSpark var(--cycle) ease-out 1 forwards;
+  /* Held back until the brake: dust thrown off on impact, not while flying. */
+  animation-delay: calc(var(--cycle) * (0.2 + var(--delay) * 0.3));
+}
+
+@keyframes cometFlight {
+  0% { transform: translate(-150%, -46%); }
+  20% { transform: translate(6%, 3%); }
+  28% { transform: translate(0, 0); }
+  50% { transform: translate(0, -2%); }
+  76% { transform: translate(0, 0); }
+  100% { transform: translate(0, -40%); }
+}
+
+@keyframes cometBody {
+  0% { opacity: 0; transform: rotate(-16deg) scale(0.7); }
+  10% { opacity: 1; transform: rotate(-16deg) scale(0.85); }
+  22% { opacity: 1; transform: rotate(6deg) scale(1.12); }
+  28% { transform: rotate(0deg) scale(1); }
+  50% { transform: rotate(-2deg) scale(1.02); }
+  76% { transform: rotate(0deg) scale(1); opacity: 1; }
+  100% { transform: rotate(4deg) scale(0.82); opacity: 0; }
+}
+
+@keyframes cometTail {
+  0% { opacity: 0; transform: scaleX(2.6) scaleY(0.7); }
+  8% { opacity: 0.95; transform: scaleX(2.6) scaleY(0.9); }
+  20% { opacity: 0.9; transform: scaleX(1.6) scaleY(1); }
+  /* The squash: the tail piles into the mascot as it stops. */
+  26% { opacity: 0.75; transform: scaleX(0.45) scaleY(1.25); }
+  36% { opacity: 0.4; transform: scaleX(0.7) scaleY(1); }
+  60% { opacity: 0.15; transform: scaleX(0.55) scaleY(0.9); }
+  100% { opacity: 0; transform: scaleX(0.4) scaleY(0.8); }
+}
+
+@keyframes cometRing {
+  0%, 18% { opacity: 0; transform: scale(0.2); }
+  24% { opacity: 0.95; transform: scale(0.7); }
+  46% { opacity: 0; transform: scale(2.4); }
+  100% { opacity: 0; transform: scale(2.4); }
+}
+
+@keyframes cometGlow {
+  0%, 14% { opacity: 0; transform: scale(0.5); }
+  26% { opacity: 1; transform: scale(1.1); }
+  70% { opacity: 0.55; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.2); }
+}
+
+@keyframes cometSpark {
+  0% { opacity: 0; transform: translate(0, 0) scale(0); }
+  12% { opacity: 1; transform: translate(calc(var(--dx) * 0.35), calc(var(--dy) * 0.35)) scale(var(--scale)); }
+  64% { opacity: 0.5; transform: translate(calc(var(--dx) * 0.85), calc(var(--dy) * 0.85)) scale(calc(var(--scale) * 0.6)); }
+  100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(0.1); }
+}
+
+.still .flight,
+.still .body,
+.still .tail,
+.still .ring,
+.still .glow {
+  animation: none;
+  transform: none;
+}
+
+.still .body { opacity: 1; }
+.still .tail { opacity: 0.5; }
+.still .glow { opacity: 0.6; }
+.still .ring { opacity: 0; }
+.still .sparkle { display: none; }

@@ -1,0 +1,137 @@
+/*
+ * Tier 01 — Stardust (basic, cyan).
+ *
+ * น้อง Aurum pops up, waves, and scatters a handful of stardust.
+ *
+ * The whole scene is keyed off one `--cycle`, set inline from
+ * `gift_tiers.duration_ms`, and every layer uses THE SAME percentage marks:
+ *
+ *    0%      off the bottom
+ *   14%      landed, over-shot
+ *   22%      settled
+ *   22-72%   the wave, the bob, the dust
+ *   88-100%  out
+ *
+ * Nothing here loops. `forwards` holds the last frame so a dropped frame at the
+ * end cannot leave the mascot stranded mid-air.
+ */
+
+.stage {
+  position: relative;
+  width: 300px;
+  height: 300px;
+  /* The layers are absolutely positioned against this box and sized to it, so
+     a replacement PNG lines up by virtue of its own transparent padding — see
+     public/gifts/README.md. */
+  isolation: isolate;
+}
+
+.layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  /* Never intercepts a tap: this sits over a video player, and the play/pause
+     control underneath has to stay reachable. */
+  pointer-events: none;
+  user-select: none;
+}
+
+.glow {
+  position: absolute;
+  inset: 12%;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(110, 230, 255, 0.5) 0%, rgba(110, 230, 255, 0) 68%);
+  opacity: 0;
+  animation: dustGlow var(--cycle) ease-out 1 forwards;
+}
+
+.body {
+  transform-origin: 50% 88%;
+  animation: dustEnter var(--cycle) cubic-bezier(0.2, 1.3, 0.4, 1) 1 forwards;
+}
+
+.arm {
+  /* Right edge: the shoulder. Rotating about it swings the hand, not the
+     whole arm about its middle. */
+  transform-origin: 88% 56%;
+  animation: dustWave var(--cycle) ease-in-out 1 forwards;
+}
+
+.sparkle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #ffffff 0%, #9beeff 45%, rgba(155, 238, 255, 0) 72%);
+  opacity: 0;
+  animation: dustDrift var(--cycle) ease-out 1 forwards;
+  /* Staggered against the master cycle rather than by a fixed number of ms, so
+     a longer-duration tier spreads the dust out instead of firing it all at
+     the start and then standing still. */
+  animation-delay: calc(var(--cycle) * var(--delay) * 0.45);
+}
+
+@keyframes dustEnter {
+  0% { transform: translateY(58%) scale(0.5); opacity: 0; }
+  14% { transform: translateY(-6%) scale(1.08); opacity: 1; }
+  22% { transform: translateY(0) scale(1); opacity: 1; }
+  40% { transform: translateY(-3%) scale(1.01); }
+  58% { transform: translateY(0) scale(1); }
+  76% { transform: translateY(-2%) scale(1.005); }
+  88% { transform: translateY(0) scale(1); opacity: 1; }
+  100% { transform: translateY(-22%) scale(0.86); opacity: 0; }
+}
+
+@keyframes dustWave {
+  0%, 20% { transform: translateY(58%) rotate(38deg); opacity: 0; }
+  24% { transform: translateY(0) rotate(38deg); opacity: 1; }
+  32% { transform: translateY(0) rotate(-16deg); }
+  42% { transform: translateY(0) rotate(34deg); }
+  52% { transform: translateY(0) rotate(-12deg); }
+  62% { transform: translateY(0) rotate(28deg); }
+  72% { transform: translateY(0) rotate(6deg); opacity: 1; }
+  88% { transform: translateY(0) rotate(6deg); opacity: 1; }
+  100% { transform: translateY(-22%) rotate(6deg); opacity: 0; }
+}
+
+@keyframes dustGlow {
+  0%, 10% { opacity: 0; transform: scale(0.7); }
+  26% { opacity: 0.85; transform: scale(1.05); }
+  70% { opacity: 0.5; transform: scale(1); }
+  88% { opacity: 0.35; }
+  100% { opacity: 0; transform: scale(1.15); }
+}
+
+@keyframes dustDrift {
+  0% { opacity: 0; transform: translate(0, 0) scale(0); }
+  18% { opacity: 1; transform: translate(calc(var(--dx) * 0.2), calc(var(--dy) * 0.2)) scale(var(--scale)); }
+  70% { opacity: 0.7; transform: translate(calc(var(--dx) * 0.75), calc(var(--dy) * 0.75)) scale(calc(var(--scale) * 0.8)); }
+  100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(0.2); }
+}
+
+/*
+ * Reduced motion.
+ *
+ * The mascot still appears, at rest — the row is a receipt for money that has
+ * already left the viewer's wallet, and suppressing it entirely would be
+ * withholding the confirmation rather than respecting a preference. Only the
+ * movement goes.
+ */
+.still .body,
+.still .arm,
+.still .glow {
+  animation: none;
+  transform: none;
+  opacity: 1;
+}
+
+.still .glow {
+  opacity: 0.55;
+}
+
+.still .sparkle {
+  display: none;
+}

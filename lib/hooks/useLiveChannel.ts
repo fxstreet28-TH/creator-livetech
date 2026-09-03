@@ -29,6 +29,7 @@ import {
   type LiveChannelStatus,
 } from '@/lib/live/realtime';
 import { MAX_CHAT_LENGTH, MAX_CHAT_MESSAGES } from '@/lib/live/constants';
+import { giftChatLine, type LiveGiftEvent } from '@/lib/live/gifts';
 import {
   MAX_ONSCREEN_REACTIONS,
   newFloatingReaction,
@@ -38,6 +39,17 @@ import type { LiveChatEntry } from '@/lib/live/types';
 
 /** Reactions are swept in one pass rather than with 50 individual timeouts. */
 const SWEEP_MS = 500;
+
+/**
+ * Gifts kept for the creator's "top gifters" list.
+ *
+ * Bounded for the same reason the chat list is: a three-hour broadcast on a
+ * phone should not hold every event it ever saw. Fifty is comfortably more than
+ * a top-five needs, and the totals beside that list are read from the database
+ * rather than summed from here — so dropping the tail costs nothing that is
+ * about money.
+ */
+const MAX_TRACKED_GIFTS = 50;
 
 export interface UseLiveChannelOptions {
   /** Null until the session is known; the hook stays idle until then. */
@@ -60,6 +72,25 @@ export interface UseLiveChannelOptions {
 export interface UseLiveChannelResult {
   chat: LiveChatEntry[];
   reactions: FloatingReaction[];
+  /**
+   * The gift that arrived most recently, or null.
+   *
+   * One event rather than a list: GiftOverlay's queue is what accumulates, and
+   * keeping a second backlog here would give two components two opinions about
+   * what had already played. Re-delivering the same event is harmless — the
+   * queue de-duplicates on `gift_id`, which it has to do anyway for Realtime's
+   * reconnect replays.
+   */
+  latestGift: LiveGiftEvent | null;
+  /**
+   * Every gift seen this session, newest first.
+   *
+   * What the creator's "top gifters" list and gift counters are built from. It
+   * is what THIS client saw — a creator who joined late or whose socket dropped
+   * undercounts — which is why the numbers on the stats strip are re-read from
+   * the database and only the LIST is built from here.
+   */
+  gifts: LiveGiftEvent[];
   /** How many viewers are on the channel. Excludes the broadcaster. */
   viewerCount: number;
   /**
@@ -108,6 +139,8 @@ export function useLiveChannel({
 }: UseLiveChannelOptions): UseLiveChannelResult {
   const [chat, setChat] = useState<LiveChatEntry[]>([]);
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
+  const [latestGift, setLatestGift] = useState<LiveGiftEvent | null>(null);
+  const [gifts, setGifts] = useState<LiveGiftEvent[]>([]);
   const [viewerCount, setViewerCount] = useState(0);
   const [peakViewerCount, setPeakViewerCount] = useState(0);
   const [chatMessageCount, setChatMessageCount] = useState(0);
@@ -176,6 +209,49 @@ export function useLiveChannel({
     latest.current = { displayName, creatorUserId, isCreator };
   }, [displayName, creatorUserId, isCreator]);
 
+  /**
+   * A gift landed: hand it to the overlay, keep it for the creator's list, and
+   * write the system line into the chat.
+   *
+   * The chat line comes from the EVENT rather than from a second broadcast the
+   * Edge Function could have sent. One event is one gift on every screen — a
+   * separate chat message would arrive on its own schedule and could duplicate
+   * the overlay, contradict it, or turn up without it.
+   *
+   * De-duplicated here as well as in the queue, because the chat log and the
+   * gift list are append-only and a Realtime replay would otherwise write the
+   * last minute of gifts into the transcript a second time.
+   */
+  const seenGifts = useRef<Set<string>>(new Set());
+
+  const receiveGift = useCallback(
+    (event: LiveGiftEvent) => {
+      if (seenGifts.current.has(event.gift_id)) return;
+      seenGifts.current.add(event.gift_id);
+      // Bounded: a three-hour broadcast should not accumulate a set of every id
+      // it ever saw. The queue keeps its own 200-deep ring for the same reason.
+      if (seenGifts.current.size > 500) {
+        seenGifts.current = new Set([...seenGifts.current].slice(-200));
+      }
+
+      setLatestGift(event);
+      setGifts((current) => [event, ...current].slice(0, MAX_TRACKED_GIFTS));
+      appendChat({
+        text: giftChatLine(event),
+        sender: event.sender.display_name,
+        timestamp: Date.parse(event.created_at) || Date.now(),
+        senderId: event.sender.id,
+        isCreator:
+          latest.current.creatorUserId !== null &&
+          event.sender.id === latest.current.creatorUserId,
+        isSelf: false,
+        giftRarity: event.rarity,
+      });
+    },
+    [appendChat],
+  );
+
+
   useEffect(() => {
     if (!sessionId || !userId || !supabase) return;
 
@@ -206,6 +282,7 @@ export function useLiveChannel({
             isSelf: false,
           }),
         onReaction: (entry) => spawnReaction(entry.emoji),
+        onGift: receiveGift,
         onViewerCount: trackViewerCount,
         onStatusChange: (next) => {
           if (!cancelled) setStatus(next);
@@ -230,7 +307,7 @@ export function useLiveChannel({
       senderRef.current = null;
       close?.();
     };
-  }, [supabase, sessionId, userId, appendChat, spawnReaction, trackViewerCount]);
+  }, [supabase, sessionId, userId, appendChat, spawnReaction, trackViewerCount, receiveGift]);
 
   // Only runs while something is on screen: an idle broadcast should not have
   // a timer ticking for three hours.
@@ -291,6 +368,8 @@ export function useLiveChannel({
   return {
     chat,
     reactions,
+    latestGift,
+    gifts,
     viewerCount,
     peakViewerCount,
     chatMessageCount,

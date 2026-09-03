@@ -1,0 +1,230 @@
+/*
+ * Tier 04 — Nova (legendary, gold-purple). Fullscreen, ten seconds.
+ *
+ * The most expensive gift on the board, so it gets the longest arc and the
+ * only one with a real build: น้อง Aurum draws in, the light collapses onto it,
+ * it goes off, and then it holds — because the whole point of a ten-second
+ * animation is the beat AFTER the bang, when the sender's name is on screen and
+ * the creator has time to react to it.
+ *
+ * Master timeline:
+ *
+ *    0-12%    fade in, small
+ *   12-34%    the charge — glow tightens, mascot shrinks against it, rings
+ *             contract inward
+ *   34-40%    the burst: flash, rays out, two shockwaves
+ *   40-58%    settle, mascot at full size with a halo
+ *   58-88%    the hold — a slow breath, nothing else
+ *   88-100%   out
+ *
+ * The contracting rings before the burst are what make it read as a nova rather
+ * than a firework. Everything expanding the whole way is a firework.
+ */
+
+.stage {
+  position: relative;
+  width: 300px;
+  height: 300px;
+  isolation: isolate;
+}
+
+.layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+
+.body {
+  transform-origin: 50% 52%;
+  animation: novaBody var(--cycle) cubic-bezier(0.2, 0.9, 0.25, 1) 1 forwards;
+}
+
+.core {
+  position: absolute;
+  inset: 22%;
+  border-radius: 50%;
+  background: radial-gradient(circle, #ffffff 0%, #ffe2b0 38%, rgba(186, 108, 232, 0) 72%);
+  opacity: 0;
+  animation: novaCore var(--cycle) ease-in-out 1 forwards;
+}
+
+/* The white-out at the moment of the burst. Short and never fully opaque —
+   this plays over live video, and a full-screen white flash is a photosensitive
+   hazard, not a flourish. */
+.flash {
+  position: absolute;
+  inset: -20%;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.85) 0%, rgba(255, 226, 176, 0) 60%);
+  opacity: 0;
+  animation: novaFlash var(--cycle) ease-out 1 forwards;
+}
+
+.rays {
+  position: absolute;
+  inset: -18%;
+  border-radius: 50%;
+  /* REPEATING, not plain `conic-gradient`. A conic gradient whose last stop is
+     at 18deg does not tile — everything past it takes that stop's colour, which
+     is transparent — so the plain version renders exactly ONE spoke and reads
+     as a stray scratch across the mascot rather than a burst. */
+  background: repeating-conic-gradient(
+    from 0deg,
+    rgba(255, 226, 176, 0.85) 0deg 2.5deg,
+    rgba(255, 226, 176, 0) 2.5deg 18deg
+  );
+  mask-image: radial-gradient(circle, transparent 22%, #000 40%, transparent 78%);
+  -webkit-mask-image: radial-gradient(circle, transparent 22%, #000 40%, transparent 78%);
+  opacity: 0;
+  animation: novaRays var(--cycle) cubic-bezier(0.1, 0.8, 0.2, 1) 1 forwards;
+}
+
+.ring {
+  position: absolute;
+  left: 50%;
+  top: 52%;
+  width: 140px;
+  height: 140px;
+  margin: -70px 0 0 -70px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 214, 168, 0.85);
+  opacity: 0;
+  animation: novaShock var(--cycle) cubic-bezier(0.1, 0.7, 0.3, 1) 1 forwards;
+}
+
+.ringLate {
+  animation-delay: calc(var(--cycle) * 0.045);
+  border-color: rgba(186, 108, 232, 0.7);
+}
+
+/* The pre-burst rings, travelling the other way. */
+.inward {
+  position: absolute;
+  left: 50%;
+  top: 52%;
+  width: 300px;
+  height: 300px;
+  margin: -150px 0 0 -150px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 226, 176, 0.5);
+  opacity: 0;
+  animation: novaCharge var(--cycle) ease-in 1 forwards;
+}
+
+.inwardLate { animation-delay: calc(var(--cycle) * 0.07); }
+
+.halo {
+  position: absolute;
+  inset: 6%;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(186, 108, 232, 0) 44%, rgba(255, 190, 120, 0.35) 62%, rgba(186, 108, 232, 0) 78%);
+  opacity: 0;
+  animation: novaHalo var(--cycle) ease-in-out 1 forwards;
+}
+
+.sparkle {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  margin: -5.5px 0 0 -5.5px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #ffffff 0%, #ffbe78 44%, rgba(186, 108, 232, 0) 74%);
+  opacity: 0;
+  animation: novaSpark var(--cycle) ease-out 1 forwards;
+  /* Thrown at the burst, not before it. */
+  animation-delay: calc(var(--cycle) * (0.34 + var(--delay) * 0.16));
+}
+
+@keyframes novaBody {
+  0% { opacity: 0; transform: scale(0.55) rotate(-8deg); }
+  12% { opacity: 1; transform: scale(0.9) rotate(0deg); }
+  30% { transform: scale(0.72) rotate(3deg); }
+  34% { transform: scale(0.66) rotate(0deg); }
+  40% { transform: scale(1.28) rotate(-3deg); }
+  48% { transform: scale(1) rotate(0deg); }
+  58% { transform: scale(1.02); }
+  72% { transform: scale(0.99) translateY(-2%); }
+  88% { transform: scale(1.01) translateY(0); opacity: 1; }
+  100% { transform: scale(0.86) translateY(-18%); opacity: 0; }
+}
+
+@keyframes novaCore {
+  0%, 8% { opacity: 0; transform: scale(1.6); }
+  30% { opacity: 0.9; transform: scale(0.55); }
+  34% { opacity: 1; transform: scale(0.4); }
+  40% { opacity: 1; transform: scale(1.5); }
+  58% { opacity: 0.5; transform: scale(1); }
+  88% { opacity: 0.35; transform: scale(1.02); }
+  100% { opacity: 0; transform: scale(1.2); }
+}
+
+@keyframes novaFlash {
+  0%, 33% { opacity: 0; transform: scale(0.4); }
+  37% { opacity: 1; transform: scale(1); }
+  46% { opacity: 0; transform: scale(1.35); }
+  100% { opacity: 0; transform: scale(1.35); }
+}
+
+@keyframes novaRays {
+  0%, 32% { opacity: 0; transform: rotate(0deg) scale(0.3); }
+  40% { opacity: 0.95; transform: rotate(18deg) scale(1); }
+  58% { opacity: 0.4; transform: rotate(34deg) scale(1.08); }
+  88% { opacity: 0.22; transform: rotate(62deg) scale(1.1); }
+  100% { opacity: 0; transform: rotate(72deg) scale(1.15); }
+}
+
+@keyframes novaShock {
+  0%, 33% { opacity: 0; transform: scale(0.15); }
+  38% { opacity: 1; transform: scale(0.6); }
+  60% { opacity: 0; transform: scale(2.6); }
+  100% { opacity: 0; transform: scale(2.6); }
+}
+
+@keyframes novaCharge {
+  0%, 10% { opacity: 0; transform: scale(1.5); }
+  16% { opacity: 0.75; transform: scale(1.2); }
+  33% { opacity: 0.2; transform: scale(0.25); }
+  34% { opacity: 0; transform: scale(0.2); }
+  100% { opacity: 0; transform: scale(0.2); }
+}
+
+@keyframes novaHalo {
+  0%, 40% { opacity: 0; transform: scale(0.8); }
+  52% { opacity: 0.9; transform: scale(1.04); }
+  72% { opacity: 0.6; transform: scale(1); }
+  88% { opacity: 0.5; transform: scale(1.03); }
+  100% { opacity: 0; transform: scale(1.12); }
+}
+
+@keyframes novaSpark {
+  0% { opacity: 0; transform: translate(0, 0) scale(0); }
+  8% { opacity: 1; transform: translate(calc(var(--dx) * 0.4), calc(var(--dy) * 0.4)) scale(var(--scale)); }
+  56% { opacity: 0.6; transform: translate(calc(var(--dx) * 0.9), calc(var(--dy) * 0.9)) scale(calc(var(--scale) * 0.65)); }
+  100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(0.1); }
+}
+
+.still .body,
+.still .core,
+.still .flash,
+.still .rays,
+.still .ring,
+.still .inward,
+.still .halo {
+  animation: none;
+  transform: none;
+}
+
+.still .body { opacity: 1; }
+.still .core { opacity: 0.7; }
+.still .halo { opacity: 0.55; }
+.still .rays { opacity: 0.3; }
+/* The flash and the shockwaves are the parts a photosensitive viewer must not
+   get. They are removed rather than frozen. */
+.still .flash,
+.still .ring,
+.still .inward { opacity: 0; }
+.still .sparkle { display: none; }

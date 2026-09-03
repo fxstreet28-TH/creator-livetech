@@ -49,6 +49,7 @@
 
 import type { RealtimeChannel, SupabaseClient } from '@supabase/supabase-js';
 import { MAX_CHAT_LENGTH } from './constants';
+import { decodeGiftEvent, type LiveGiftEvent } from './gifts';
 import { isReactionEmoji } from './reactions';
 
 /** One channel per live session. Parsed back into a UUID by the RLS policies. */
@@ -56,9 +57,26 @@ export function liveChannelName(sessionId: string): string {
   return `live:${sessionId}`;
 }
 
-/** The two broadcast events the channel carries. */
+/** The broadcast events the channel carries. */
 export const LIVE_EVENT_CHAT = 'chat';
 export const LIVE_EVENT_REACTION = 'reaction';
+/**
+ * A น้อง Aurum gift.
+ *
+ * Unlike the other two, nothing in this module SENDS one: gifts are written by
+ * `live_gifts_broadcast`, a trigger on the INSERT that `send_live_gift`
+ * performs, so the event and the row cannot disagree. A viewer spends stars
+ * through the `live-send-gift` Edge Function (lib/live/gifts.ts) and then waits
+ * for this event like everybody else — which is what makes the sender's screen
+ * show the same thing, at the same moment, as the creator's.
+ *
+ * It rides this channel rather than one of its own because the topic is already
+ * private and already gated by exactly the right rule: `can_watch_live_session`
+ * on `realtime.messages`, written per topic and not per event. A second channel
+ * would be a second subscription, a second presence entry inflating the viewer
+ * count, and a second authorisation path to keep in step with this one.
+ */
+export const LIVE_EVENT_GIFT = 'gift';
 
 /** What travels in a broadcast payload. Both events share the envelope. */
 export interface LiveMessage {
@@ -131,6 +149,12 @@ export interface LiveChannelHandlers {
   onStatusChange?: (status: LiveChannelStatus, error?: Error) => void;
   /** How many viewers are on the channel, excluding the broadcaster. */
   onViewerCount?: (count: number) => void;
+  /**
+   * A gift landed. Validated and clamped by decodeGiftEvent before it gets
+   * here; de-duplication is the queue's job, not the transport's, because a
+   * reconnect can replay an event this layer has no memory of.
+   */
+  onGift?: (event: LiveGiftEvent) => void;
 }
 
 export interface LiveChannelSender {
@@ -244,6 +268,15 @@ export async function openLiveChannel(
         senderId: message.user_id,
         timestamp: message.ts,
       });
+    })
+    .on('broadcast', { event: LIVE_EVENT_GIFT }, ({ payload }) => {
+      // Belt and braces on the topic: `self: false` stops a sender's own
+      // broadcasts coming back, but a gift arrives from a trigger rather than
+      // from any client, so every screen INCLUDING the sender's receives it —
+      // and one channel object can outlive a navigation between two sessions.
+      const gift = decodeGiftEvent(payload);
+      if (!gift || gift.session_id !== sessionId) return;
+      handlers.onGift?.(gift);
     })
     .on('presence', { event: 'sync' }, () => {
       handlers.onViewerCount?.(countViewers(channel));

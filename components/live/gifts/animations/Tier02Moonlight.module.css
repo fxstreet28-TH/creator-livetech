@@ -1,0 +1,159 @@
+/*
+ * Tier 02 — Moonlight (rare, purple).
+ *
+ * A moon rises behind น้อง Aurum, light rays sweep out, and the mascot blinks
+ * twice as the glow crosses its face.
+ *
+ * Same master timeline as tier 01, one beat slower because the tier is:
+ *
+ *    0-16%    moon rises, mascot fades up
+ *   16-34%    rays open
+ *   30%, 56%  the two blinks
+ *   34-84%    slow drift
+ *   86-100%   out
+ *
+ * The blink is the one thing here that must land exactly: an eyelid whose
+ * timing has drifted a few frames from the body reads as a twitch. That is why
+ * it is a percentage of the same `--cycle` and not its own duration.
+ */
+
+.stage {
+  position: relative;
+  width: 300px;
+  height: 300px;
+  isolation: isolate;
+}
+
+.layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+
+.moon {
+  position: absolute;
+  left: 50%;
+  top: 44%;
+  width: 168px;
+  height: 168px;
+  margin: -84px 0 0 -84px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 38% 34%, #fdf7ff 0%, #ded0ff 42%, #a98cf0 72%, #6f4fc4 100%);
+  box-shadow: 0 0 60px 18px rgba(176, 140, 255, 0.45);
+  opacity: 0;
+  animation: moonRise var(--cycle) cubic-bezier(0.22, 0.9, 0.3, 1) 1 forwards;
+}
+
+/*
+ * The rays.
+ *
+ * One element with a conic gradient rather than a dozen absolutely positioned
+ * spokes: twelve elements each with their own transform is twelve composited
+ * layers on a phone that is also decoding video, and this is the layer most
+ * likely to be behind the mascot where nobody can count the spokes anyway.
+ */
+.rays {
+  position: absolute;
+  inset: -6%;
+  border-radius: 50%;
+  /* REPEATING: a plain conic-gradient does not tile past its last stop, so the
+     twelve spokes collapse to one. */
+  background: repeating-conic-gradient(
+    from 0deg,
+    rgba(214, 190, 255, 0.55) 0deg 4deg,
+    rgba(214, 190, 255, 0) 4deg 30deg
+  );
+  mask-image: radial-gradient(circle, transparent 26%, #000 42%, transparent 74%);
+  -webkit-mask-image: radial-gradient(circle, transparent 26%, #000 42%, transparent 74%);
+  opacity: 0;
+  animation: rayOpen var(--cycle) ease-out 1 forwards;
+}
+
+.body {
+  transform-origin: 50% 88%;
+  animation: moonBody var(--cycle) ease-out 1 forwards;
+}
+
+.eyelid {
+  /* Scales on Y about its top edge, so the lid comes DOWN over the eye rather
+     than shrinking towards its own middle. */
+  transform-origin: 50% 44%;
+  animation: blink var(--cycle) steps(1, end) 1 forwards;
+}
+
+.sparkle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #ffffff 0%, #d6beff 50%, rgba(214, 190, 255, 0) 74%);
+  opacity: 0;
+  animation: moonDrift var(--cycle) ease-out 1 forwards;
+  animation-delay: calc(var(--cycle) * var(--delay) * 0.55);
+}
+
+@keyframes moonRise {
+  0% { opacity: 0; transform: translateY(46px) scale(0.72); }
+  16% { opacity: 0.95; transform: translateY(0) scale(1); }
+  34% { opacity: 0.85; transform: translateY(-4px) scale(1.02); }
+  84% { opacity: 0.7; transform: translateY(-8px) scale(1); }
+  100% { opacity: 0; transform: translateY(-30px) scale(0.9); }
+}
+
+@keyframes rayOpen {
+  0%, 12% { opacity: 0; transform: rotate(0deg) scale(0.6); }
+  34% { opacity: 0.9; transform: rotate(26deg) scale(1); }
+  84% { opacity: 0.45; transform: rotate(74deg) scale(1.04); }
+  100% { opacity: 0; transform: rotate(96deg) scale(1.1); }
+}
+
+@keyframes moonBody {
+  0% { opacity: 0; transform: translateY(30%) scale(0.78); }
+  16% { opacity: 1; transform: translateY(0) scale(1.04); }
+  24% { transform: translateY(0) scale(1); }
+  46% { transform: translateY(-3%) rotate(-2deg); }
+  68% { transform: translateY(0) rotate(2deg); }
+  86% { transform: translateY(-2%) rotate(0deg); opacity: 1; }
+  100% { transform: translateY(-16%) scale(0.9); opacity: 0; }
+}
+
+/*
+ * `steps(1, end)` above: a blink is instantaneous, and interpolating the lid
+ * open again over 200ms makes the mascot look sleepy rather than awake.
+ */
+@keyframes blink {
+  0%, 27% { opacity: 0; transform: scaleY(0); }
+  30% { opacity: 1; transform: scaleY(1); }
+  33% { opacity: 0; transform: scaleY(0); }
+  53% { opacity: 0; transform: scaleY(0); }
+  56% { opacity: 1; transform: scaleY(1); }
+  59% { opacity: 0; transform: scaleY(0); }
+  100% { opacity: 0; transform: scaleY(0); }
+}
+
+@keyframes moonDrift {
+  0% { opacity: 0; transform: translate(0, 0) scale(0); }
+  22% { opacity: 1; transform: translate(calc(var(--dx) * 0.25), calc(var(--dy) * 0.25)) scale(var(--scale)); }
+  74% { opacity: 0.6; transform: translate(calc(var(--dx) * 0.8), calc(var(--dy) * 0.8)) scale(calc(var(--scale) * 0.7)); }
+  100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(0.15); }
+}
+
+.still .moon,
+.still .body,
+.still .rays,
+.still .eyelid {
+  animation: none;
+  transform: none;
+}
+
+.still .moon { opacity: 0.9; }
+.still .body { opacity: 1; }
+.still .rays { opacity: 0.35; }
+.still .eyelid { opacity: 0; }
+.still .sparkle { display: none; }

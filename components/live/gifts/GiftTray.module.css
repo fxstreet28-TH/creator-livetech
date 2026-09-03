@@ -1,0 +1,152 @@
+/*
+ * The tray: up to three gift rows stacked at the bottom-left of the video.
+ *
+ * Anchored to the BOTTOM and growing upward, with the newest row first in the
+ * DOM — `flex-direction: column-reverse` is what reconciles those two, so the
+ * newest row is the one nearest the bottom edge and the older ones are pushed
+ * up out of the way. Reversing the array in JS instead would break the React
+ * keys' relationship to the queue's own ordering.
+ */
+
+.tray {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  z-index: 12;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+  /* Never wider than half the player, so the video is still the thing on
+     screen, and never wider than a phone. */
+  max-width: min(50%, 320px);
+  /* Overridable by GiftOverlay's `inset`, which the OBS source raises to 48px
+     for a 1080p safe area. */
+  padding: var(--gift-inset, 12px);
+  pointer-events: none;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px 6px 6px;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 9999px 14px 14px 9999px;
+  /* Behind the row rather than a solid fill: a gift row over a bright frame
+     has to stay readable, and a fully opaque pill covers the video. */
+  backdrop-filter: blur(8px);
+  background-color: rgba(10, 8, 24, 0.55);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.38);
+  animation: rowIn 320ms cubic-bezier(0.2, 1.2, 0.4, 1) 1 both;
+}
+
+.mini {
+  position: relative;
+  flex: none;
+  overflow: hidden;
+}
+
+/*
+ * The 300 × 300 stage, scaled into the mini box.
+ *
+ * `top left` origin plus a parent of the scaled size is what keeps the scaled
+ * stage inside its own footprint — with the default centre origin, a 0.35 scale
+ * leaves the stage overhanging its box by ~97px in every direction and the row
+ * beside it is pushed off the screen.
+ */
+.miniInner {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 300px;
+  height: 300px;
+  transform-origin: top left;
+}
+
+.text {
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.sender {
+  font-size: 12px;
+  font-weight: 700;
+  color: #ffffff;
+  /* One line, cut with an ellipsis: a display name is user-controlled and an
+     unbounded one would push the stars off the row. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.line {
+  margin-top: 1px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.72);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.count {
+  display: inline-block;
+  margin-left: 5px;
+  font-size: 13px;
+  font-weight: 800;
+  color: #ffffff;
+  /* Re-keyed on every combo bump, so this replays and the ×N visibly pops. */
+  animation: countPop 380ms cubic-bezier(0.2, 1.6, 0.4, 1) 1 both;
+}
+
+.stars {
+  margin-top: 1px;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #ffe9a8;
+}
+
+.message {
+  margin-top: 2px;
+  max-width: 200px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.6);
+  /* Two lines at most. The message is 80 characters of someone else's text on
+     top of the creator's video; it does not get to grow the row. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+@keyframes rowIn {
+  0% { opacity: 0; transform: translateX(-24px) scale(0.94); }
+  100% { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+@keyframes countPop {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.55); }
+  100% { transform: scale(1); }
+}
+
+/*
+ * Reduced motion: the row appears rather than sliding, and the ×N changes
+ * rather than popping. It still appears — see the note in the tier stylesheets
+ * about why the confirmation is not optional.
+ */
+.rowStill {
+  animation: none;
+}
+
+.rowStill .count {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .row,
+  .count {
+    animation: none;
+  }
+}
