@@ -353,9 +353,11 @@ GRANT EXECUTE ON FUNCTION public.send_live_gift(UUID, UUID, SMALLINT, INTEGER, T
 -- disagree with the row: there is no path that writes a gift without
 -- announcing it, and none that announces one that did not commit.
 --
--- `avatar_url` is NOT in the payload. `public.creators` has no such column —
--- the creator card resolves avatars elsewhere — and inventing one here would
--- put a field in the contract that nothing can ever fill.
+-- The sender's NAME is resolved here rather than taken from the request, which
+-- is the one place this design is stricter than chat: a chat line carries a
+-- display name its own sender wrote, so the 👑 on it is a comparison rather
+-- than a signature (see lib/live/realtime.ts). A gift is money, and the name
+-- on it is the database's answer, not the spender's claim.
 
 CREATE OR REPLACE FUNCTION public.live_gifts_broadcast()
 RETURNS TRIGGER
@@ -366,17 +368,42 @@ AS $$
 DECLARE
   v_tier          public.gift_tiers;
   v_display_name  TEXT;
+  v_avatar_url    TEXT;
+  v_meta          JSONB;
+  v_email         TEXT;
 BEGIN
   SELECT * INTO v_tier FROM public.gift_tiers WHERE id = NEW.tier_id;
 
-  -- The SENDER's name, not the creator's. Resolved from `creators` when the
-  -- sender happens to be one and falling back to a generic label otherwise:
-  -- most senders are viewers, who have no display name anywhere the database
-  -- can reach, and a null here would render as an empty overlay row.
+  -- The SENDER's name, not the creator's, and derived with the SAME precedence
+  -- the rest of the app uses (deriveDisplayName in lib/hooks/useDashboardUser):
+  -- an explicit metadata name, then the email local-part, then a friendly Thai
+  -- default. Matching it matters — a viewer named by their email prefix in the
+  -- chat panel and "ผู้ชม" in the gift row beside it reads as two people.
+  --
+  -- `public.creators.display_name` comes first because a creator sending a gift
+  -- to another creator has a real, chosen name that their metadata may not
+  -- carry.
   SELECT c.display_name INTO v_display_name
   FROM public.creators c
   WHERE c.user_id = NEW.sender_id
   LIMIT 1;
+
+  SELECT u.raw_user_meta_data, u.email INTO v_meta, v_email
+  FROM auth.users u
+  WHERE u.id = NEW.sender_id;
+
+  v_display_name := COALESCE(
+    NULLIF(btrim(COALESCE(v_display_name, '')), ''),
+    NULLIF(btrim(COALESCE(v_meta->>'display_name', '')), ''),
+    NULLIF(btrim(COALESCE(v_meta->>'full_name', '')), ''),
+    NULLIF(btrim(COALESCE(v_meta->>'name', '')), ''),
+    NULLIF(split_part(COALESCE(v_email, ''), '@', 1), ''),
+    'ผู้ชม'
+  );
+
+  -- Same source the avatar comes from everywhere else. Null is normal and the
+  -- overlay renders initials for it; nothing here invents a URL.
+  v_avatar_url := NULLIF(btrim(COALESCE(v_meta->>'avatar_url', '')), '');
 
   PERFORM realtime.send(
     jsonb_build_object(
@@ -395,7 +422,8 @@ BEGIN
       'message',       NEW.message,
       'sender', jsonb_build_object(
         'id',           NEW.sender_id,
-        'display_name', COALESCE(NULLIF(btrim(v_display_name), ''), 'ผู้ชม')
+        'display_name', v_display_name,
+        'avatar_url',   v_avatar_url
       ),
       'created_at',    NEW.created_at
     ),
