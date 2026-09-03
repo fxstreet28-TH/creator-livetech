@@ -14,7 +14,7 @@
  */
 
 import { useState, type CSSProperties } from 'react';
-import { rarityStyle, type LiveGiftEvent } from '@/lib/live/gifts';
+import { rarityStyle, starsFragment, type LiveGiftEvent } from '@/lib/live/gifts';
 import { GiftAnimation } from './animations';
 import type { FullscreenItem } from './useGiftQueue';
 import { STAGE_PX, useStageSize } from './useStageScale';
@@ -42,6 +42,7 @@ function FullscreenStage({
   reduceMotion: boolean;
 }) {
   const rarity = rarityStyle(event.rarity);
+  const stars = starsFragment(event.stars_total);
 
   /**
    * Set once the arc has played.
@@ -104,7 +105,7 @@ function FullscreenStage({
           {event.sender.display_name} <span className={styles.verb}>ส่ง</span>{' '}
           <span className={rarity.text}>{event.name_en}</span> ×{event.quantity}
         </p>
-        <p className={styles.stars}>+{event.stars_total.toLocaleString('th-TH')} ⭐</p>
+        {stars !== null && <p className={styles.stars}>{stars}</p>}
         {event.message && <p className={styles.message}>{event.message}</p>}
       </div>
     </div>

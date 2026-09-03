@@ -30,6 +30,8 @@ import { Loader2, X } from 'lucide-react';
 import {
   GIFT_QUANTITY_PRESETS,
   MAX_GIFT_MESSAGE_LENGTH,
+  allTiersFree,
+  isFreeTier,
   rarityStyle,
   sendLiveGift,
   type GiftError,
@@ -92,15 +94,21 @@ function GiftSheet({
 
   const total = selected ? selected.price_stars * quantity : 0;
 
+  /** FREE PREVIEW — the tier costs nothing, so nothing about paying applies. */
+  const selectedIsFree = selected !== null && isFreeTier(selected);
+  const catalogueIsFree = allTiersFree(tiers);
+
   /**
-   * Insufficient only when the balance is KNOWN.
+   * Insufficient only when the balance is KNOWN and there is something to pay.
    *
    * A null balance means wallet-get has not answered, and treating that as
    * "not enough" would show a top-up button to somebody with a full wallet.
+   * A free tier can never be unaffordable — `total > balance` is already false
+   * at 0, but stating it keeps the intent readable next to the branch it feeds.
    * The server refuses an actual shortfall anyway, so being optimistic here is
    * the safe direction.
    */
-  const insufficient = balance !== null && selected !== null && total > balance;
+  const insufficient = !selectedIsFree && balance !== null && selected !== null && total > balance;
 
   const topUpHref = `/wallet/buy-stars?redirect=${encodeURIComponent(`/live/${sessionId}`)}`;
 
@@ -207,10 +215,19 @@ function GiftSheet({
             </h2>
             <p className="mt-0.5 text-xs tabular-nums text-white/50">
               {balance === null ? 'กำลังโหลดยอดดาว...' : `⭐ ${balance.toLocaleString('th-TH')}`}
-              {' · '}
-              <Link href={topUpHref} className="text-cyan-300 underline-offset-2 hover:underline">
-                เติมดาว
-              </Link>
+              {/* The balance stays — it is still true and still useful — but the
+                  top-up prompt goes while nothing can be spent. */}
+              {!catalogueIsFree && (
+                <>
+                  {' · '}
+                  <Link
+                    href={topUpHref}
+                    className="text-cyan-300 underline-offset-2 hover:underline"
+                  >
+                    เติมดาว
+                  </Link>
+                </>
+              )}
             </p>
           </div>
           <button
@@ -222,6 +239,16 @@ function GiftSheet({
             <X size={18} aria-hidden />
           </button>
         </div>
+
+        {/*
+          Driven entirely by the catalogue, so it disappears by itself the
+          moment the CEO prices a tier — there is no flag to remember to unset.
+        */}
+        {catalogueIsFree && (
+          <p className="mx-4 mt-3 rounded-xl border border-amber-300/35 bg-amber-400/10 px-3 py-2 text-[11px] leading-relaxed text-amber-100">
+            โหมดทดสอบ — ของขวัญยังไม่หักดาว
+          </p>
+        )}
 
         <div className="px-4 pt-4">
           {tiersError ? (
@@ -260,9 +287,15 @@ function GiftSheet({
                         {tier.name_en}
                       </span>
                       <span className="text-[10px] leading-tight text-white/50">{tier.name_th}</span>
-                      <span className="text-[11px] font-semibold tabular-nums text-amber-200">
-                        ⭐ {tier.price_stars.toLocaleString('th-TH')}
-                      </span>
+                      {isFreeTier(tier) ? (
+                        <span className="rounded-full bg-amber-400/20 px-2 py-0.5 text-[10px] font-bold text-amber-100">
+                          ฟรี · ทดสอบ
+                        </span>
+                      ) : (
+                        <span className="text-[11px] font-semibold tabular-nums text-amber-200">
+                          ⭐ {tier.price_stars.toLocaleString('th-TH')}
+                        </span>
+                      )}
                     </button>
                   </li>
                 );
@@ -336,9 +369,13 @@ function GiftSheet({
 
             <p className="flex items-center justify-between text-sm">
               <span className="text-white/55">รวม</span>
-              <span className="font-bold tabular-nums text-amber-200">
-                {total.toLocaleString('th-TH')} ⭐
-              </span>
+              {selectedIsFree ? (
+                <span className="font-bold text-amber-100">ฟรี · ทดสอบ</span>
+              ) : (
+                <span className="font-bold tabular-nums text-amber-200">
+                  {total.toLocaleString('th-TH')} ⭐
+                </span>
+              )}
             </p>
 
             {error && (

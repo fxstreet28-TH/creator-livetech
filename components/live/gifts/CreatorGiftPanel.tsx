@@ -127,7 +127,18 @@ export function CreatorGiftPanel({
         });
       }
     }
-    return [...bySender.values()].sort((a, b) => b.stars - a.stars).slice(0, TOP_GIFTERS);
+    /**
+     * Stars first, then COUNT.
+     *
+     * The count tiebreak is what keeps this list meaningful during free
+     * preview: with every tier at 0, sorting on stars alone leaves the order
+     * to whatever `Map` iteration happens to produce, so the "top" gifter
+     * would be arbitrary. Ranking by how much someone sent is the honest
+     * fallback when there is no money to rank by.
+     */
+    return [...bySender.values()]
+      .sort((a, b) => b.stars - a.stars || b.count - a.count)
+      .slice(0, TOP_GIFTERS);
   }, [gifts]);
 
   return (
@@ -142,9 +153,20 @@ export function CreatorGiftPanel({
             <span className="font-bold">{formatCount(totals.count)}</span>
             <span className="sr-only">ของขวัญ</span>
           </span>
-          <span className="inline-flex items-center gap-1 font-bold tabular-nums text-amber-200">
-            ⭐ {formatCount(totals.stars)}
-          </span>
+          {/* The star total is shown once there is one. During free preview a
+              creator seeing "⭐ 0" beside a busy gift count would reasonably
+              conclude the gifts were not being counted. */}
+          {totals.stars > 0 ? (
+            <span className="inline-flex items-center gap-1 font-bold tabular-nums text-amber-200">
+              ⭐ {formatCount(totals.stars)}
+            </span>
+          ) : (
+            totals.count > 0 && (
+              <span className="rounded-full bg-amber-400/15 px-2 py-0.5 text-[10px] font-bold text-amber-100">
+                โหมดทดสอบ
+              </span>
+            )
+          )}
         </div>
 
         <button
@@ -169,7 +191,7 @@ export function CreatorGiftPanel({
               </span>
               <span className="min-w-0 flex-1 truncate text-white/75">{entry.name}</span>
               <span className="shrink-0 font-semibold tabular-nums text-amber-200">
-                {formatCount(entry.stars)} ⭐
+                {entry.stars > 0 ? `${formatCount(entry.stars)} ⭐` : `×${formatCount(entry.count)}`}
               </span>
             </li>
           ))}

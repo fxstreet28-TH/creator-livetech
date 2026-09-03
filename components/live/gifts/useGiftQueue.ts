@@ -133,6 +133,36 @@ function trayLifetime(event: LiveGiftEvent): number {
   return Math.max(MIN_TRAY_MS, event.duration_ms);
 }
 
+/**
+ * Which of two pending fullscreen gifts plays first: the more valuable, and on
+ * a tie the higher-ranked tier.
+ *
+ * THE TIEBREAK IS NOT DECORATION. Under free preview every tier costs 0, so
+ * `stars_total` ties on EVERY comparison and a stars-only rule silently
+ * degrades to plain FIFO — a Nova sent a moment after a Comet would wait behind
+ * it, which is the one ordering rule this queue has. `sort_order` comes from
+ * `gift_tiers` on the broadcast payload and still ranks the catalogue when the
+ * prices do not.
+ *
+ * DESCENDING sort_order, deliberately, and this is where the brief contradicts
+ * itself: it specifies `price_stars desc, sort_order asc`, but sort_order
+ * ASCENDING would put Stardust (1) ahead of Nova (4) once prices tie — the
+ * exact reverse of the "Nova plays first" behaviour the same brief lists as a
+ * QA gate. The gate expresses the intent (the bigger gift goes first), so the
+ * tiebreak follows the intent and ranks downward. Flagged in the PR.
+ */
+function outranks(candidate: PendingFullscreen, incumbent: PendingFullscreen): boolean {
+  if (candidate.event.stars_total !== incumbent.event.stars_total) {
+    return candidate.event.stars_total > incumbent.event.stars_total;
+  }
+  if (candidate.event.sort_order !== incumbent.event.sort_order) {
+    return candidate.event.sort_order > incumbent.event.sort_order;
+  }
+  // Same tier, same price: whichever arrived first. `reduce` keeps the
+  // incumbent on a false, and the incumbent is always the earlier item.
+  return false;
+}
+
 /** Which visible row a new gift combines into, if any. */
 function comboIndex(tray: TrayItem[], event: LiveGiftEvent): number {
   return tray.findIndex(
@@ -331,10 +361,7 @@ export function advance(
     );
     const windowEnd = oldest.receivedAt + FULLSCREEN_BATCH_MS;
     const batch = fullscreenPending.filter((item) => item.receivedAt <= windowEnd);
-    const chosen = batch.reduce(
-      (best, item) => (item.event.stars_total > best.event.stars_total ? item : best),
-      batch[0],
-    );
+    const chosen = batch.reduce((best, item) => (outranks(item, best) ? item : best), batch[0]);
 
     fullscreen = { key: chosen.key, event: chosen.event, endsAt: now + chosen.event.duration_ms };
     fullscreenPending = fullscreenPending.filter((item) => item.key !== chosen.key);

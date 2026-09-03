@@ -12,7 +12,7 @@
  * button or the chat input under it.
  */
 
-import { rarityStyle, type LiveGiftEvent } from '@/lib/live/gifts';
+import { rarityStyle, starsFragment, type LiveGiftEvent } from '@/lib/live/gifts';
 import { GiftAnimation } from './animations';
 import type { TrayItem } from './useGiftQueue';
 import styles from './GiftTray.module.css';
@@ -52,6 +52,7 @@ export function GiftTray({
 function GiftTrayRow({ item, reduceMotion }: { item: TrayItem; reduceMotion: boolean }) {
   const { event } = item;
   const rarity = rarityStyle(event.rarity);
+  const stars = starsFragment(item.starsTotal);
 
   return (
     <div className={`${styles.row} ${rarity.surface} ${reduceMotion ? styles.rowStill : ''}`}>
@@ -79,7 +80,9 @@ function GiftTrayRow({ item, reduceMotion }: { item: TrayItem; reduceMotion: boo
             ×{item.count}
           </span>
         </p>
-        <p className={styles.stars}>+{item.starsTotal.toLocaleString('th-TH')} ⭐</p>
+        {/* Absent, not zero: a free gift showing "+0 ⭐" reads as one that
+            failed to charge rather than one that was free by design. */}
+        {stars !== null && <p className={styles.stars}>{stars}</p>}
         {event.message && <p className={styles.message}>{event.message}</p>}
       </div>
     </div>

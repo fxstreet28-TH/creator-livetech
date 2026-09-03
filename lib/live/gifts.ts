@@ -84,6 +84,15 @@ export interface LiveGiftEvent {
   animation_key: string;
   display_mode: GiftDisplayMode;
   duration_ms: number;
+  /**
+   * `gift_tiers.sort_order` — the tier's rank in the catalogue.
+   *
+   * Carried so the fullscreen queue can order two gifts that cost the SAME,
+   * which in free-preview mode is every pair of gifts. Without it the
+   * most-valuable-first rule ties on every comparison and the queue degrades to
+   * plain FIFO.
+   */
+  sort_order: number;
   quantity: number;
   stars_total: number;
   message: string | null;
@@ -127,6 +136,47 @@ const MAX_NAME_LENGTH = 40;
 
 /** The quantity chips in the drawer. Clamped to the tier's own max_quantity. */
 export const GIFT_QUANTITY_PRESETS = [1, 5, 10, 99];
+
+/**
+ * FREE PREVIEW
+ *
+ * A tier priced at 0 is free: `send_live_gift` skips the spend, the creator
+ * credit and the AML star ceiling, and writes no ledger row. There is no flag
+ * anywhere — the PRICE is the switch, so a tier the CEO reprices with one
+ * `UPDATE` stops being free everywhere at once, including in every string
+ * below, with no deploy.
+ *
+ * Everything that reads these helpers therefore branches on DATA, never on an
+ * environment variable or a build-time constant. That is what makes the paid
+ * launch a SQL statement rather than a release.
+ */
+export function isFreeTier(tier: Pick<GiftTier, 'price_stars'>): boolean {
+  return tier.price_stars <= 0;
+}
+
+/**
+ * True when the whole visible catalogue is free.
+ *
+ * Drives the drawer's "โหมดทดสอบ" banner, and only that: it is a statement
+ * about the CATALOGUE, so a mixed catalogue (some tiers priced, some not)
+ * correctly stops showing it while individual free tiers keep their own badge.
+ * An empty catalogue is not "all free" — there is nothing to be free.
+ */
+export function allTiersFree(tiers: GiftTier[]): boolean {
+  return tiers.length > 0 && tiers.every(isFreeTier);
+}
+
+/**
+ * The `+N ⭐` fragment, or null when nothing was spent.
+ *
+ * Every surface that mentions a gift's value goes through this, so "a free gift
+ * shows no star count" is one decision in one place rather than five `> 0`
+ * checks that will drift. `+0 ⭐` is worse than nothing: it reads as a gift that
+ * failed to charge rather than one that was free by design.
+ */
+export function starsFragment(starsTotal: number): string | null {
+  return starsTotal > 0 ? `+${starsTotal.toLocaleString('th-TH')} ⭐` : null;
+}
 
 /**
  * Rarity → the tint a tray row, a drawer card and a chat line are painted with.
@@ -410,6 +460,7 @@ export function decodeGiftEvent(raw: unknown): LiveGiftEvent | null {
     animation_key: text(source.animation_key, 40) || 'generic',
     display_mode: source.display_mode === 'fullscreen' ? 'fullscreen' : 'tray',
     duration_ms: clampInt(source.duration_ms, MIN_DURATION_MS, MAX_DURATION_MS, 4500),
+    sort_order: clampInt(source.sort_order, 0, 32767, 0),
     quantity: clampInt(source.quantity, 1, MAX_QUANTITY, 1),
     stars_total: clampInt(source.stars_total, 0, MAX_STARS_TOTAL, 0),
     message: text(source.message, MAX_GIFT_MESSAGE_LENGTH).trim() || null,
@@ -435,5 +486,7 @@ export function decodeGiftEvent(raw: unknown): LiveGiftEvent | null {
  * order they arrived in relative to everything else being said.
  */
 export function giftChatLine(event: LiveGiftEvent): string {
-  return `🎁 ${event.sender.display_name} ส่ง ${event.name_th} ×${event.quantity} (+${event.stars_total} ⭐)`;
+  const stars = starsFragment(event.stars_total);
+  const suffix = stars === null ? '' : ` (${stars})`;
+  return `🎁 ${event.sender.display_name} ส่ง ${event.name_th} ×${event.quantity}${suffix}`;
 }
