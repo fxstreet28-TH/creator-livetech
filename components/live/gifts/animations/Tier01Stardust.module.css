@@ -85,9 +85,18 @@
   100% { transform: translateY(-22%) scale(0.86); opacity: 0; }
 }
 
+/*
+ * The arm rises WITH the body (0-14%) and only then starts waving.
+ *
+ * It used to stay hidden until 20% and slide in on its own, which left four
+ * beats where the mascot had no arm and then grew one — the layers are supposed
+ * to be one character, and that is precisely the drift a shared timeline
+ * exists to prevent.
+ */
 @keyframes dustWave {
-  0%, 20% { transform: translateY(58%) rotate(38deg); opacity: 0; }
-  24% { transform: translateY(0) rotate(38deg); opacity: 1; }
+  0% { transform: translateY(58%) rotate(38deg); opacity: 0; }
+  14% { transform: translateY(-6%) rotate(38deg); opacity: 1; }
+  22% { transform: translateY(0) rotate(38deg); opacity: 1; }
   32% { transform: translateY(0) rotate(-16deg); }
   42% { transform: translateY(0) rotate(34deg); }
   52% { transform: translateY(0) rotate(-12deg); }

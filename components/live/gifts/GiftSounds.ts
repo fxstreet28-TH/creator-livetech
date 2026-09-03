@@ -69,13 +69,47 @@ export function readGiftSoundEnabled(): boolean {
   }
 }
 
-export function writeGiftSoundEnabled(enabled: boolean): void {
+function writeGiftSoundEnabled(enabled: boolean): void {
   if (typeof window === 'undefined') return;
   try {
     window.localStorage.setItem(GIFT_SOUND_STORAGE_KEY, enabled ? 'on' : 'off');
   } catch {
     // Storage is full or blocked. The preference simply does not persist.
   }
+}
+
+/**
+ * The preference as an EXTERNAL STORE, for `useSyncExternalStore`.
+ *
+ * localStorage does not exist on the server, so a hook cannot read it during
+ * render, and reading it in an effect to call setState is the cascading-render
+ * pattern React's own lint rule objects to. `useSyncExternalStore` is the
+ * answer React provides for exactly this: a value that lives outside React,
+ * with a server snapshot of "muted" that matches what the markup says.
+ *
+ * Subscribing to `storage` is a small bonus rather than the point: a creator
+ * who mutes gifts in one tab has muted them in the other.
+ */
+const listeners = new Set<() => void>();
+
+export function subscribeGiftSound(onChange: () => void): () => void {
+  listeners.add(onChange);
+  if (typeof window !== 'undefined') window.addEventListener('storage', onChange);
+  return () => {
+    listeners.delete(onChange);
+    if (typeof window !== 'undefined') window.removeEventListener('storage', onChange);
+  };
+}
+
+/** Safe to call repeatedly: it returns a primitive, so React compares by value. */
+export const getGiftSoundSnapshot = readGiftSoundEnabled;
+
+/** The server always renders the muted state, which is also the default. */
+export const getGiftSoundServerSnapshot = () => false;
+
+export function setGiftSoundEnabled(enabled: boolean): void {
+  writeGiftSoundEnabled(enabled);
+  for (const listener of listeners) listener();
 }
 
 /**

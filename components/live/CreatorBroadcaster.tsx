@@ -103,6 +103,15 @@ interface CreatorBroadcasterProps {
   viewerCount: number;
   /** The viewers' reactions, floating over the self-view. Received, never sent. */
   reactions: FloatingReaction[];
+  /**
+   * Painted over the self-view — the gift overlay.
+   *
+   * A slot rather than an import, for the same reason the players take one: the
+   * overlay positions itself against this component's own container, and a
+   * broadcaster that knew about gifts would be a broadcaster that has to change
+   * the next time something else needs to sit over the video.
+   */
+  overlay?: React.ReactNode;
   onPhaseChange?: (phase: BroadcastPhase) => void;
 }
 
@@ -121,6 +130,7 @@ export function CreatorBroadcaster({
   onOrientationChange,
   viewerCount,
   reactions,
+  overlay,
   onPhaseChange,
 }: CreatorBroadcasterProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -453,6 +463,7 @@ export function CreatorBroadcaster({
         />
 
         <FloatingReactionsLayer reactions={reactions} />
+        {overlay}
 
         <div className="pointer-events-none absolute left-3 top-3 z-10 flex items-center gap-2">
           <LiveBadge pulse={phase === 'live'} />

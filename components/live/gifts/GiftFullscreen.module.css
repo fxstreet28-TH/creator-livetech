@@ -35,12 +35,26 @@
  */
 .stageBox {
   position: relative;
-  display: grid;
-  place-items: center;
   filter: drop-shadow(0 0 34px var(--rarity-glow, rgba(255, 255, 255, 0.4)));
 }
 
+/*
+ * The 300px stage, centred on the box and scaled about its own middle.
+ *
+ * Absolutely positioned with a half-size negative margin rather than laid out
+ * by the parent, because `transform` does not affect layout: a 300px child of a
+ * 147px flex box (which is what `min(70%, ...)` comes to on a 375px phone)
+ * OVERFLOWS to the right and below before any scaling happens, and scaling
+ * about `center center` then shrinks it around a point that is not the box's
+ * centre. The mascot ended up in the bottom-right corner with the caption
+ * across it — visible only at phone width, because on a desktop the scaled size
+ * is larger than 300px and the overflow is negative.
+ */
 .stageInner {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  margin: -150px 0 0 -150px;
   transform-origin: center center;
 }
 

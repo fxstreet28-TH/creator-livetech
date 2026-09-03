@@ -12,7 +12,7 @@
  */
 
 import { useMemo, useRef, useState } from 'react';
-import { ArrowDownLeft, ArrowUpRight, Clock, Sparkles } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, Clock, Gift, Sparkles } from 'lucide-react';
 import {
   useWalletHistory,
   type BuybackEntry,
@@ -78,8 +78,26 @@ const LEDGER_LABELS: Record<string, string> = {
   ppv_unlock: 'ปลดล็อกเนื้อหา',
   ppv_message: 'ปลดล็อกข้อความ',
   tip: 'ทิป',
+  live_gift: 'ส่งของขวัญ',
   expiration: 'Stars หมดอายุ',
 };
+
+/**
+ * What a ledger line says.
+ *
+ * A gift spends into a specific tier, on a specific creator's broadcast, and
+ * "ส่งของขวัญ" alone tells the buyer none of that — which matters most exactly
+ * when they are scanning the list to work out where their stars went. The
+ * detail is only present when useWalletHistory could resolve the gift row;
+ * without it the plain label is still true.
+ */
+function ledgerLabel(entry: LedgerEntry): string {
+  const base = LEDGER_LABELS[entry.type] ?? entry.type;
+  if (entry.type !== 'live_gift' || !entry.gift) return base;
+
+  const detail = `🎁 ${base} ${entry.gift.name_en} ×${entry.gift.quantity}`;
+  return entry.gift.creatorName ? `${detail} ให้ ${entry.gift.creatorName}` : detail;
+}
 
 interface WalletHistoryProps {
   /** Initial tab, from ?tab= on the wallet page. */
@@ -317,14 +335,14 @@ function LedgerRow({ entry }: { entry: LedgerEntry }) {
           >
             {credit ? (
               <ArrowDownLeft size={16} aria-hidden />
+            ) : entry.type === 'live_gift' ? (
+              <Gift size={16} aria-hidden />
             ) : (
               <Clock size={16} aria-hidden />
             )}
           </span>
           <div className="min-w-0">
-            <p className="text-sm font-medium text-white">
-              {LEDGER_LABELS[entry.type] ?? entry.type}
-            </p>
+            <p className="text-sm font-medium text-white">{ledgerLabel(entry)}</p>
             <p className="mt-1 text-xs text-white/35">{formatDateTime(entry.createdAt)}</p>
           </div>
         </div>

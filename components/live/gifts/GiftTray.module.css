@@ -16,13 +16,25 @@
   display: flex;
   flex-direction: column-reverse;
   gap: 8px;
-  /* Never wider than half the player, so the video is still the thing on
-     screen, and never wider than a phone. */
-  max-width: min(50%, 320px);
+  /*
+   * Wide enough for the sender's name to survive.
+   *
+   * Half the player is right on a desktop, where half of a 900px column is 450
+   * — and wrong on a phone, where half of a 343px player leaves the text about
+   * 50px after the 105px mascot, so every name renders as "ผู้…" and the row
+   * says nothing. The row is mostly text; it needs most of a phone's width.
+   */
+  max-width: min(86%, 320px);
   /* Overridable by GiftOverlay's `inset`, which the OBS source raises to 48px
      for a 1080p safe area. */
   padding: var(--gift-inset, 12px);
   pointer-events: none;
+}
+
+@media (min-width: 640px) {
+  .tray {
+    max-width: min(50%, 320px);
+  }
 }
 
 .row {

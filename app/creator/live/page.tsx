@@ -15,7 +15,7 @@
  * a WebView that will not open a camera.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Loader2 } from 'lucide-react';
@@ -51,6 +51,14 @@ import { CreatorBroadcaster } from '@/components/live/CreatorBroadcaster';
 import { EndLiveConfirm } from '@/components/live/EndLiveConfirm';
 import { LiveChat } from '@/components/live/LiveChat';
 import { LiveStatsBar, useElapsedSeconds } from '@/components/live/LiveStatsBar';
+import {
+  CreatorGiftPanel,
+  useSessionGiftTotals,
+  type GiftTotals,
+} from '@/components/live/gifts/CreatorGiftPanel';
+import { GiftOverlay } from '@/components/live/gifts/GiftOverlay';
+import { useGiftSound } from '@/lib/hooks/useGiftSound';
+import type { LiveGiftEvent } from '@/lib/live/gifts';
 
 /** What the create call gave us, plus the two things it does not return. */
 interface ActiveBroadcast {
@@ -152,6 +160,13 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
   const errors = validateDraft(draft);
 
   /**
+   * Gift sound. Muted by default and remembered per device — the creator is the
+   * one who wants to hear a gift land while they are looking at their camera
+   * rather than at the overlay.
+   */
+  const giftSound = useGiftSound();
+
+  /**
    * The session's Realtime channel: the viewers' chat and reactions, and the
    * audience count.
    *
@@ -167,6 +182,33 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
     isCreator: true,
     creatorUserId: user?.id ?? null,
   });
+
+  /**
+   * The session's gift totals, re-read from `live_sessions` whenever a gift
+   * lands — never summed from the broadcast payloads. See the header of
+   * CreatorGiftPanel: the channel is writable by anyone entitled to watch, so
+   * a number a creator reads as their earnings must come from the table that
+   * `send_live_gift` writes, not from an event.
+   */
+  const giftTotals = useSessionGiftTotals(
+    broadcast?.liveSessionId ?? null,
+    channel.latestGift?.gift_id ?? null,
+  );
+
+  /**
+   * The chime, fired from the arrival rather than from the overlay.
+   *
+   * Here and not inside GiftOverlay because the overlay is mounted on the
+   * viewer's screen too, and a viewer's page must not make noise — the sound is
+   * the creator's feature, so it is wired on the creator's screen.
+   */
+  const lastChimed = useRef<string | null>(null);
+  useEffect(() => {
+    const gift = channel.latestGift;
+    if (!gift || lastChimed.current === gift.gift_id) return;
+    lastChimed.current = gift.gift_id;
+    giftSound.play(gift.stars_total);
+  }, [channel.latestGift, giftSound]);
 
   useEffect(() => {
     let cancelled = false;
@@ -326,6 +368,11 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
         onOrientationChange={setOrientation}
         viewers={{ current: channel.viewerCount, peak: channel.peakViewerCount }}
         reactions={channel.reactions}
+        latestGift={channel.latestGift}
+        gifts={channel.gifts}
+        giftTotals={giftTotals}
+        soundEnabled={giftSound.enabled}
+        onSoundToggle={giftSound.toggle}
         chat={channel.chat}
         chatStatus={channel.status}
         onSendChat={channel.sendChat}
@@ -335,6 +382,7 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
           endOpen || summary ? (
             <EndLiveConfirm
               summary={summary}
+              giftSummary={giftTotals}
               ending={ending}
               error={endError}
               onConfirm={() => void confirmEnd()}
@@ -420,6 +468,11 @@ function BroadcastingLayout({
   onOrientationChange,
   viewers,
   reactions,
+  latestGift,
+  gifts,
+  giftTotals,
+  soundEnabled,
+  onSoundToggle,
   chat,
   chatStatus,
   onSendChat,
@@ -440,6 +493,11 @@ function BroadcastingLayout({
   onOrientationChange: (next: CameraOrientation) => void;
   viewers: { current: number; peak: number };
   reactions: FloatingReaction[];
+  latestGift: LiveGiftEvent | null;
+  gifts: LiveGiftEvent[];
+  giftTotals: GiftTotals;
+  soundEnabled: boolean;
+  onSoundToggle: () => void;
   chat: LiveChatEntry[];
   chatStatus: LiveChannelStatus;
   onSendChat: (text: string) => Promise<void>;
@@ -467,6 +525,9 @@ function BroadcastingLayout({
               onOrientationChange={onOrientationChange}
               viewerCount={viewers.current}
               reactions={reactions}
+              // Over the self-preview, so the creator sees exactly what their
+              // audience sees rather than a description of it.
+              overlay={<GiftOverlay latestGift={latestGift} resetKey={broadcast.liveSessionId} />}
             />
           ) : (
             // The session has ended and the summary dialog is on top of this.
@@ -481,9 +542,18 @@ function BroadcastingLayout({
             viewerCount={viewers.current}
             peakViewerCount={viewers.peak}
             elapsedSeconds={elapsedSeconds}
-            tipStars={0}
+            // No longer hardcoded to 0: gifts are a real earning path now, and
+            // this is the session total the summary will also report.
+            tipStars={giftTotals.stars}
             quality={broadcast?.quality ?? null}
             maxViewers={broadcast?.maxViewers ?? null}
+          />
+
+          <CreatorGiftPanel
+            totals={giftTotals}
+            gifts={gifts}
+            soundEnabled={soundEnabled}
+            onSoundToggle={onSoundToggle}
           />
           {/* On a phone this drops under the video as the second row of the
               single-column grid, which is the bottom-sheet position without a

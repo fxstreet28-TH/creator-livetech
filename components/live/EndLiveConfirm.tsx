@@ -25,6 +25,16 @@ const FOCUSABLE =
 interface EndLiveConfirmProps {
   /** Set once live-end-session has answered; switches the dialog to summary. */
   summary: EndLiveResponse | null;
+  /**
+   * The session's gift totals, read from `live_sessions` while the broadcast
+   * was running.
+   *
+   * Not part of live-end-session's response: that function was written before
+   * gifts existed and reports `tips_received_stars`, which now INCLUDES gift
+   * stars — so the summary would otherwise show one combined number with no way
+   * to tell a creator how much of it their น้อง Aurum gifts earned.
+   */
+  giftSummary?: { count: number; stars: number };
   ending: boolean;
   /** Thai, renderable. */
   error: string | null;
@@ -36,6 +46,7 @@ interface EndLiveConfirmProps {
 
 export function EndLiveConfirm({
   summary,
+  giftSummary,
   ending,
   error,
   onConfirm,
@@ -123,7 +134,12 @@ export function EndLiveConfirm({
         }`}
       >
         {summary ? (
-          <Summary titleId={titleId} summary={summary} onDone={onDone} />
+          <Summary
+            titleId={titleId}
+            summary={summary}
+            giftSummary={giftSummary}
+            onDone={onDone}
+          />
         ) : (
           <Confirm
             titleId={titleId}
@@ -216,10 +232,12 @@ function Confirm({
 function Summary({
   titleId,
   summary,
+  giftSummary,
   onDone,
 }: {
   titleId: string;
   summary: EndLiveResponse;
+  giftSummary?: { count: number; stars: number };
   onDone: () => void;
 }) {
   const alreadyEnded = summary.already_ended === true;
@@ -247,6 +265,16 @@ function Summary({
             <SummaryStat label="ผู้ชมสูงสุด" value={`${formatCount(summary.peak_viewers)} คน`} />
             <SummaryStat label="ข้อความแชท" value={formatCount(summary.chat_messages)} />
             <SummaryStat label="ดาวที่ได้รับ" value={formatCount(summary.tips_received_stars)} />
+            {/* The gift breakdown of that total. Both are shown because
+                `tips_received_stars` is the session's earnings across every
+                path — a creator seeing only the combined figure cannot tell
+                whether gifting worked for them. */}
+            {giftSummary && (
+              <>
+                <SummaryStat label="ของขวัญ" value={`${formatCount(giftSummary.count)} ชิ้น`} />
+                <SummaryStat label="ดาวจากของขวัญ" value={formatCount(giftSummary.stars)} />
+              </>
+            )}
           </dl>
 
           <p className="mt-3 text-center text-[11px] leading-relaxed text-white/35">
