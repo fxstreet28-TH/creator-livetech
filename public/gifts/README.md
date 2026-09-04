@@ -27,9 +27,42 @@ mascot without any code changing.
 | `tier-04/body.png` | `Tier04Nova` | Drawn 150 × 150 at `75px, 81px` — standing on the CSS Earth. |
 | `tier-05/`, `tier-06/`, `tier-07/` | `TierVideoClip` | `clip.mp4` + `clip.webm` + `poster.jpg`. No PNG: these tiers are rendered video, not CSS. |
 
+## The video tiers
+
+`tier-05`, `tier-06` and `tier-07` hold `clip.mp4`, `clip.webm` and
+`poster.jpg`, and `TierVideoClip` finds them from the tier id alone — which is
+what makes an eighth video tier a row in `gift_tiers` plus three files in a
+folder, with no component and no deploy.
+
+- The **MP4 is listed first** and is what real browsers play. It is smaller and
+  sharper: on tier 07, SSIM 0.928 at 3.33 MB against VP9's 0.877 at 3.66 MB.
+- The **WebM is a compatibility floor, not a size optimisation.** Open-source
+  Chromium builds have no H.264 decoder, and the OBS browser source is a
+  Chromium embed. Without it these three gifts would silently degrade to a
+  still image on the creator's own stream.
+- The **poster is load-bearing twice**: it is the drawer's thumbnail for a
+  video tier, and the frame the card paints under the clip while the video
+  decodes — so it is already cached by the time the gift lands.
+
+To re-encode from a master:
+
+```
+ffmpeg -i SRC -an -vf "scale=720:-2:flags=lanczos" \
+  -c:v libx264 -profile:v high -pix_fmt yuv420p -crf 32 -preset slow \
+  -movflags +faststart clip.mp4
+ffmpeg -i SRC -an -vf "scale=720:-2:flags=lanczos" \
+  -c:v libvpx-vp9 -crf 46 -b:v 0 -row-mt 1 -deadline good -cpu-used 2 clip.webm
+ffmpeg -ss <60% of duration> -i SRC -frames:v 1 \
+  -vf "scale=720:-2:flags=lanczos" -q:v 5 poster.jpg
+```
+
+Then set the tier's `duration_ms` to the clip's measured length. `ffprobe
+-show_entries format=duration` is the number; the CHECK on the column allows
+1000-45000.
+
 ## Weight
 
-The PNGs are 14 KB–340 KB and are already optimally compressed (re-encoding
-them at maximum PNG effort makes them *larger*). They are fetched once per
-device and cached; the video clips are the ones with a real cost, and their
-budget is documented in `docs/live-gifts.md`.
+The PNGs are 14 KB-340 KB and are already optimally compressed — re-encoding
+them at maximum PNG effort makes them *larger*. They are fetched once per device
+and cached. The clips are the real cost: 1.3-4.2 MB each, and the full
+inventory with byte counts is in `docs/live-gifts.md`.
