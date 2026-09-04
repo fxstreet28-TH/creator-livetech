@@ -36,6 +36,7 @@ import { Tier02Moonlight } from './Tier02Moonlight';
 import { Tier03Comet } from './Tier03Comet';
 import { Tier04Nova } from './Tier04Nova';
 import { TierGenericFloat } from './TierGenericFloat';
+import { TierVideoClip } from './TierVideoClip';
 
 export interface GiftAnimationSlotProps extends GiftAnimationProps {
   /** `gift_tiers.animation_key`. Anything unrecognised falls through. */
@@ -52,10 +53,22 @@ export function GiftAnimation({ animationKey, ...props }: GiftAnimationSlotProps
       return <Tier03Comet {...props} />;
     case 'nova':
       return <Tier04Nova {...props} />;
+    // Not a fifth bespoke animation but a family: every tier the CEO delivers
+    // as a rendered clip rather than as CSS resolves here, and finds its own
+    // files from `tierId`.
+    case 'video':
+      return <TierVideoClip {...props} />;
     default:
       return <TierGenericFloat {...props} />;
   }
 }
 
-export { Tier01Stardust, Tier02Moonlight, Tier03Comet, Tier04Nova, TierGenericFloat };
+export {
+  Tier01Stardust,
+  Tier02Moonlight,
+  Tier03Comet,
+  Tier04Nova,
+  TierVideoClip,
+  TierGenericFloat,
+};
 export type { GiftAnimationProps };

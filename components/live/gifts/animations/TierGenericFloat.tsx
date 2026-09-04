@@ -3,16 +3,18 @@
 /**
  * The fallback animation, and the safety net.
  *
- * Tiers 05-07 have mascot art but no name and no reference animation yet, so
- * all three render this. So does any tier whose `animation_key` the registry
- * does not recognise — which is what makes adding a tier to `gift_tiers` safe
- * between deploys: a gift somebody paid 3,000 stars for animates, rather than
- * showing an empty box because the component for its key has not shipped.
+ * Nothing in the seeded catalogue renders this any more — all seven tiers have
+ * their own key. It exists for the tier that does NOT: an `animation_key` the
+ * registry has never heard of, because the CEO added a row before the component
+ * for it shipped, or repointed an existing one. That is a normal condition with
+ * a defined outcome rather than an error, and the outcome is that a gift
+ * somebody paid 3,000 stars for animates instead of showing an empty box.
  *
- * The mascot path is built from the tier id and clamped to the range that has
- * art. An id outside it falls back to tier 01's body rather than requesting a
- * 404 — a broken image icon on top of a live broadcast is worse than the wrong
- * colour of star.
+ * The mascot path is built from the tier id and clamped to the ids that have a
+ * `body.png`. Tiers 05-07 no longer do — they are video, and their folders hold
+ * a clip and a poster — so an unknown key on one of those, or on any id outside
+ * the range, falls back to tier 01's body rather than requesting a 404. A
+ * broken-image icon on top of a live broadcast is worse than the wrong mascot.
  */
 
 import type { CSSProperties } from 'react';
@@ -24,7 +26,7 @@ const SPARKLES = sparkleRing(12, 48);
 
 /** Tiers with a body.png committed. See public/gifts/README.md. */
 const MIN_TIER_WITH_ART = 1;
-const MAX_TIER_WITH_ART = 7;
+const MAX_TIER_WITH_ART = 4;
 
 function bodySrc(tierId: number | undefined): string {
   const id =

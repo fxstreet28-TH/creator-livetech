@@ -41,9 +41,9 @@ const FALLBACK_TIERS: GiftTier[] = [
   { id: 2, slug: 'moonlight', name_en: 'Moonlight', name_th: 'แสงจันทร์', subtitle_th: null, rarity: 'rare', price_stars: 5, animation_key: 'moonlight', duration_ms: 5500, display_mode: 'tray', max_quantity: 99, sort_order: 2 },
   { id: 3, slug: 'comet', name_en: 'Comet', name_th: 'ดาวหาง', subtitle_th: null, rarity: 'epic', price_stars: 20, animation_key: 'comet', duration_ms: 6500, display_mode: 'fullscreen', max_quantity: 99, sort_order: 3 },
   { id: 4, slug: 'nova', name_en: 'Nova', name_th: 'โนวา', subtitle_th: null, rarity: 'legendary', price_stars: 100, animation_key: 'nova', duration_ms: 10000, display_mode: 'fullscreen', max_quantity: 99, sort_order: 4 },
-  { id: 5, slug: 'tier-05', name_en: 'TBD', name_th: 'TBD', subtitle_th: null, rarity: 'legendary', price_stars: 300, animation_key: 'generic', duration_ms: 3500, display_mode: 'fullscreen', max_quantity: 99, sort_order: 5 },
-  { id: 6, slug: 'tier-06', name_en: 'TBD', name_th: 'TBD', subtitle_th: null, rarity: 'mythic', price_stars: 1000, animation_key: 'generic', duration_ms: 3500, display_mode: 'fullscreen', max_quantity: 99, sort_order: 6 },
-  { id: 7, slug: 'tier-07', name_en: 'TBD', name_th: 'TBD', subtitle_th: null, rarity: 'mythic', price_stars: 3000, animation_key: 'generic', duration_ms: 3500, display_mode: 'fullscreen', max_quantity: 99, sort_order: 7 },
+  { id: 5, slug: 'tier-05', name_en: 'TBD', name_th: 'TBD', subtitle_th: null, rarity: 'legendary', price_stars: 300, animation_key: 'video', duration_ms: 14933, display_mode: 'fullscreen', max_quantity: 99, sort_order: 5 },
+  { id: 6, slug: 'tier-06', name_en: 'TBD', name_th: 'TBD', subtitle_th: null, rarity: 'mythic', price_stars: 1000, animation_key: 'video', duration_ms: 19900, display_mode: 'fullscreen', max_quantity: 99, sort_order: 6 },
+  { id: 7, slug: 'tier-07', name_en: 'TBD', name_th: 'TBD', subtitle_th: null, rarity: 'mythic', price_stars: 3000, animation_key: 'video', duration_ms: 42233, display_mode: 'fullscreen', max_quantity: 99, sort_order: 7 },
 ];
 
 const SENDERS = [

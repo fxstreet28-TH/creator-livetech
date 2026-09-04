@@ -65,6 +65,21 @@ export interface GiftDrawerProps {
  * and unmounting is the cheaper and more obviously correct way to forget
  * something.
  */
+/**
+ * The picture on a tier's button in the grid.
+ *
+ * A CSS tier has a `body.png` — the same mascot layer its animation is built
+ * from. A video tier has no still art at all, so its poster stands in. Fetching
+ * it here is not only for the button: it is the frame `TierVideoClip` paints
+ * under the clip while the video decodes, and the drawer is where a viewer
+ * looks immediately before sending, so by the time the gift lands it is already
+ * in cache.
+ */
+function tierThumbnail(tier: GiftTier): string {
+  const dir = `/gifts/tier-${String(tier.id).padStart(2, '0')}`;
+  return tier.animation_key === 'video' ? `${dir}/poster.jpg` : `${dir}/body.png`;
+}
+
 export function GiftDrawer(props: GiftDrawerProps) {
   if (!props.open) return null;
   return <GiftSheet {...props} />;
@@ -276,7 +291,7 @@ function GiftSheet({
                     >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
-                        src={`/gifts/tier-${String(tier.id).padStart(2, '0')}/body.png`}
+                        src={tierThumbnail(tier)}
                         alt=""
                         width={56}
                         height={56}

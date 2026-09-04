@@ -127,9 +127,17 @@ export const MAX_GIFT_MESSAGE_LENGTH = 80;
  * stops a forged payload from holding the screen. `duration_ms` is the one that
  * matters most: a fullscreen gift blocks the queue behind it for exactly this
  * long, so an unclamped value is a denial of the overlay for everyone watching.
+ *
+ * The ceiling MIRRORS the CHECK on `gift_tiers.duration_ms` rather than sitting
+ * under it. A clamp tighter than the database's own limit does not make
+ * anything safer — the worst a forgery can do is what a real row is already
+ * allowed to do — and it silently truncates legitimate tiers: tier 07's clip
+ * runs 42.2s, so a 15s clamp would have cut its animation off two thirds of the
+ * way through while the queue held the screen for the full 42 anyway. When the
+ * migration moves the CHECK, move this with it.
  */
 const MIN_DURATION_MS = 1_000;
-const MAX_DURATION_MS = 15_000;
+const MAX_DURATION_MS = 45_000;
 const MAX_QUANTITY = 999;
 const MAX_STARS_TOTAL = 5_000_000;
 const MAX_NAME_LENGTH = 40;

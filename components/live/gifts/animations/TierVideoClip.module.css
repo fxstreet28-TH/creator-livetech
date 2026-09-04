@@ -1,0 +1,85 @@
+/*
+ * The card a video tier plays in.
+ *
+ * Sized to the CLIP's own aspect ratio rather than the 300 × 300 square the CSS
+ * stages fill. The alternative is `object-fit: cover` in a square, which on a
+ * 16:9 clip throws away 42% of the frame — and these are composed shots with
+ * the mascot off to one side, so the crop would cut the subject out. A card
+ * wider than it is tall is not letterboxing; black bars inside a square would
+ * be.
+ *
+ * The POSTER is what gives the card its size: it is a normal in-flow image, so
+ * the card is exactly as tall as the clip is, before the video has decoded a
+ * single frame. The video then covers it. Nothing here has to be told the
+ * aspect ratio, which is what lets an eighth video tier be two files in a
+ * folder.
+ */
+
+.stage {
+  position: relative;
+  width: 300px;
+  height: 300px;
+  display: grid;
+  place-items: center;
+}
+
+.card {
+  position: relative;
+  width: 100%;
+  border-radius: 24px;
+  overflow: hidden;
+  /* `--tint` is the rarity accent the overlay already computes. The ring is
+     what says "this is the 3,000-star gift" rather than "a video started
+     playing over the stream". */
+  box-shadow:
+    0 0 0 1.5px var(--tint, rgba(255, 255, 255, 0.35)),
+    0 0 34px var(--tint, rgba(255, 255, 255, 0.3)),
+    0 18px 44px rgba(0, 0, 0, 0.55);
+  background: #05040e;
+  animation: cardIn 420ms cubic-bezier(0.34, 1.56, 0.64, 1) 1 both;
+}
+
+/*
+ * The poster is drawn under the clip, not instead of it.
+ *
+ * A `<video>` paints nothing until its first frame decodes, and on a cold cache
+ * over mobile data that is long enough to read as a bug: the gift lands, the
+ * caption names it, and the card is an empty box. The poster is a JPEG a
+ * fraction of the clip's size and is already cached from the drawer.
+ */
+.poster {
+  display: block;
+  width: 100%;
+  height: auto;
+  pointer-events: none;
+}
+
+.clip {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* Same source, same aspect — `cover` here crops nothing, it just guarantees
+     the video fills the box the poster measured out. */
+  object-fit: cover;
+  display: block;
+  /* Never intercepts a tap: this sits over a video player whose own controls
+     have to stay reachable. */
+  pointer-events: none;
+}
+
+@keyframes cardIn {
+  0% { opacity: 0; transform: scale(0.86); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+/*
+ * Reduced motion: the poster alone.
+ *
+ * Forty seconds of a flying mascot is exactly what the preference exists to
+ * suppress. The gift is still confirmed — card, rarity ring and caption all
+ * render — it simply does not move.
+ */
+.still .card {
+  animation: none;
+}
