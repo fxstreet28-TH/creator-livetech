@@ -116,3 +116,26 @@ export function sparkleStyle(sparkle: Sparkle): CSSProperties {
 export function stageStyle(durationMs: number, extra?: CSSProperties): CSSProperties {
   return { '--cycle': `${durationMs}ms`, ...extra } as CSSProperties;
 }
+
+/**
+ * A deterministic stand-in for `Math.random()`.
+ *
+ * Two of the reference cards scatter their scenery — Comet's 40 star dots and
+ * 14 warp streaks, Nova's 45 sky dots — with `Math.random()`. That is fine in a
+ * standalone HTML file and wrong here: these components render on the server
+ * too, and a scatter that differs between the two renders hydrates with a
+ * mismatch warning on every single gift.
+ *
+ * mulberry32: one multiply-xorshift round per call, uniform enough for star
+ * positions and small enough to read. Seeded per scene at module load, so the
+ * layout is decided once for the life of the bundle rather than per gift.
+ */
+export function seededRandom(seed: number): () => number {
+  let t = seed >>> 0;
+  return () => {
+    t = (t + 0x6d2b79f5) >>> 0;
+    let x = Math.imul(t ^ (t >>> 15), 1 | t);
+    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
+    return ((x ^ (x >>> 14)) >>> 0) / 4_294_967_296;
+  };
+}

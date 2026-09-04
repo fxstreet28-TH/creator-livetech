@@ -70,6 +70,16 @@ export function GiftBench() {
    * rows; the bench never sends.
    */
   const [forceFree, setForceFree] = useState(false);
+  /**
+   * Play every tier on the centre stage, whatever its `display_mode` says.
+   *
+   * The tray shows a 300 px animation at 0.35 scale, which is right for a live
+   * screen and useless for judging the art: Stardust's wave and Moonlight's
+   * wink are a hundred pixels across there. This forces the fullscreen stage so
+   * a tray tier can be reviewed at the size it was drawn. Like the free toggle,
+   * it rewrites this page's copy of the rows and nothing else.
+   */
+  const [forceFullscreen, setForceFullscreen] = useState(false);
   const [senderIndex, setSenderIndex] = useState(0);
   const [quantity, setQuantity] = useState(1);
   const [message, setMessage] = useState('');
@@ -99,8 +109,13 @@ export function GiftBench() {
   const sender = SENDERS[senderIndex];
 
   const tiers = useMemo(
-    () => (forceFree ? loadedTiers.map((tier) => ({ ...tier, price_stars: 0 })) : loadedTiers),
-    [loadedTiers, forceFree],
+    () =>
+      loadedTiers.map((tier) => ({
+        ...tier,
+        ...(forceFree ? { price_stars: 0 } : null),
+        ...(forceFullscreen ? { display_mode: 'fullscreen' as const } : null),
+      })),
+    [loadedTiers, forceFree, forceFullscreen],
   );
   const catalogueIsFree = allTiersFree(tiers);
 
@@ -345,6 +360,18 @@ export function GiftBench() {
               }`}
             >
               {forceFree ? '✓ จำลองราคา 0 (โหมดทดสอบ)' : 'จำลองราคา 0 (โหมดทดสอบ)'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setForceFullscreen((current) => !current)}
+              aria-pressed={forceFullscreen}
+              className={`col-span-2 min-h-11 rounded-xl border px-3 text-xs font-medium transition ${
+                forceFullscreen
+                  ? 'border-cyan-300/50 bg-cyan-400/15 text-cyan-100'
+                  : 'border-white/12 bg-white/[0.04] text-white/75 hover:bg-white/[0.08]'
+              }`}
+            >
+              {forceFullscreen ? '✓ บังคับเต็มจอทุกชั้น' : 'บังคับเต็มจอทุกชั้น'}
             </button>
             <Bench label="โหลดจากฐานข้อมูล" onClick={() => void loadFromDatabase()} wide />
           </div>

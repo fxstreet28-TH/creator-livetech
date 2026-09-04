@@ -1,230 +1,430 @@
 /*
- * Tier 04 — Nova (legendary, gold-purple). Fullscreen, ten seconds.
+ * Tier 04 — Nova.
  *
- * The most expensive gift on the board, so it gets the longest arc and the
- * only one with a real build: น้อง Aurum draws in, the light collapses onto it,
- * it goes off, and then it holds — because the whole point of a ten-second
- * animation is the beat AFTER the bang, when the sender's name is on screen and
- * the creator has time to react to it.
+ * A 1:1 port of `docs/gift-cards/aurum-live-tier04-nova.html`. The keyframes
+ * are that file's, character for character; every change is marked PORT.
  *
- * Master timeline:
+ *   PORT  `.playing X { animation: … infinite }` → `X { animation: … 1 forwards }`.
  *
- *    0-12%    fade in, small
- *   12-34%    the charge — glow tightens, mascot shrinks against it, rings
- *             contract inward
- *   34-40%    the burst: flash, rays out, two shockwaves
- *   40-58%    settle, mascot at full size with a halo
- *   58-88%    the hold — a slow breath, nothing else
- *   88-100%   out
+ *   PORT  `.trail` keeps `infinite alternate`. Its 0.18s flicker is NOT on the
+ *         master timeline — it is the meteor's fire, a texture running on its
+ *         own clock. Running it once would give the meteor one flicker and then
+ *         a frozen flame for the four seconds it is on screen.
  *
- * The contracting rings before the burst are what make it read as a nova rather
- * than a firework. Everything expanding the whole way is a firework.
+ *   PORT  The 45 sky dots are placed with a fixed-seed PRNG rather than
+ *         `Math.random()`, so the server and the client agree — see
+ *         `seededRandom` in ./types.ts.
+ *
+ * Timeline (from the reference's own header):
+ *     0.0–1.2s  ( 0–12%)   meteor appears, "!" alert, hero looks up
+ *     1.2–2.4s  (12–24%)   hero launches off Earth
+ *     2.4–3.6s  (24–36%)   charging: chest star glows, rings pulse
+ *     3.6–4.4s  (36–44%)   beam fires, meteor shakes and cracks
+ *     4.4–5.2s  (44–52%)   meteor shatters: flash + shards + shake
+ *     5.2–6.6s  (52–66%)   hero descends and lands back on Earth
+ *     6.6–10s   (66–100%)  hero pose, Earth glows, bubble
  */
 
 .stage {
+  --gold: #fbbf24;
+  --nova: #fde68a;
+  --bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
   position: relative;
   width: 300px;
   height: 300px;
-  isolation: isolate;
+  border-radius: 20px;
+  overflow: hidden;
+  background: radial-gradient(70% 50% at 50% 0%, rgba(168, 85, 247, 0.2), transparent 70%), #07052a;
 }
 
-.layer {
+.shake {
   position: absolute;
   inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
+  animation: shake var(--cycle) linear 1 forwards;
+}
+
+.sky {
+  position: absolute;
+  inset: 0;
   pointer-events: none;
-  user-select: none;
+}
+
+.dot {
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.danger {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(70% 70% at 50% 50%, transparent 55%, rgba(239, 68, 68, 0.45));
+  animation: danger var(--cycle) ease-in-out 1 forwards;
+}
+
+.earth {
+  position: absolute;
+  left: -50px;
+  top: 222px;
+  width: 400px;
+  height: 400px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 42% 18%, #5eead4 0%, #22a7c9 18%, #1d5fb8 40%, #123a8a 70%, #0b1f55 100%);
+  box-shadow:
+    0 -6px 30px rgba(94, 234, 212, 0.55),
+    0 0 60px rgba(34, 167, 201, 0.35),
+    inset 0 14px 30px rgba(255, 255, 255, 0.28);
+  animation: earthGlow var(--cycle) ease-in-out 1 forwards;
+}
+
+.earth::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background:
+    radial-gradient(ellipse 60px 30px at 35% 12%, rgba(74, 222, 128, 0.75), transparent 70%),
+    radial-gradient(ellipse 40px 22px at 62% 8%, rgba(74, 222, 128, 0.7), transparent 70%),
+    radial-gradient(ellipse 90px 40px at 80% 20%, rgba(74, 222, 128, 0.55), transparent 70%);
+}
+
+.earth::after {
+  content: '';
+  position: absolute;
+  inset: -10px;
+  border-radius: 50%;
+  border: 2px solid rgba(165, 243, 252, 0.35);
+  filter: blur(2px);
+}
+
+/* ---------- meteor ---------- */
+.meteor {
+  position: absolute;
+  left: 222px;
+  top: 58px;
+  width: 0;
+  height: 0;
+  transform: translate(150px, -150px);
+  will-change: transform, opacity;
+  animation: meteorFall var(--cycle) linear 1 forwards;
+}
+
+.rock {
+  position: absolute;
+  left: -26px;
+  top: -24px;
+  width: 52px;
+  height: 48px;
+  filter: drop-shadow(0 0 10px rgba(251, 146, 60, 0.8));
+}
+
+.trail {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 150px;
+  height: 34px;
+  transform-origin: left center;
+  transform: translateY(-50%) rotate(-45deg);
+  background: linear-gradient(
+    90deg,
+    rgba(255, 244, 190, 0.95),
+    rgba(251, 146, 60, 0.85) 25%,
+    rgba(239, 68, 68, 0.45) 60%,
+    transparent
+  );
+  border-radius: 50% 60% 60% 50%;
+  filter: blur(3px);
+  opacity: 0.9;
+  animation: trailFlicker 0.18s ease-in-out infinite alternate;
+}
+
+.crack {
+  opacity: 0;
+  animation: crack var(--cycle) steps(1, end) 1 forwards;
+}
+
+.fxAlert {
+  left: 222px;
+  top: 6px;
+  /* PORT: the reference's Inter, replaced by whatever the app is set in. */
+  font: 800 26px/1 inherit;
+  color: #fca5a5;
+  text-shadow: 0 0 10px #ef4444;
+  transform: translate(-50%, 0);
+  animation: alert var(--cycle) ease-in-out 1 forwards;
+}
+
+/* ---------- hero ---------- */
+.hero {
+  position: absolute;
+  left: 75px;
+  top: 81px;
+  width: 150px;
+  height: 150px;
+  transform-origin: 50% 94%;
+  will-change: transform;
+  animation: heroFlight var(--cycle) ease-in-out 1 forwards;
 }
 
 .body {
-  transform-origin: 50% 52%;
-  animation: novaBody var(--cycle) cubic-bezier(0.2, 0.9, 0.25, 1) 1 forwards;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  pointer-events: none;
+  filter: drop-shadow(0 0 10px rgba(6, 182, 212, 0.5));
 }
 
-.core {
+.charge {
   position: absolute;
-  inset: 22%;
+  left: 50.1%;
+  top: 66.4%;
+  width: 70px;
+  height: 70px;
   border-radius: 50%;
-  background: radial-gradient(circle, #ffffff 0%, #ffe2b0 38%, rgba(186, 108, 232, 0) 72%);
+  transform: translate(-50%, -50%) scale(0.2);
   opacity: 0;
-  animation: novaCore var(--cycle) ease-in-out 1 forwards;
-}
-
-/* The white-out at the moment of the burst. Short and never fully opaque —
-   this plays over live video, and a full-screen white flash is a photosensitive
-   hazard, not a flourish. */
-.flash {
-  position: absolute;
-  inset: -20%;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(255, 255, 255, 0.85) 0%, rgba(255, 226, 176, 0) 60%);
-  opacity: 0;
-  animation: novaFlash var(--cycle) ease-out 1 forwards;
-}
-
-.rays {
-  position: absolute;
-  inset: -18%;
-  border-radius: 50%;
-  /* REPEATING, not plain `conic-gradient`. A conic gradient whose last stop is
-     at 18deg does not tile — everything past it takes that stop's colour, which
-     is transparent — so the plain version renders exactly ONE spoke and reads
-     as a stray scratch across the mascot rather than a burst. */
-  background: repeating-conic-gradient(
-    from 0deg,
-    rgba(255, 226, 176, 0.85) 0deg 2.5deg,
-    rgba(255, 226, 176, 0) 2.5deg 18deg
-  );
-  mask-image: radial-gradient(circle, transparent 22%, #000 40%, transparent 78%);
-  -webkit-mask-image: radial-gradient(circle, transparent 22%, #000 40%, transparent 78%);
-  opacity: 0;
-  animation: novaRays var(--cycle) cubic-bezier(0.1, 0.8, 0.2, 1) 1 forwards;
+  pointer-events: none;
+  background: radial-gradient(circle, #fff 0%, rgba(253, 230, 138, 0.95) 22%, rgba(251, 191, 36, 0.55) 45%, transparent 70%);
+  filter: blur(1px);
+  will-change: transform, opacity;
+  animation: charge var(--cycle) ease-in-out 1 forwards;
 }
 
 .ring {
   position: absolute;
+  left: 50.1%;
+  top: 66.4%;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  border: 2px solid rgba(253, 230, 138, 0.9);
+  transform: translate(-50%, -50%) scale(0.2);
+  opacity: 0;
+  pointer-events: none;
+  box-shadow: 0 0 10px rgba(251, 191, 36, 0.7);
+  animation: ring var(--cycle) ease-out 1 forwards var(--rd);
+}
+
+/* beam: anchored at the chest, points to the meteor (dx 72, dy -62 → -40.7°, 95px) */
+.beam {
+  position: absolute;
+  left: 50.1%;
+  top: 66.4%;
+  width: 100px;
+  height: 18px;
+  transform-origin: left center;
+  transform: translateY(-50%) rotate(-40.7deg) scaleX(0);
+  opacity: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, #fff, rgba(253, 230, 138, 0.95) 30%, rgba(251, 191, 36, 0.85) 70%, rgba(168, 85, 247, 0.7));
+  border-radius: 9px;
+  filter: blur(0.6px) drop-shadow(0 0 12px rgba(251, 191, 36, 0.9));
+  animation: beam var(--cycle) ease-out 1 forwards;
+}
+
+.beam::after {
+  content: '';
+  position: absolute;
+  inset: 5px 0;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.fx {
+  position: absolute;
+  pointer-events: none;
+  opacity: 0;
+  will-change: transform, opacity;
+}
+
+.fxFlash {
+  inset: 0;
+  background: radial-gradient(circle at 222px 58px, #fff 0%, rgba(253, 230, 138, 0.9) 20%, rgba(251, 191, 36, 0.3) 45%, transparent 70%);
+  animation: flash var(--cycle) ease-out 1 forwards;
+}
+
+.fxShard {
+  left: 222px;
+  top: 58px;
+  width: 14px;
+  height: 12px;
+  transform: translate(-50%, -50%) scale(0);
+  animation: shard var(--cycle) ease-out 1 forwards;
+}
+
+.fxShard svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  filter: drop-shadow(0 0 4px rgba(251, 146, 60, 0.9));
+}
+
+.fxBubble {
   left: 50%;
-  top: 52%;
-  width: 140px;
-  height: 140px;
-  margin: -70px 0 0 -70px;
-  border-radius: 50%;
-  border: 2px solid rgba(255, 214, 168, 0.85);
-  opacity: 0;
-  animation: novaShock var(--cycle) cubic-bezier(0.1, 0.7, 0.3, 1) 1 forwards;
+  top: 10px;
+  margin-left: 8px;
+  transform: translate(-50%, 0) scale(0.8);
+  /* PORT: the app's own Thai face rather than Kanit over the network. */
+  font: 500 15px/1 inherit;
+  color: #1a0a3e;
+  background: #fff;
+  padding: 8px 12px;
+  border-radius: 14px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+  white-space: nowrap;
+  animation: bubble var(--cycle) var(--bounce) 1 forwards;
 }
 
-.ringLate {
-  animation-delay: calc(var(--cycle) * 0.045);
-  border-color: rgba(186, 108, 232, 0.7);
-}
-
-/* The pre-burst rings, travelling the other way. */
-.inward {
+.fxBubble::after {
+  content: '';
   position: absolute;
-  left: 50%;
-  top: 52%;
-  width: 300px;
-  height: 300px;
-  margin: -150px 0 0 -150px;
-  border-radius: 50%;
-  border: 2px solid rgba(255, 226, 176, 0.5);
+  left: 18px;
+  bottom: -7px;
+  border: 8px solid transparent;
+  border-top-color: #fff;
+  border-bottom: 0;
+}
+
+/* ---------- Master timeline ---------- */
+
+@keyframes meteorFall {
+  0%          { transform: translate(150px, -150px) rotate(0); opacity: 1; }
+  12%         { transform: translate(78px, -78px) rotate(20deg); }
+  36%         { transform: translate(8px, -8px) rotate(90deg); }
+  38%         { transform: translate(3px, -2px) rotate(95deg); }
+  40%         { transform: translate(-3px, 3px) rotate(98deg); }
+  42%         { transform: translate(3px, -2px) rotate(101deg); }
+  44%         { transform: translate(0, 0) rotate(104deg); opacity: 1; }
+  44.5%, 100% { transform: translate(0, 0) rotate(104deg); opacity: 0; }
+}
+
+@keyframes trailFlicker {
+  from { opacity: 0.75; transform: translateY(-50%) rotate(-45deg) scaleX(1); }
+  to   { opacity: 1; transform: translateY(-50%) rotate(-45deg) scaleX(1.12); }
+}
+
+@keyframes crack {
+  0%, 37%     { opacity: 0; }
+  38%         { opacity: 0.6; }
+  41%         { opacity: 1; }
+  44.5%, 100% { opacity: 0; }
+}
+
+@keyframes alert {
+  0%, 4%    { opacity: 0; transform: translate(-50%, 8px) scale(0.5); }
+  7%        { opacity: 1; transform: translate(-50%, 0) scale(1.2); }
+  9%        { transform: translate(-50%, 0) scale(1); }
+  11%       { transform: translate(-50%, 0) scale(1.15); }
+  14%       { transform: translate(-50%, 0) scale(1); }
+  20%, 100% { opacity: 0; transform: translate(-50%, -10px) scale(0.8); }
+}
+
+@keyframes danger {
+  0%, 8%    { opacity: 0; }
+  14%       { opacity: 0.7; }
+  20%       { opacity: 0.2; }
+  30%       { opacity: 0.6; }
+  44%       { opacity: 0.5; }
+  50%, 100% { opacity: 0; }
+}
+
+/* stand → look up → launch → hover (charging / firing) → drop → land squash → pose */
+@keyframes heroFlight {
+  0%, 6% { transform: translateY(0) scale(1); }
+  10%    { transform: translateY(0) scale(1.02, 0.97); }
+  12%    { transform: translateY(4px) scale(1.06, 0.9); }
+  20%    { transform: translateY(-64px) scale(1) rotate(-3deg); }
+  24%    { transform: translateY(-60px) rotate(0); }
+  34%    { transform: translateY(-66px) rotate(-6deg); }
+  36%    { transform: translateY(-58px) rotate(4deg); }
+  44%    { transform: translateY(-62px) rotate(2deg); }
+  52%    { transform: translateY(-70px) rotate(0); }
+  62%    { transform: translateY(-4px) scale(1); }
+  64%    { transform: translateY(3px) scale(1.1, 0.88); }
+  67%    { transform: translateY(-3px) scale(0.98, 1.03); }
+  70%    { transform: translateY(0) scale(1); }
+  86%    { transform: translateY(0) scale(1.02); }
+  100%   { transform: translateY(0) scale(1); }
+}
+
+@keyframes charge {
+  0%, 22% { opacity: 0; transform: translate(-50%, -50%) scale(0.2); }
+  27%     { opacity: 0.7; transform: translate(-50%, -50%) scale(0.6); }
+  30%     { opacity: 0.9; transform: translate(-50%, -50%) scale(0.9); }
+  33%     { opacity: 0.8; transform: translate(-50%, -50%) scale(1.1); }
+  36%     { opacity: 1; transform: translate(-50%, -50%) scale(1.6); }
+  37%     { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
+  44%     { opacity: 0.9; transform: translate(-50%, -50%) scale(1.2); }
+  48%     { opacity: 0; transform: translate(-50%, -50%) scale(0.4); }
+  70%     { opacity: 0; }
+  76%     { opacity: 0.35; transform: translate(-50%, -50%) scale(0.6); }
+  84%     { opacity: 0; transform: translate(-50%, -50%) scale(0.9); }
+  100%    { opacity: 0; }
+}
+
+@keyframes ring {
+  0%, 24%     { opacity: 0; transform: translate(-50%, -50%) scale(0.2); }
+  27%         { opacity: 1; }
+  34%         { opacity: 0; transform: translate(-50%, -50%) scale(1.8); }
+  34.1%, 100% { opacity: 0; }
+}
+
+@keyframes beam {
+  0%, 36%   { opacity: 0; transform: translateY(-50%) rotate(-40.7deg) scaleX(0); }
+  37.5%     { opacity: 1; transform: translateY(-50%) rotate(-40.7deg) scaleX(1); }
+  44%       { opacity: 1; transform: translateY(-50%) rotate(-40.7deg) scaleX(1) scaleY(1.3); }
+  47%, 100% { opacity: 0; transform: translateY(-50%) rotate(-40.7deg) scaleX(1) scaleY(0.2); }
+}
+
+@keyframes flash {
+  0%, 43.5% { opacity: 0; }
+  44.5%     { opacity: 1; }
+  52%, 100% { opacity: 0; }
+}
+
+@keyframes shard {
+  0%, 44%   { opacity: 0; transform: translate(-50%, -50%) scale(0) rotate(0); }
+  46%       { opacity: 1; transform: translate(calc(-50% + var(--tx) * 0.3), calc(-50% + var(--ty) * 0.3)) scale(1.2) rotate(120deg); }
+  56%, 100% { opacity: 0; transform: translate(calc(-50% + var(--tx)), calc(-50% + var(--ty) + 30px)) scale(0.4) rotate(420deg); }
+}
+
+@keyframes shake {
+  0%, 43.5%, 49%, 63.5%, 66%, 100% { transform: translate(0, 0); }
+  44.5% { transform: translate(-4px, 3px); }
+  45.5% { transform: translate(4px, -3px); }
+  46.5% { transform: translate(-3px, 2px); }
+  47.5% { transform: translate(2px, 2px); }
+  64.2% { transform: translate(-2px, 1px); }
+  64.8% { transform: translate(2px, -1px); }
+}
+
+@keyframes earthGlow {
+  0%, 60% { filter: brightness(1); }
+  66%     { filter: brightness(1.35); }
+  74%     { filter: brightness(1.1); }
+  86%     { filter: brightness(1.25); }
+  100%    { filter: brightness(1); }
+}
+
+@keyframes bubble {
+  0%, 68%  { opacity: 0; transform: translate(-50%, 6px) scale(0.8); }
+  73%      { opacity: 1; transform: translate(-50%, 0) scale(1); }
+  86%      { opacity: 1; transform: translate(-50%, 0) scale(1); }
+  92%, 100%{ opacity: 0; transform: translate(-50%, -6px) scale(0.95); }
+}
+
+/* Reduced motion — the reference's own rules: hero standing on Earth, no
+   meteor, nothing moving. */
+.still * {
+  animation: none !important;
+}
+
+.still .meteor {
   opacity: 0;
-  animation: novaCharge var(--cycle) ease-in 1 forwards;
 }
-
-.inwardLate { animation-delay: calc(var(--cycle) * 0.07); }
-
-.halo {
-  position: absolute;
-  inset: 6%;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(186, 108, 232, 0) 44%, rgba(255, 190, 120, 0.35) 62%, rgba(186, 108, 232, 0) 78%);
-  opacity: 0;
-  animation: novaHalo var(--cycle) ease-in-out 1 forwards;
-}
-
-.sparkle {
-  position: absolute;
-  width: 11px;
-  height: 11px;
-  margin: -5.5px 0 0 -5.5px;
-  border-radius: 50%;
-  background: radial-gradient(circle, #ffffff 0%, #ffbe78 44%, rgba(186, 108, 232, 0) 74%);
-  opacity: 0;
-  animation: novaSpark var(--cycle) ease-out 1 forwards;
-  /* Thrown at the burst, not before it. */
-  animation-delay: calc(var(--cycle) * (0.34 + var(--delay) * 0.16));
-}
-
-@keyframes novaBody {
-  0% { opacity: 0; transform: scale(0.55) rotate(-8deg); }
-  12% { opacity: 1; transform: scale(0.9) rotate(0deg); }
-  30% { transform: scale(0.72) rotate(3deg); }
-  34% { transform: scale(0.66) rotate(0deg); }
-  40% { transform: scale(1.28) rotate(-3deg); }
-  48% { transform: scale(1) rotate(0deg); }
-  58% { transform: scale(1.02); }
-  72% { transform: scale(0.99) translateY(-2%); }
-  88% { transform: scale(1.01) translateY(0); opacity: 1; }
-  100% { transform: scale(0.86) translateY(-18%); opacity: 0; }
-}
-
-@keyframes novaCore {
-  0%, 8% { opacity: 0; transform: scale(1.6); }
-  30% { opacity: 0.9; transform: scale(0.55); }
-  34% { opacity: 1; transform: scale(0.4); }
-  40% { opacity: 1; transform: scale(1.5); }
-  58% { opacity: 0.5; transform: scale(1); }
-  88% { opacity: 0.35; transform: scale(1.02); }
-  100% { opacity: 0; transform: scale(1.2); }
-}
-
-@keyframes novaFlash {
-  0%, 33% { opacity: 0; transform: scale(0.4); }
-  37% { opacity: 1; transform: scale(1); }
-  46% { opacity: 0; transform: scale(1.35); }
-  100% { opacity: 0; transform: scale(1.35); }
-}
-
-@keyframes novaRays {
-  0%, 32% { opacity: 0; transform: rotate(0deg) scale(0.3); }
-  40% { opacity: 0.95; transform: rotate(18deg) scale(1); }
-  58% { opacity: 0.4; transform: rotate(34deg) scale(1.08); }
-  88% { opacity: 0.22; transform: rotate(62deg) scale(1.1); }
-  100% { opacity: 0; transform: rotate(72deg) scale(1.15); }
-}
-
-@keyframes novaShock {
-  0%, 33% { opacity: 0; transform: scale(0.15); }
-  38% { opacity: 1; transform: scale(0.6); }
-  60% { opacity: 0; transform: scale(2.6); }
-  100% { opacity: 0; transform: scale(2.6); }
-}
-
-@keyframes novaCharge {
-  0%, 10% { opacity: 0; transform: scale(1.5); }
-  16% { opacity: 0.75; transform: scale(1.2); }
-  33% { opacity: 0.2; transform: scale(0.25); }
-  34% { opacity: 0; transform: scale(0.2); }
-  100% { opacity: 0; transform: scale(0.2); }
-}
-
-@keyframes novaHalo {
-  0%, 40% { opacity: 0; transform: scale(0.8); }
-  52% { opacity: 0.9; transform: scale(1.04); }
-  72% { opacity: 0.6; transform: scale(1); }
-  88% { opacity: 0.5; transform: scale(1.03); }
-  100% { opacity: 0; transform: scale(1.12); }
-}
-
-@keyframes novaSpark {
-  0% { opacity: 0; transform: translate(0, 0) scale(0); }
-  8% { opacity: 1; transform: translate(calc(var(--dx) * 0.4), calc(var(--dy) * 0.4)) scale(var(--scale)); }
-  56% { opacity: 0.6; transform: translate(calc(var(--dx) * 0.9), calc(var(--dy) * 0.9)) scale(calc(var(--scale) * 0.65)); }
-  100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(0.1); }
-}
-
-.still .body,
-.still .core,
-.still .flash,
-.still .rays,
-.still .ring,
-.still .inward,
-.still .halo {
-  animation: none;
-  transform: none;
-}
-
-.still .body { opacity: 1; }
-.still .core { opacity: 0.7; }
-.still .halo { opacity: 0.55; }
-.still .rays { opacity: 0.3; }
-/* The flash and the shockwaves are the parts a photosensitive viewer must not
-   get. They are removed rather than frozen. */
-.still .flash,
-.still .ring,
-.still .inward { opacity: 0; }
-.still .sparkle { display: none; }
