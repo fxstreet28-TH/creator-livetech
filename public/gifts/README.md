@@ -1,51 +1,35 @@
-# น้อง Aurum gift mascots
+# น้อง Aurum gift art
 
-Layer art for the live gift overlay (`components/live/gifts/animations/`).
+The layer art behind the live gift overlay (`components/live/gifts/animations/`).
 
-## Everything in here is a PLACEHOLDER
+Everything here is the real art, delivered by the CEO and committed unchanged.
+The four `.html` gift cards it was cut from live in `docs/gift-cards/` — those
+are the **authority** for the animations: the components in `animations/` are a
+1:1 port of their keyframes, so a change to a timing here should start there.
 
-The brief for this feature listed four reference animations under
-`docs/gift-cards/` and a set of mascot PNGs under `public/gifts/`, to be
-committed before the work started. Neither exists in this repository, on this
-branch or in its history — so these files were generated to stand in for them,
-and the four tier animations were authored from the written descriptions rather
-than ported from the reference HTML.
+## The contract the components depend on
 
-They are deliberately simple: a rounded star with a face and a glowing antenna,
-tinted per rarity. They are the right size, in the right places, split into the
-right layers, so **replacing them is a file copy and nothing else** — no code
-change, no rebuild of the animation components.
+Every stage is a 300 × 300 box and every full-frame layer is drawn at
+`inset: 0` with `object-fit: contain`, so a layer's position on screen comes
+from its own transparent padding, not from CSS offsets. The art is authored at
+640 × 640 (the tier-03 tail at the original 1024 frame's proportions) and
+scales into that box; swapping in a file with different padding moves the
+mascot without any code changing.
 
-## The contract the code depends on
-
-| Path | Used by | Notes |
+| Path | Component | What the code assumes about it |
 |---|---|---|
-| `tier-01/body.png` | `Tier01Stardust` | |
-| `tier-01/arm.png` | `Tier01Stardust` | Waves. Rotated about its own **right edge**, so the shoulder must sit at the right of the image. |
-| `tier-02/body.png` | `Tier02Moonlight` | |
-| `tier-02/eyelid.png` | `Tier02Moonlight` | Blinks. Scaled on Y about its **top edge**; must cover the body's eyes at scale 1. |
-| `tier-03/body.png` | `Tier03Comet` | |
-| `tier-03/tail.png` | `Tier03Comet` | Streaks. Points **left**, with the hot end at the right where the mascot sits. |
-| `tier-04/body.png` | `Tier04Nova` | |
-| `tier-05/body.png` | `TierGenericFloat` | Tier is `TBD` until the CEO names it. |
-| `tier-06/body.png` | `TierGenericFloat` | |
-| `tier-07/body.png` | `TierGenericFloat` | |
+| `tier-01/body.png` | `Tier01Stardust` | Full frame. Rises from below the stage. |
+| `tier-01/arm.png` | `Tier01Stardust` | Full frame, aligned to the body. Waves — rotated about the shoulder at `68.4% 63.8%` of the stage. |
+| `tier-02/body.png` | `Tier02Moonlight` | Full frame. Pirouettes in 3D. |
+| `tier-02/eyelid.png` | `Tier02Moonlight` | A 27 × 27 skin patch, drawn centred on the right eye at `59.8% 41.5%`. Toggled opaque for the wink — it does not scale. |
+| `tier-03/body.png` | `Tier03Comet` | Drawn at `109.3px, 23.4px` sized `210.4px`, which is where the body sits inside the tail's original 1024 frame. |
+| `tier-03/tail.png` | `Tier03Comet` | Full frame: the comet **with** the mascot in it. Fades out on landing, leaving `body.png` standing. |
+| `tier-04/body.png` | `Tier04Nova` | Drawn 150 × 150 at `75px, 81px` — standing on the CSS Earth. |
+| `tier-05/`, `tier-06/`, `tier-07/` | `TierVideoClip` | `clip.mp4` + `clip.webm` + `poster.jpg`. No PNG: these tiers are rendered video, not CSS. |
 
-- **300 × 300 px, PNG with alpha.** The stage is a 300 × 300 box and every
-  layer is drawn at `inset: 0`, so a layer's position comes from its own
-  transparent padding rather than from CSS offsets. Art at a different size
-  will still render, scaled to the box — but the layers will no longer line up
-  with each other.
-- **The mascot occupies roughly the centre 220 px.** The margin is not waste:
-  the glow, the antenna and the tier-01 arm swing into it.
-- Keep files small. Each one is fetched during a broadcast, on a phone, while a
-  video is playing — these placeholders are 13–16 KB and that is the right
-  order of magnitude.
+## Weight
 
-## What is missing, for whoever picks this up
-
-Tiers 05–07 have no name, no subtitle and no animation of their own. They are
-seeded as `TBD` in `gift_tiers` and all three render `TierGenericFloat`.
-Naming them is an `UPDATE` on that table; giving one its own animation means
-adding a component and one line in `animations/index.ts` — the DB's
-`animation_key` is what selects it, so nothing else has to change.
+The PNGs are 14 KB–340 KB and are already optimally compressed (re-encoding
+them at maximum PNG effort makes them *larger*). They are fetched once per
+device and cached; the video clips are the ones with a real cost, and their
+budget is documented in `docs/live-gifts.md`.
