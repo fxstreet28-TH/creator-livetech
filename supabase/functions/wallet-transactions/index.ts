@@ -7,7 +7,8 @@
  *   limit  — default 50, clamped to 100
  *   offset — default 0
  *   type   — optional transaction_type filter ('purchase' | 'subscribe' |
- *            'ppv_unlock' | 'ppv_message' | 'tip' | 'buyback' | 'expiration')
+ *            'ppv_unlock' | 'ppv_message' | 'tip' | 'live_gift' | 'buyback' |
+ *            'expiration')
  *
  * Reads go through userClient() so transactions_select_own enforces
  * ownership in the database.
@@ -32,6 +33,7 @@ const VALID_TYPES = new Set([
   'ppv_unlock',
   'ppv_message',
   'tip',
+  'live_gift',
   'buyback',
   'expiration',
 ]);

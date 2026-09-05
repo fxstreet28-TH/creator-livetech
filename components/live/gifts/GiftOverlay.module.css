@@ -1,0 +1,30 @@
+/*
+ * The overlay root.
+ *
+ * Absolute rather than fixed: it is mounted inside the player's own
+ * relatively-positioned container, so it covers the VIDEO and nothing else. A
+ * fixed layer would sit over the chat panel, the page header, and — the one
+ * that matters — the end-live confirmation dialog, which is the last thing a
+ * creator should be unable to reach because a 10-second Nova is playing.
+ *
+ * z-index 11 puts it above the floating reaction layer (10) and the LIVE / view
+ * count chips, and below EndLiveConfirm (50) and the chat input.
+ *
+ * `overflow: hidden` clips a mascot that flies off the edge — a gift stage is
+ * 300px and animations translate well past their own box.
+ */
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 11;
+  overflow: hidden;
+  /* Inert, all the way down. Every child re-states this rather than relying on
+     inheritance, because `pointer-events` is not inherited through an element
+     that sets it to `auto`. */
+  pointer-events: none;
+  /* Not a paint containment hint but a stacking one: the fullscreen backdrop
+     and the tray must stack against each other, not against the player's own
+     children. */
+  isolation: isolate;
+}

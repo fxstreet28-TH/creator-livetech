@@ -15,14 +15,18 @@
 
 import { useCallback, useState } from 'react';
 import Link from 'next/link';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Gift } from 'lucide-react';
+import { AnimatePresence } from 'framer-motion';
 import { useDashboardUser } from '@/lib/hooks/useDashboardUser';
+import { useGiftTiers } from '@/lib/hooks/useGiftTiers';
 import { useLiveChannel } from '@/lib/hooks/useLiveChannel';
 import { useLiveWatch } from '@/lib/hooks/useLiveWatch';
-import { PrismStar } from '@/components/star/PrismStar';
+import { useWalletSummary } from '@/lib/hooks/useWalletSummary';
 import { CreatorInlineCard } from '@/components/viewer/CreatorInlineCard';
-import { DeferredCta } from '@/components/viewer/DeferredCta';
 import { ViewerPageShell } from '@/components/viewer/ViewerPageShell';
+import { FeedbackToast, type FeedbackToastState } from '@/components/feedback/FeedbackToast';
+import { GiftDrawer } from './gifts/GiftDrawer';
+import { GiftOverlay } from './gifts/GiftOverlay';
 import {
   creatorDisplayName,
   creatorHandleLabel,
@@ -36,8 +40,6 @@ import { LiveAccessLockCard } from './LiveAccessLockCard';
 import { LiveChat } from './LiveChat';
 import { LiveKitLivePlayer } from './LiveKitLivePlayer';
 import { useElapsedSeconds } from './LiveStatsBar';
-
-const TIP_NOTICE = 'ระบบทิปจะเปิดใช้งานเร็ว ๆ นี้';
 
 export function LiveWatchView({ sessionId }: { sessionId: string }) {
   const { session, creator, watch, loading, refresh } = useLiveWatch(sessionId);
@@ -69,6 +71,32 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
     displayName: displayName || 'ผู้ชม',
     creatorUserId: watchable ? watch.creatorUserId : null,
   });
+
+  /**
+   * Gifting. All of it above the early returns, because hooks cannot be
+   * conditional — the catalogue read is gated on the drawer being opened rather
+   * than on the page state, so a viewer who never gifts never pays for it.
+   */
+  const [giftOpen, setGiftOpen] = useState(false);
+  const [toast, setToast] = useState<FeedbackToastState | null>(null);
+  const giftTiers = useGiftTiers(giftOpen);
+  const wallet = useWalletSummary();
+  /**
+   * The balance after the most recent send.
+   *
+   * `live-send-gift` returns it, and it is fresher than useWalletSummary's copy
+   * — which was read when the page loaded and has no reason to know a star was
+   * just spent. Refetching the whole summary per gift would be a round trip for
+   * a number the send already answered with.
+   */
+  const [balanceAfterSend, setBalanceAfterSend] = useState<number | null>(null);
+
+  const handleSent = useCallback((walletBalance: number) => {
+    setBalanceAfterSend(walletBalance);
+    setToast({ message: 'ส่งของขวัญแล้ว 🎁', key: Date.now() });
+  }, []);
+
+  const dismissToast = useCallback(() => setToast(null), []);
 
   if (loading) {
     return (
@@ -152,6 +180,10 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
   const playerOverlay = (
     <>
       <FloatingReactionsLayer reactions={channel.reactions} />
+      {/* Over the video, under the reaction rail. Inert throughout, so the
+          button below and the player's own controls stay reachable while a
+          ten-second Nova is playing. */}
+      <GiftOverlay latestGift={channel.latestGift} resetKey={sessionId} />
       <EmojiReactionButton
         onReact={channel.sendReaction}
         enabled={channel.connected}
@@ -159,6 +191,8 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
       />
     </>
   );
+
+  const balance = balanceAfterSend ?? (wallet.loading ? null : wallet.balance);
 
   return (
     <main className="flex h-dvh flex-col overflow-hidden bg-[#0a0a15] text-white">
@@ -219,22 +253,44 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
             </div>
           )}
 
-          <DeferredCta
-            className="shrink-0"
-            variant="secondary"
-            label="ให้ดาว"
-            notice={TIP_NOTICE}
-            icon={<PrismStar size={16} showChargeEffects={false} animated={false} aria-label="" />}
-          />
-
+          {/* The "ให้ดาว" placeholder that used to sit here is gone: tipping is
+              live now, and it lives in the chat input row where the viewer's
+              thumb already is rather than as a card above the conversation. */}
           <LiveChat
             entries={channel.chat}
             onSend={channel.sendChat}
             status={channel.status}
             className="min-h-48 flex-1"
+            action={
+              <button
+                type="button"
+                onClick={() => setGiftOpen(true)}
+                aria-label="ส่งของขวัญ"
+                className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border border-amber-300/35 bg-amber-400/10 px-3 text-xs font-bold text-amber-100 transition hover:bg-amber-400/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+              >
+                <Gift size={16} aria-hidden />
+                <span className="hidden sm:inline">ส่งของขวัญ</span>
+              </button>
+            }
           />
         </div>
       </div>
+
+      <GiftDrawer
+        open={giftOpen}
+        onClose={() => setGiftOpen(false)}
+        sessionId={sessionId}
+        tiers={giftTiers.tiers}
+        tiersError={giftTiers.error}
+        balance={balance}
+        onSent={handleSent}
+      />
+
+      {/* The repo's one toast, reused rather than a second one added — the same
+          reason LiveChat reports a failed send inside its own box. */}
+      <AnimatePresence>
+        {toast && <FeedbackToast key={toast.key} toast={toast} onDismiss={dismissToast} />}
+      </AnimatePresence>
     </main>
   );
 }

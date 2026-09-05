@@ -43,6 +43,7 @@
  */
 
 import type { AccessLevel } from '@/lib/creator/types';
+import type { GiftRarity } from './gifts';
 
 export type { AccessLevel };
 
@@ -249,4 +250,14 @@ export interface LiveChatEntry {
   isCreator: boolean;
   /** True when we sent it. */
   isSelf: boolean;
+  /**
+   * Set on the system line a gift writes, to the tier's rarity.
+   *
+   * A gift line is not chat — nobody typed it, and it is tinted rather than
+   * bubbled — but it belongs in the same list because it happened at the same
+   * moment as everything around it, and a separate feed beside the chat would
+   * have to be scrolled separately to read one conversation. Absent on a real
+   * chat line, which is how LiveChat tells them apart.
+   */
+  giftRarity?: GiftRarity;
 }

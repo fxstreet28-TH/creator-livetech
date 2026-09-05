@@ -27,6 +27,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Send } from 'lucide-react';
 import { MAX_CHAT_LENGTH } from '@/lib/live/constants';
+import { rarityStyle } from '@/lib/live/gifts';
 import type { LiveChannelStatus } from '@/lib/live/realtime';
 import type { LiveChatEntry } from '@/lib/live/types';
 import { ChatEmojiPicker } from './ChatEmojiPicker';
@@ -44,10 +45,20 @@ interface LiveChatProps {
    * the server rejected looks exactly like one that is about to work.
    */
   status: LiveChannelStatus;
+  /**
+   * Rendered in the input row, between the emoji picker and the text field.
+   *
+   * The gift button lives here rather than over the video because that is the
+   * row a viewer's thumb is already in — and because a control floating on the
+   * player would have to be `pointer-events: auto` inside an overlay that is
+   * deliberately inert. The panel takes a slot rather than importing the drawer
+   * so it stays usable on the creator's screen, which has no gift button.
+   */
+  action?: React.ReactNode;
   className?: string;
 }
 
-export function LiveChat({ entries, onSend, status, className = '' }: LiveChatProps) {
+export function LiveChat({ entries, onSend, status, action, className = '' }: LiveChatProps) {
   const enabled = status === 'connected';
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -158,6 +169,7 @@ export function LiveChat({ entries, onSend, status, className = '' }: LiveChatPr
       >
         <div className="flex items-end gap-2">
           <ChatEmojiPicker onSelect={insertEmoji} disabled={!enabled} />
+          {action}
 
           <input
             ref={inputRef}
@@ -194,6 +206,24 @@ export function LiveChat({ entries, onSend, status, className = '' }: LiveChatPr
 }
 
 function ChatBubble({ entry }: { entry: LiveChatEntry }) {
+  /**
+   * A gift line is a system line, not a message: nobody typed it, the text is
+   * built from the broadcast event, and it carries the tier's rarity tint. It
+   * lives in this list rather than in a feed of its own because it happened at
+   * the same moment as the conversation around it — a separate panel would have
+   * to be read separately to follow one thread.
+   */
+  if (entry.giftRarity) {
+    const rarity = rarityStyle(entry.giftRarity);
+    return (
+      <p
+        className={`rounded-xl border px-3 py-2 text-[13px] font-medium leading-snug ${rarity.surface} ${rarity.text}`}
+      >
+        {entry.text}
+      </p>
+    );
+  }
+
   return (
     <div
       className={`rounded-xl px-3 py-2 ${

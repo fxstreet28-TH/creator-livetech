@@ -71,6 +71,8 @@ export type StarTransactionType =
   | 'ppv_unlock'
   | 'ppv_message'
   | 'tip'
+  /** A น้อง Aurum gift sent during a live session. reference_id is live_gifts.id. */
+  | 'live_gift'
   | 'buyback'
   | 'expiration';
 

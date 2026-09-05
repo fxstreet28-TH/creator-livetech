@@ -1,0 +1,251 @@
+/*
+ * Tier 01 — Stardust.
+ *
+ * A 1:1 port of `docs/gift-cards/aurum-live-tier01-stardust.html`. The
+ * keyframes below are that file's, character for character; the only changes
+ * are the ones the overlay requires and each is marked PORT.
+ *
+ *   PORT  `.playing X { animation: … infinite }` → `X { animation: … 1 forwards }`
+ *         Nothing gates the start: the component mounts when the gift lands and
+ *         unmounts when the queue retires it, so `.playing` had no work to do.
+ *         `infinite` is wrong here for a reason beyond taste — a looping
+ *         overlay would still be waving when the next gift arrived.
+ *
+ *   PORT  The reference writes `.playing .playing .mascot-arm`, a doubled
+ *         selector that matches nothing, so the wave never plays in the card
+ *         as shipped. Corrected here; `docs/live-gifts.md` records it.
+ *
+ *   PORT  `--cycle` is inline from `gift_tiers.duration_ms` instead of the
+ *         reference's fixed 4.5s. The seeded row is 4500, so the timing is
+ *         identical until someone changes it — and when they do, every layer
+ *         stretches together because they all read the same variable.
+ *
+ * The percentage marks are shared by every layer. That is the whole trick: two
+ * layers with independent durations drift apart within a couple of seconds and
+ * no tuning fixes it, because the drift is per-frame rounding rather than a
+ * wrong number.
+ */
+
+.stage {
+  --mouth-x: 50%;
+  --mouth-y: 51%;
+  --antenna-x: 50%;
+  --antenna-y: 9%;
+  --shoulder-x: 68.4%;
+  --shoulder-y: 63.8%;
+  --gold: #fbbf24;
+  --cyan: #06b6d4;
+  --bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+  position: relative;
+  width: 300px;
+  height: 300px;
+  overflow: hidden; /* the mascot rises from below this edge */
+  border-radius: 20px;
+}
+
+.mascotWrap {
+  position: absolute;
+  inset: 0;
+  transform: translateY(100%);
+  opacity: 0;
+  transform-origin: 50% 90%;
+  will-change: transform, opacity;
+  animation: mascotBody var(--cycle) ease-out 1 forwards;
+}
+
+.mascot {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  filter: drop-shadow(0 0 10px rgba(6, 182, 212, 0.55)) drop-shadow(0 0 26px rgba(6, 182, 212, 0.25));
+  pointer-events: none;
+}
+
+.mascotArm {
+  position: absolute;
+  inset: 0;
+  transform-origin: var(--shoulder-x) var(--shoulder-y);
+  will-change: transform;
+  animation: armWave var(--cycle) ease-in-out 1 forwards;
+}
+
+/* overlays live inside .mascotWrap so they move with the body */
+.fx {
+  position: absolute;
+  pointer-events: none;
+  opacity: 0;
+  will-change: transform, opacity;
+}
+
+.fxMouth {
+  left: var(--mouth-x);
+  top: var(--mouth-y);
+  width: 70px;
+  height: 40px;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(ellipse, rgba(255, 255, 255, 0.55), rgba(251, 191, 36, 0.25) 45%, transparent 70%);
+  filter: blur(4px);
+  animation: mouthGlow var(--cycle) ease-in-out 1 forwards;
+}
+
+.fxAntenna {
+  left: var(--antenna-x);
+  top: var(--antenna-y);
+  width: 46px;
+  height: 46px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 240, 170, 0.95), rgba(251, 191, 36, 0.55) 40%, transparent 70%);
+  filter: blur(2px);
+  animation: antennaGlow var(--cycle) ease-in-out 1 forwards;
+}
+
+.fxBang {
+  left: 50%;
+  top: -4px;
+  font: 700 34px/1 inherit;
+  color: var(--gold);
+  text-shadow: 0 0 12px rgba(251, 191, 36, 0.9);
+  transform: translate(-50%, 0) scale(0.3);
+  animation: bang var(--cycle) var(--bounce) 1 forwards;
+}
+
+.fxBubble {
+  left: 50%;
+  top: 14px;
+  transform: translate(-50%, 0) scale(0.8);
+  /* PORT: the reference loads Kanit from Google Fonts. An overlay that fetches
+     a webfont mid-broadcast would render the bubble blank until it lands, so
+     this inherits the app's own Thai face. */
+  font: 500 17px/1 inherit;
+  color: #1a0a3e;
+  background: #fff;
+  padding: 8px 14px;
+  border-radius: 14px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+  margin-left: 58px;
+  white-space: nowrap;
+  animation: bubble var(--cycle) var(--bounce) 1 forwards;
+}
+
+.fxBubble::after {
+  content: '';
+  position: absolute;
+  left: 14px;
+  bottom: -7px;
+  border: 8px solid transparent;
+  border-top-color: #fff;
+  border-bottom: 0;
+}
+
+/* sparkles — position via --tx / --ty set inline */
+.fxSpark {
+  left: 50%;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  transform: translate(-50%, -50%) scale(0);
+  color: var(--gold);
+  animation: spark var(--cycle) ease-out 1 forwards;
+}
+
+/* PORT: the reference selects these with `:nth-child(even)`, which counts the
+   two <img> layers ahead of them. Colouring by index in the component says the
+   same thing without depending on where the sparks sit among their siblings. */
+.fxSparkAlt {
+  color: var(--cyan);
+}
+
+.fxSpark svg {
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 0 4px currentColor);
+}
+
+/* ---------- Master timeline (one --cycle) ---------- */
+
+/* body: peek → bounce/pop (eye-widen stand-in) → tilt during wave → breathe */
+@keyframes mascotBody {
+  0%    { transform: translateY(100%); opacity: 0; }
+  8.9%  { transform: translateY(55%); opacity: 1; }
+  17.8% { transform: translateY(0); }
+  20.5% { transform: translateY(-8px) scale(1.06); }
+  24%   { transform: translateY(0) scale(1); }
+  28.9% { transform: rotate(0); }
+  33%   { transform: rotate(3deg); }
+  42%   { transform: rotate(-3deg); }
+  51.1% { transform: rotate(0); }
+  66.7% { transform: scale(1); }
+  83.3% { transform: scale(1.02); }
+  100%  { transform: scale(1); opacity: 1; }
+}
+
+@keyframes bang {
+  0%, 17.8%   { opacity: 0; transform: translate(-50%, 6px) scale(0.3); }
+  20.5%       { opacity: 1; transform: translate(-50%, -6px) scale(1.2); }
+  24%         { opacity: 1; transform: translate(-50%, -6px) scale(1); }
+  28.9%, 100% { opacity: 0; transform: translate(-50%, -18px) scale(0.9); }
+}
+
+/* arm hangs at rest (0deg); negative = raises up to the right */
+@keyframes armWave {
+  0%, 27%   { transform: rotate(0); }
+  31%       { transform: rotate(-105deg); }
+  34.5%     { transform: rotate(-125deg); }
+  38%       { transform: rotate(-88deg); }
+  41.5%     { transform: rotate(-125deg); }
+  45%       { transform: rotate(-88deg); }
+  48.5%     { transform: rotate(-115deg); }
+  53%, 100% { transform: rotate(0); }
+}
+
+@keyframes bubble {
+  0%, 51.1% { opacity: 0; transform: translate(-50%, 6px) scale(0.8); }
+  57.8%     { opacity: 1; transform: translate(-50%, 0) scale(1); }
+  66.7%     { opacity: 1; transform: translate(-50%, 0) scale(1); }
+  73%, 100% { opacity: 0; transform: translate(-50%, -6px) scale(0.95); }
+}
+
+@keyframes mouthGlow {
+  0%, 51.1% { opacity: 0; }
+  58%       { opacity: 0.9; }
+  70%, 100% { opacity: 0; }
+}
+
+@keyframes antennaGlow {
+  0%, 17.8% { opacity: 0; }
+  20%       { opacity: 0.35; }
+  51.1%     { opacity: 0.35; }
+  58%       { opacity: 1; }
+  75%       { opacity: 0.3; }
+  90%       { opacity: 0.5; }
+  100%      { opacity: 0.3; }
+}
+
+@keyframes spark {
+  0%, 51.1%   { opacity: 0; transform: translate(-50%, -50%) scale(0) rotate(0); }
+  55%         { opacity: 1; transform: translate(calc(-50% + var(--tx) * 0.35), calc(-50% + var(--ty) * 0.35)) scale(1.1) rotate(60deg); }
+  66.7%, 100% { opacity: 0; transform: translate(calc(-50% + var(--tx)), calc(-50% + var(--ty))) scale(0.2) rotate(200deg); }
+}
+
+/*
+ * Reduced motion — the reference's own rules.
+ *
+ * The mascot still appears, at rest. A gift is a payment, and the confirmation
+ * that it landed is not decoration to be switched off; only the movement goes.
+ */
+.still .mascotWrap {
+  animation: none;
+  transform: none;
+  opacity: 1;
+}
+
+.still .mascotArm {
+  animation: none;
+}
+
+.still .fx {
+  animation: none;
+  opacity: 0;
+}

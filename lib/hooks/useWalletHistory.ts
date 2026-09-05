@@ -48,6 +48,23 @@ export interface LedgerEntry {
   type: string;
   starsDelta: number;
   createdAt: string;
+  /**
+   * Set only on a `live_gift` row, and only when the gift it references could
+   * be resolved.
+   *
+   * The ledger row carries a `reference_id` and a `creator_id` and nothing
+   * else — enough to know a gift was sent, not enough to say WHICH gift or to
+   * WHOM. Those two facts live in `live_gifts` and `creators`, and both are
+   * readable by the sender under their own RLS, so this is one extra query
+   * rather than a widened ledger table. Absent when the gift row is gone (a
+   * cascaded session delete) — the line then falls back to the plain "ส่งของขวัญ"
+   * label rather than rendering a half-built sentence.
+   */
+  gift?: {
+    name_en: string;
+    quantity: number;
+    creatorName: string | null;
+  };
 }
 
 export interface WalletHistory {
@@ -181,15 +198,64 @@ export function useWalletHistory(): WalletHistory {
         console.error('[useWalletHistory] ledger', ledgerRes.error);
         failures.push('ประวัติการใช้งาน');
       } else {
-        setLedger(
-          (ledgerRes.data.transactions ?? [])
-            .map((row) => ({
+        const rows = (ledgerRes.data.transactions ?? [])
+          .map((row) => ({
+            entry: {
               id: String(row.id),
               type: String(row.transaction_type),
               starsDelta: Number(row.stars_delta),
               createdAt: String(row.created_at),
-            }))
-            .filter((entry) => !DUPLICATED_LEDGER_TYPES.has(entry.type)),
+            } satisfies LedgerEntry,
+            referenceId: typeof row.reference_id === 'string' ? row.reference_id : null,
+          }))
+          .filter(({ entry }) => !DUPLICATED_LEDGER_TYPES.has(entry.type));
+
+        /**
+         * Resolve the gift rows in ONE query, not one per line.
+         *
+         * A wallet page with thirty gift spends on it would otherwise be thirty
+         * round trips, and the join is the same either way: `live_gifts` is
+         * readable by its sender, and the two embedded selects follow the
+         * foreign keys the migration declared.
+         */
+        const giftIds = rows
+          .filter(({ entry }) => entry.type === 'live_gift')
+          .map(({ referenceId }) => referenceId)
+          .filter((id): id is string => id !== null);
+
+        const giftsById = new Map<string, NonNullable<LedgerEntry['gift']>>();
+        if (giftIds.length > 0) {
+          const { data: giftRows, error: giftError } = await supabase
+            .from('live_gifts')
+            .select('id, quantity, gift_tiers(name_en), creators(display_name)')
+            .in('id', giftIds);
+
+          if (giftError) {
+            // Not a `failures` entry: the lines still render with their plain
+            // label, so this degrades the wording rather than the history.
+            console.error('[useWalletHistory] gift detail', giftError);
+          } else {
+            for (const row of giftRows ?? []) {
+              // PostgREST returns an embedded to-one as an object, but types it
+              // as possibly an array; normalised rather than trusted either way.
+              const tier = Array.isArray(row.gift_tiers) ? row.gift_tiers[0] : row.gift_tiers;
+              const creator = Array.isArray(row.creators) ? row.creators[0] : row.creators;
+              giftsById.set(String(row.id), {
+                name_en: String(tier?.name_en ?? 'Gift'),
+                quantity: Number(row.quantity ?? 1),
+                creatorName: creator?.display_name ? String(creator.display_name) : null,
+              });
+            }
+          }
+        }
+
+        if (cancelled) return;
+
+        setLedger(
+          rows.map(({ entry, referenceId }) => {
+            const gift = referenceId ? giftsById.get(referenceId) : undefined;
+            return gift ? { ...entry, gift } : entry;
+          }),
         );
       }
 

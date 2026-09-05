@@ -1,0 +1,144 @@
+/*
+ * The centre stage for a fullscreen gift.
+ *
+ * Sized against the OVERLAY's box, not the viewport: this is mounted inside the
+ * player's relatively-positioned container so it covers the video and nothing
+ * else — a fixed-position layer would sit over the chat, the header and the
+ * end-live dialog too.
+ */
+
+.backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 14;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  /* Light on purpose: this covers the broadcast for up to ten seconds. */
+  background: rgba(5, 4, 22, 0.45);
+  /* The whole overlay is inert. The play button, the volume control and the
+     chat input under it all stay reachable while a gift plays. */
+  pointer-events: none;
+  animation: backdropIn 260ms ease-out 1 both;
+}
+
+/*
+ * Sized inline by useStageScale, not here.
+ *
+ * The obvious `width: min(70vw, 70vh)` sizes the gift against the VIEWPORT,
+ * and this overlay covers the player — which on a desktop layout is about 70%
+ * of the width with a chat panel beside it, so a viewport-sized stage
+ * overflows it. See useStageScale.ts for why the scale factor cannot be
+ * computed in CSS either.
+ */
+.stageBox {
+  position: relative;
+  filter: drop-shadow(0 0 34px var(--rarity-glow, rgba(255, 255, 255, 0.4)));
+}
+
+/*
+ * The 300px stage, centred on the box and scaled about its own middle.
+ *
+ * Absolutely positioned with a half-size negative margin rather than laid out
+ * by the parent, because `transform` does not affect layout: a 300px child of a
+ * 147px flex box (which is what `min(70%, ...)` comes to on a 375px phone)
+ * OVERFLOWS to the right and below before any scaling happens, and scaling
+ * about `center center` then shrinks it around a point that is not the box's
+ * centre. The mascot ended up in the bottom-right corner with the caption
+ * across it — visible only at phone width, because on a desktop the scaled size
+ * is larger than 300px and the overflow is negative.
+ */
+.stageInner {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  margin: -150px 0 0 -150px;
+  transform-origin: center center;
+}
+
+.caption {
+  position: relative;
+  z-index: 1;
+  max-width: min(86vw, 460px);
+  padding: 0 16px;
+  text-align: center;
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.75);
+  animation: captionIn 420ms cubic-bezier(0.2, 1.1, 0.3, 1) 1 both;
+  transition: opacity 500ms ease-out;
+}
+
+.captionOut {
+  opacity: 0;
+}
+
+.sender {
+  font-size: clamp(15px, 3.4vw, 22px);
+  font-weight: 800;
+  color: #ffffff;
+  overflow-wrap: anywhere;
+}
+
+.verb {
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.stars {
+  margin-top: 2px;
+  font-size: clamp(14px, 3vw, 19px);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #ffe9a8;
+}
+
+.message {
+  margin-top: 6px;
+  font-size: clamp(12px, 2.4vw, 15px);
+  color: rgba(255, 255, 255, 0.72);
+  /* Someone else's 80 characters over the creator's video: two lines, then cut. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+@keyframes backdropIn {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+@keyframes captionIn {
+  0% { opacity: 0; transform: translateY(14px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+/*
+ * Reduced motion: a 1.5s fade in place of the arc.
+ *
+ * The gift still appears, and the caption still says who sent what and for how
+ * many stars — the confirmation that money moved is not decoration. Only the
+ * movement goes, and the caption never fades out, because under reduced motion
+ * the text IS the animation.
+ */
+.backdropStill {
+  animation: backdropFade 1500ms ease-in-out 1 both;
+}
+
+.backdropStill .caption {
+  animation: none;
+}
+
+@keyframes backdropFade {
+  0% { opacity: 0; }
+  20% { opacity: 1; }
+  100% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .backdrop,
+  .caption {
+    animation-duration: 1ms;
+  }
+}
