@@ -80,22 +80,29 @@ import styles from './LiveViewerMobile.module.css';
  * here, plus the 12px of overlay inset the tray adds as padding under itself,
  * plus that phone's 34px indicator.
  *
- * THE STAGE is 34px HIGHER than the design's 330px, and that is deliberate. A
- * tray row is 117px tall (a 105px mascot in 6px of padding), so a stage whose
- * bottom is only 92px above the tray's — which is what 330 and 238 are, as
- * absolute coordinates — is drawn straight through the first Stardust row.
- * Clearing one full row is what the numbers were trying to express, so that is
- * what this states. A second and third row still stack into it; there is no
- * arrangement of a 195px stage, three 117px rows, five lines of chat and a
- * composer that fits in 812px, and the design's own choice is that the rare
- * three-row case overlaps rather than the common one.
+ * THE STAGE HAS TWO POSITIONS, and which one it takes is the only way to get
+ * it low enough to stop covering the shot.
+ *
+ * A tray row is 117px tall — a 105px mascot in 6px of padding — and the chat
+ * column's top is the tray's bottom (204). So "16px above the gift tray zone"
+ * is 337 while a row is up, and there is no lower position than that while one
+ * is: the brief's 250 would put the caption, and the bottom 26px of the stage,
+ * straight through a Stardust row, which is the thing its own QA gate is
+ * about. 337 is 7px above where the stage already was.
+ *
+ * What actually gets it out of the way is that the tray is EMPTY for most of a
+ * broadcast. With no row to clear, the floor is the chat's top instead and the
+ * block drops the whole 117px, to 220 — well past the 40px the brief asked
+ * for, because a row's worth of reserved space is what was holding it up.
+ * GiftOverlay picks between the two and the block slides rather than jumps.
  */
-const GIFT_STAGE_BOTTOM = 'calc(var(--live-safe-bottom, 0px) + 330px)';
+const GIFT_STAGE_BOTTOM = 'calc(var(--live-safe-bottom, 0px) + 337px)';
+const GIFT_STAGE_BOTTOM_NO_TRAY = 'calc(var(--live-safe-bottom, 0px) + 220px)';
 const GIFT_TRAY_BOTTOM = 'calc(var(--live-safe-bottom, 0px) + 192px)';
 
-/** The design's stage size: `min(52vw, 200px)`, as a number (see useStageScale). */
-const GIFT_STAGE_MAX_PX = 200;
-const GIFT_STAGE_VW = 0.52;
+/** The design's stage size: `min(46vw, 180px)`, as a number (see useStageScale). */
+const GIFT_STAGE_MAX_PX = 180;
+const GIFT_STAGE_VW = 0.46;
 /** Floor, for the frame before the viewport has been measured. */
 const GIFT_STAGE_MIN_PX = 120;
 
@@ -154,14 +161,21 @@ export function LiveViewerMobile({ sessionId, state }: LiveViewerMobileProps) {
     return {
       left: '14px',
       bottom: GIFT_STAGE_BOTTOM,
+      bottomWithoutTray: GIFT_STAGE_BOTTOM_NO_TRAY,
       stagePx,
       // A video card is 1.5× as wide as it is tall; without this it would be
       // drawn past the chat column it is supposed to sit above.
       maxWidthPx: stagePx,
       trayBottom: GIFT_TRAY_BOTTOM,
       // The stage is ABOVE the tray here, not in its corner, so there is
-      // nothing for the tray to step aside from.
+      // nothing for the tray to step aside from — and there is nowhere for it
+      // to go: past the stage on the right is 129px of screen before the
+      // reaction rail, which is less than the mascot alone.
       trayShift: false,
+      // Below, not above: on this layout the space over the stage is the top
+      // bar's, and the space under it is the gap the stage was just moved out
+      // of.
+      captionAbove: false,
     };
   }, [viewportWidth]);
 

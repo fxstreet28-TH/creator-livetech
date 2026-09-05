@@ -10,10 +10,11 @@
  * WHERE IT SITS IS A LAYOUT DECISION, NOT THIS FILE'S
  *
  * `layout` arrives from GiftOverlay, which owns the one measurement of the
- * player. On a phone the stage is centred behind a dim; on a desktop player it
- * is anchored bottom-left with a glow that stops at its own edge, so the
- * creator's face stays visible for the forty seconds a tier-07 clip runs. See
- * useStageScale.ts for how that is decided.
+ * player. In the stacked layouts the stage is centred behind a dim; anchored,
+ * it sits on the player's bottom-left corner with its caption above it and a
+ * glow that stops at its own edge, so the creator's face stays visible for the
+ * forty seconds a tier-07 clip runs. See useStageScale.ts for how that is
+ * decided, and for why the phone layout keeps its caption underneath.
  */
 
 import { useEffect, useState, type CSSProperties } from 'react';
@@ -123,8 +124,8 @@ function FullscreenStage({
   return (
     <div
       className={`${layout.anchored ? styles.anchor : styles.backdrop} ${
-        reduceMotion ? styles.still : ''
-      }`}
+        layout.captionAbove ? styles.captionAbove : ''
+      } ${reduceMotion ? styles.still : ''}`}
       style={
         {
           '--gift-anchor-left': layout.left,

@@ -58,23 +58,54 @@ const CHAT_HISTORY: LiveChatEntry[] = Array.from({ length: 24 }, (_, index): Liv
   isSelf: false,
 })).concat(CHAT);
 
-function giftEvent(kind: 'tray' | 'fullscreen'): LiveGiftEvent {
-  const tray = kind === 'tray';
+/**
+ * The three gifts worth looking at on this layout.
+ *
+ * 'tray' is what sits between the stage and the chat. 'nova' is the tallest
+ * CSS tier, so it is the worst case for the stage's own height; 'clip' is a
+ * tier-07 video card, whose 720 × 476 shape is the worst case for its WIDTH
+ * and the reason the anchor carries a width cap at all.
+ */
+type BenchGift = 'tray' | 'nova' | 'clip';
+
+function giftEvent(kind: BenchGift): LiveGiftEvent {
+  if (kind === 'tray') {
+    return {
+      gift_id: `dev-tray-${Date.now()}`,
+      session_id: SESSION_ID,
+      tier_id: 1,
+      tier_slug: 'stardust',
+      name_en: 'Stardust',
+      name_th: 'ผงดาว',
+      rarity: 'basic',
+      animation_key: 'stardust',
+      display_mode: 'tray',
+      duration_ms: 4500,
+      sort_order: 1,
+      quantity: 3,
+      stars_total: 3,
+      message: null,
+      sender: { id: 'u1', display_name: 'somchai_2540', avatar_url: null },
+      created_at: new Date().toISOString(),
+    };
+  }
+
+  const clip = kind === 'clip';
   return {
     gift_id: `dev-${kind}-${Date.now()}`,
     session_id: SESSION_ID,
-    tier_id: tray ? 1 : 4,
-    tier_slug: tray ? 'stardust' : 'nova',
-    name_en: tray ? 'Stardust' : 'Nova',
-    name_th: tray ? 'ผงดาว' : 'โนวา',
-    rarity: tray ? 'basic' : 'legendary',
-    animation_key: tray ? 'stardust' : 'nova',
-    display_mode: tray ? 'tray' : 'fullscreen',
-    duration_ms: tray ? 4500 : 10000,
-    sort_order: tray ? 1 : 4,
-    quantity: tray ? 3 : 1,
-    stars_total: tray ? 3 : 100,
-    message: tray ? null : 'สู้ ๆ นะครับอาจารย์',
+    tier_id: clip ? 7 : 4,
+    tier_slug: clip ? 'tier-07' : 'nova',
+    name_en: clip ? 'Tier 07' : 'Nova',
+    name_th: clip ? 'ชั้น 07' : 'โนวา',
+    rarity: clip ? 'mythic' : 'legendary',
+    animation_key: clip ? 'video' : 'nova',
+    display_mode: 'fullscreen',
+    duration_ms: clip ? 42233 : 10000,
+    sort_order: clip ? 7 : 4,
+    quantity: 1,
+    stars_total: clip ? 3000 : 100,
+    message: 'สู้ ๆ นะครับอาจารย์',
     sender: { id: 'u1', display_name: 'somchai_2540', avatar_url: null },
     created_at: new Date().toISOString(),
   };
@@ -198,7 +229,8 @@ export function LiveMobileBench() {
         className="fixed left-1/2 top-1/2 z-[100] flex w-[92vw] -translate-x-1/2 -translate-y-1/2 flex-wrap justify-center gap-1.5 rounded-xl bg-black/70 p-2 backdrop-blur-md"
       >
         <BenchButton onClick={() => setLatestGift(giftEvent('tray'))}>tray gift</BenchButton>
-        <BenchButton onClick={() => setLatestGift(giftEvent('fullscreen'))}>fullscreen gift</BenchButton>
+        <BenchButton onClick={() => setLatestGift(giftEvent('nova'))}>nova</BenchButton>
+        <BenchButton onClick={() => setLatestGift(giftEvent('clip'))}>tier-07 clip</BenchButton>
         <BenchButton onClick={() => setExpandChat((on) => !on)}>
           {expandChat ? 'chat: history' : 'chat: 5 lines'}
         </BenchButton>

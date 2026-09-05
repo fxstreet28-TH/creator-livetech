@@ -30,7 +30,7 @@
 }
 
 /* --------------------------------------------------------------- anchored --
- * Desktop players. Bottom-left, out of the centre of frame.
+ * Desktop players. ON the bottom-left corner, out of the centre of frame.
  *
  * THE FULL-COVER DIM IS GONE, AND THAT IS THE POINT.
  *
@@ -47,14 +47,39 @@
 .anchor {
   position: absolute;
   left: var(--gift-anchor-left, 6%);
-  bottom: var(--gift-anchor-bottom, 10%);
+  bottom: var(--gift-anchor-bottom, 24px);
   z-index: 14;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
+  gap: 8px;
   pointer-events: none;
   animation: anchorIn 300ms cubic-bezier(0.2, 1.05, 0.35, 1) 1 both;
+  /*
+   * The block can be asked to move while it is on screen: the phone layout
+   * gives it one bottom while the tray has rows and a lower one while it does
+   * not, so a Stardust landing during a Nova lifts it out of the way. A slide
+   * rather than a jump, and the same curve and duration the tray uses when it
+   * steps aside for the same reason.
+   */
+  transition: bottom 320ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+/*
+ * Caption above the stage.
+ *
+ * `column-reverse` rather than reordering the DOM, so the caption stays after
+ * the stage for a screen reader — not that it reads either, both are
+ * aria-hidden — and, more to the point, so one flag flips the arrangement
+ * without a second copy of the markup.
+ *
+ * What it buys: the block's bottom edge becomes the STAGE's bottom edge. That
+ * is what lets the block sit 24px off the floor without a line of text
+ * underneath it, and what lets the tray beside it line up with the mascot
+ * rather than with the caption.
+ */
+.captionAbove {
+  flex-direction: column-reverse;
 }
 
 /*
@@ -113,8 +138,9 @@
   transition: opacity 500ms ease-out;
 }
 
-/* Directly under the stage and flush with its left edge — same type, same
-   sizes, only the alignment and the padding change. */
+/* Flush with the stage's left edge, above it or below it depending on
+   .captionAbove — same type, same sizes, only the alignment and the padding
+   change. */
 .anchor .caption {
   padding: 0;
   text-align: left;
@@ -201,6 +227,10 @@
   .caption {
     animation-duration: 1ms;
   }
+
+  .anchor {
+    transition: none;
+  }
 }
 
 /*
@@ -214,7 +244,7 @@
  */
 @media (max-width: 767px) {
   .anchor .caption {
-    max-width: min(52vw, 200px);
+    max-width: min(46vw, 180px);
   }
 
   .anchor .sender {

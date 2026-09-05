@@ -10,11 +10,13 @@
  * layout, where the video is a 16:9 strip and there is no "beside the video"
  * to move to.
  *
- * `anchored` — desktop. The stage moves to the bottom-left corner, shrinks, and
- * loses the full-cover backdrop for a glow that reaches only as far as its own
- * edge. The reason is the creator: a gift that covers the middle of the frame
- * covers their face, and the most expensive gift on the board was doing it for
- * forty seconds at a time.
+ * `anchored` — desktop. The stage sits ON the player's bottom-left corner,
+ * 24px up, with its caption above it, and loses the full-cover backdrop for a
+ * glow that reaches only as far as its own edge. The reason is the creator: a
+ * gift that covers the middle of the frame covers their face, and the most
+ * expensive gift on the board was doing it for forty seconds at a time. Being
+ * bottom-anchored rather than floated at 10% is the second half of that — the
+ * lower the block sits, the less of the shot it is in front of.
  *
  * A caller may also hand in an explicit `anchor`, which forces the anchored
  * layout with geometry this file did not derive. Two do: the OBS source, whose
@@ -74,8 +76,11 @@ export const DESKTOP_MIN_WIDTH = 1024;
 /**
  * The narrowest player the anchored block fits in.
  *
- * Its parts: the 6% left inset, the 320px stage floor, the 20px gap, and the
- * 200px the tray needs before a sender's name starts rendering as "ผู้…". Below
+ * Its parts: the 6% left inset, the stage floor (282px, and 320 when this
+ * number was chosen), the 20px gap, and the 200px the tray needs before a
+ * sender's name starts rendering as "ผู้…". Kept at 580 through the shrink
+ * because it decides WHICH layout a player gets, and re-cutting it would move
+ * windows between layouts for a reason that has nothing to do with them. Below
  * this the block would push the tray off the right edge, so the centred layout
  * is the better answer even on a desktop window.
  */
@@ -84,9 +89,28 @@ export const ANCHORED_MIN_PLAYER = 580;
 /** Centred mode: fraction of the player's smaller dimension. */
 const CENTERED_FRACTION = 0.7;
 
-/** Anchored mode: fraction of the player's HEIGHT, floored at ANCHORED_MIN_PX. */
-const ANCHORED_FRACTION = 0.48;
-const ANCHORED_MIN_PX = 320;
+/**
+ * Anchored mode: fraction of the player's HEIGHT, floored at ANCHORED_MIN_PX.
+ *
+ * Both were cut by 12% (from 0.48 and 320) when the anchored block moved down
+ * onto the player's bottom edge. Sitting on the floor rather than floating at
+ * 10% puts the stage nearer the tray, the chat and whatever the creator has in
+ * the lower third of frame, and the smaller stage is what keeps that from
+ * being a crowd.
+ */
+const ANCHORED_FRACTION = 0.42;
+const ANCHORED_MIN_PX = 282;
+
+/**
+ * How far the anchored block's BOTTOM sits above the player's bottom edge.
+ *
+ * It used to be 10% of the height, which on a 1080-tall window floated the
+ * stage 108px up with nothing under it. Bottom-anchored is the arrangement
+ * every other overlay on these screens uses — the tray, the chips, the chat
+ * input — and it is what lets the tray line up beside the stage rather than
+ * being pushed out of its own corner.
+ */
+const ANCHORED_BOTTOM_PX = 24;
 
 /**
  * Never bigger than this, however large the player is. Keeps a 1920 × 1080 OBS
@@ -98,7 +122,7 @@ const STAGE_MAX_PX = 720;
 const STAGE_MIN_PX = 80;
 
 /**
- * Room left under the stage for the caption in anchored mode.
+ * Room left over the stage for the caption in anchored mode.
  *
  * Not a layout value — the caption is laid out by flow, not by this number.
  * It exists so a pathologically short-but-wide player (an ultrawide letterbox,
@@ -139,8 +163,33 @@ export interface GiftAnchor {
    * around them can be positioned against one number.
    */
   maxWidthPx?: number;
+  /**
+   * The block's bottom inset while the TRAY IS EMPTY.
+   *
+   * The stage has to clear whatever is under it, and on a phone what is under
+   * it is a tray row 117px tall that is only there some of the time. Reserving
+   * that height permanently means the stage floats a row's worth too high for
+   * the ~90% of a broadcast with nothing in the tray; not reserving it means
+   * the first Stardust lands under the caption. So the caller states both
+   * positions and the overlay — which is the one thing that knows whether the
+   * tray has rows — picks. Omitted means "the same either way", which is the
+   * right answer for a layout whose tray moves aside instead.
+   */
+  bottomWithoutTray?: string;
   /** CSS length for the tray's own bottom inset. Defaults to the overlay's inset. */
   trayBottom?: string;
+  /**
+   * Caption above the stage rather than below it. Defaults to true, which is
+   * what every anchored layout wants.
+   *
+   * A bottom-anchored block reads upward: the stage sits on the floor and the
+   * words are the thing above it, which is also what keeps the block's bottom
+   * edge equal to the STAGE's bottom edge, so the tray beside it lines up with
+   * the mascot rather than with a line of text. The phone layout is the
+   * exception — its stage already has the chat and the tray under it, and a
+   * caption above would push into the top bar.
+   */
+  captionAbove?: boolean;
   /**
    * Whether the tray steps aside when a fullscreen gift is playing. Default
    * true — the desktop and OBS layouts put the stage in the tray's corner, so
@@ -165,10 +214,14 @@ export interface GiftLayout {
   bottom: string;
   /** See GiftAnchor.maxWidthPx. Absent means "as wide as the clip is". */
   maxWidthPx?: number;
+  /** See GiftAnchor.bottomWithoutTray. Absent means "same as `bottom`". */
+  bottomWithoutTray?: string;
   /** See GiftAnchor.trayBottom. Absent means "the overlay's own inset". */
   trayBottom?: string;
   /** See GiftAnchor.trayShift. */
   trayShift: boolean;
+  /** See GiftAnchor.captionAbove. */
+  captionAbove: boolean;
 }
 
 const CENTERED: GiftLayout = {
@@ -177,6 +230,10 @@ const CENTERED: GiftLayout = {
   left: '0px',
   bottom: '0px',
   trayShift: true,
+  // Centred mode stacks stage-then-caption in the middle of the player; there
+  // is no floor for the block to sit on, so there is nothing for a caption
+  // above it to be above.
+  captionAbove: false,
 };
 
 function clamp(value: number, low: number, high: number): number {
@@ -207,9 +264,11 @@ export function giftLayout(
       stagePx: anchor.stagePx,
       left: anchor.left,
       bottom: anchor.bottom,
+      bottomWithoutTray: anchor.bottomWithoutTray,
       maxWidthPx: anchor.maxWidthPx,
       trayBottom: anchor.trayBottom,
       trayShift: anchor.trayShift ?? true,
+      captionAbove: anchor.captionAbove ?? true,
     };
   }
 
@@ -226,13 +285,14 @@ export function giftLayout(
 
   const wanted = Math.max(box.height * ANCHORED_FRACTION, ANCHORED_MIN_PX);
   // The guard, not the design — see CAPTION_HEADROOM_PX.
-  const room = box.height - box.height * 0.1 - CAPTION_HEADROOM_PX;
+  const room = box.height - ANCHORED_BOTTOM_PX - CAPTION_HEADROOM_PX;
   return {
     anchored: true,
     stagePx: clamp(Math.min(wanted, room), STAGE_MIN_PX, STAGE_MAX_PX),
     left: '6%',
-    bottom: '10%',
+    bottom: `${ANCHORED_BOTTOM_PX}px`,
     trayShift: true,
+    captionAbove: true,
   };
 }
 

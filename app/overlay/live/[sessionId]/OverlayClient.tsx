@@ -52,9 +52,17 @@ const OBS_TRAY_INSET = 48;
  * The stage moves out of the middle here for the same reason it does in the
  * app, only more so: OBS composites this straight over the camera, so a gift in
  * the centre of the canvas is a gift on the creator's face with nothing behind
- * it to soften the point.
+ * it to soften the point. 48px off the canvas floor for the same reason the
+ * in-app player uses 24: the lower the block sits, the less of the shot it is
+ * in front of, and its caption is above it (the default) so the bottom edge is
+ * the mascot's rather than a line of text's.
+ *
+ * The stage SIZE is deliberately not cut along with the in-app one. 520 was
+ * chosen against a 1080p scene a viewer watches at whatever size their player
+ * is, not against a studio window; shrinking it here would make the gift a
+ * creator paid for smaller on the stream itself.
  */
-const OBS_ANCHOR = { left: '96px', bottom: '108px', stagePx: 520 } as const;
+const OBS_ANCHOR = { left: '96px', bottom: '48px', stagePx: 520 } as const;
 
 type Phase =
   | { kind: 'connecting' }

@@ -90,7 +90,20 @@ export function GiftOverlay({
   const [rootNode, setRootNode] = useState<HTMLDivElement | null>(null);
   const box = useElementBox(rootNode);
   const desktop = useIsDesktop();
-  const layout = useMemo(() => giftLayout(box, desktop, anchor), [box, desktop, anchor]);
+  const baseLayout = useMemo(() => giftLayout(box, desktop, anchor), [box, desktop, anchor]);
+
+  /**
+   * The layout, with the stage dropped to its no-tray position when the tray
+   * is in fact empty.
+   *
+   * Decided here because this is the only place that knows both — the layout
+   * is computed from geometry that has no idea what has been gifted, and the
+   * queue is right here. A layout that states one position is unaffected.
+   */
+  const layout = useMemo(() => {
+    if (baseLayout.bottomWithoutTray === undefined || trayItems.length > 0) return baseLayout;
+    return { ...baseLayout, bottom: baseLayout.bottomWithoutTray };
+  }, [baseLayout, trayItems.length]);
 
   /**
    * How wide the stage is actually drawing, reported by GiftFullscreen.
@@ -145,6 +158,10 @@ export function GiftOverlay({
           ...(inset === undefined ? null : { '--gift-inset': `${inset}px` }),
           ...(layout.trayBottom === undefined ? null : { '--gift-tray-bottom': layout.trayBottom }),
           '--gift-anchor-left': layout.left,
+          // Published for the TRAY, which lines up on the same bottom edge as
+          // the stage when it steps beside it — see .trayShifted. The stage
+          // itself gets the same value inline from GiftFullscreen.
+          '--gift-anchor-bottom': layout.bottom,
           '--gift-stage-width': `${Math.round(stageWidth)}px`,
         } as CSSProperties
       }
