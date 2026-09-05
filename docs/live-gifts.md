@@ -143,14 +143,41 @@ person running it, and a shorter cut of tier 07 would very likely play better.
 The number shipped is what the delivered clip measures; trimming it is the CEO's
 call.
 
-### 1d. The delivered clips carry an "AI生成" watermark
+### 1d. The "AI生成" watermark, measured and removed
 
-All three source clips have `AI生成` ("AI-generated") burned into the
-bottom-left corner, and it is visible in the encoded output — so it will be on
-screen, over the creator's broadcast, every time one of these three gifts is
-sent. It was **not** removed: it is an AI-disclosure label on delivered artwork,
-and stripping it is not a call to make in an encoding step. If it should not
-ship, the fix is a re-render or a crop, and it needs a decision first.
+All three source clips have `AI生成` ("AI-generated") burned into the bottom-left
+corner. The first encode kept it, because stripping an AI-disclosure label off
+artwork is not a call to make inside an encoding step. The CEO has since
+confirmed these are our own delivered assets and approved removing it.
+
+The box was measured, not eyeballed. Taking the **per-pixel minimum** across
+frames spread over each clip isolates it exactly: the watermark is an additive
+overlay that never goes away, so under it the minimum stays lifted even when the
+scene behind goes dark, while background pixels bottom out. That resolves the
+glyphs cleanly enough to print as ASCII and read the bounding box off:
+
+| Clip | Source frame | Glyph box | delogo box (4-5px of pad) |
+|---|---|---|---|
+| tier-05 | 848×464 | x=7 y=439 w=45 h=14 | `x=3:y=435:w=54:h=22` |
+| tier-06 | 848×464 | x=7 y=439 w=45 h=14 | `x=3:y=435:w=54:h=22` |
+| tier-07 | 848×560 | x=10 y=536 w=52 h=14 | `x=6:y=532:w=60:h=22` |
+
+`delogo` runs at **source** resolution, ahead of the downscale — that is the
+space the box was measured in, and scaling afterwards blends the patched region
+further. Frame size, frame count and duration are untouched: 720×394 / 720×394 /
+720×476, 448 / 597 / 1267 frames, 14.933333s / 19.900000s / 42.233333s, so no
+`duration_ms` moved.
+
+Crop-and-rescale was the stated fallback and was **not** needed. delogo leaves a
+faint vertical striping inside the box on the busiest frames — visible if you
+zoom the corner to 3×, invisible at the size the clip is actually drawn — and
+cropping would have cost real framing on every side of every frame to fix
+something no viewer can see.
+
+Re-running the same detector against the shipped clips: **0** persistently-lit
+pixels inside the old footprint on tier-05 and tier-07, and on tier-06 only a
+bright ice reflection clipping the box's right edge, with no glyph structure
+anywhere.
 
 ### 2. No `increment_tip_stars_received` RPC, and no separate earnings ledger
 
@@ -306,20 +333,20 @@ Everything under `public/gifts/` and `docs/gift-cards/`, as committed:
 | `public/gifts/tier-03/body.png` | 309,504 | |
 | `public/gifts/tier-03/tail.png` | 249,093 | The comet WITH the mascot in it |
 | `public/gifts/tier-04/body.png` | 342,520 | |
-| `public/gifts/tier-05/clip.mp4` | 1,340,169 | 14.933s, 720×394 |
-| `public/gifts/tier-05/clip.webm` | 1,691,748 | |
-| `public/gifts/tier-05/poster.jpg` | 33,598 | frame at 8.960s |
-| `public/gifts/tier-06/clip.mp4` | 1,155,641 | 19.900s, 720×394 |
-| `public/gifts/tier-06/clip.webm` | 1,415,198 | |
-| `public/gifts/tier-06/poster.jpg` | 50,210 | frame at 11.940s |
-| `public/gifts/tier-07/clip.mp4` | 3,332,064 | 42.233s, 720×476 |
-| `public/gifts/tier-07/clip.webm` | 4,227,885 | |
-| `public/gifts/tier-07/poster.jpg` | 32,723 | frame at 25.340s |
+| `public/gifts/tier-05/clip.mp4` | 1,337,477 | 14.933s, 720×394 |
+| `public/gifts/tier-05/clip.webm` | 1,686,610 | |
+| `public/gifts/tier-05/poster.jpg` | 33,377 | frame at 8.960s |
+| `public/gifts/tier-06/clip.mp4` | 1,152,515 | 19.900s, 720×394 |
+| `public/gifts/tier-06/clip.webm` | 1,412,358 | |
+| `public/gifts/tier-06/poster.jpg` | 49,957 | frame at 11.940s |
+| `public/gifts/tier-07/clip.mp4` | 3,320,344 | 42.233s, 720×476 |
+| `public/gifts/tier-07/clip.webm` | 4,208,457 | |
+| `public/gifts/tier-07/poster.jpg` | 32,368 | frame at 25.340s |
 
-Encode settings: `scale=720:-2:flags=lanczos`, no audio, x264 CRF 32 preset slow
-`-movflags +faststart`, libvpx-vp9 CRF 46 `-b:v 0 -row-mt 1 -cpu-used 2`. The
-PNGs are committed byte-for-byte as delivered — re-encoding them at maximum PNG
-effort makes them *larger*.
+Encode settings: `delogo` (see 1d), then `scale=720:-2:flags=lanczos`, no audio,
+x264 CRF 32 preset slow `-movflags +faststart`, libvpx-vp9 CRF 46
+`-b:v 0 -row-mt 1 -cpu-used 2`. The PNGs are committed byte-for-byte as
+delivered — re-encoding them at maximum PNG effort makes them *larger*.
 
 The checked-out tree is **23 MB**, under the 25 MB the brief set. `.git` is 31 MB
 because it also holds the placeholder blobs this branch deleted; that is history,

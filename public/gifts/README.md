@@ -44,17 +44,39 @@ folder, with no component and no deploy.
   video tier, and the frame the card paints under the clip while the video
   decodes — so it is already cached by the time the gift lands.
 
-To re-encode from a master:
+### The delogo step
+
+The delivered masters carry an `AI生成` watermark in the bottom-left corner, and
+it is painted out during the encode. The boxes are in **source** pixels, and
+`delogo` runs before the downscale — that is the space they were measured in:
+
+| Tier | Master | `delogo` |
+|---|---|---|
+| 05 | `IMG_0250.MP4` 848×464 | `x=3:y=435:w=54:h=22` |
+| 06 | `IMG_0245.MP4` 848×464 | `x=3:y=435:w=54:h=22` |
+| 07 | `IMG_0263.MOV` 848×560 | `x=6:y=532:w=60:h=22` |
+
+A new master needs its own box measured, not these reused. `docs/live-gifts.md`
+§1d has the method: per-pixel minimum across frames isolates a static overlay
+exactly, because the watermark never goes away while the scene behind it does.
+
+### To re-encode from a master
 
 ```
-ffmpeg -i SRC -an -vf "scale=720:-2:flags=lanczos" \
+DL=delogo=x=3:y=435:w=54:h=22          # this clip's box, in source px
+
+ffmpeg -i SRC -an -vf "$DL,scale=720:-2:flags=lanczos" \
   -c:v libx264 -profile:v high -pix_fmt yuv420p -crf 32 -preset slow \
   -movflags +faststart clip.mp4
-ffmpeg -i SRC -an -vf "scale=720:-2:flags=lanczos" \
+ffmpeg -i SRC -an -vf "$DL,scale=720:-2:flags=lanczos" \
   -c:v libvpx-vp9 -crf 46 -b:v 0 -row-mt 1 -deadline good -cpu-used 2 clip.webm
 ffmpeg -ss <60% of duration> -i SRC -frames:v 1 \
-  -vf "scale=720:-2:flags=lanczos" -q:v 5 poster.jpg
+  -vf "$DL,scale=720:-2:flags=lanczos" -q:v 5 poster.jpg
 ```
+
+The poster comes from the **cleaned** frame — it is the drawer thumbnail and the
+frame the card shows while the video decodes, so a watermark left there would be
+the one a viewer sees longest.
 
 Then set the tier's `duration_ms` to the clip's measured length. `ffprobe
 -show_entries format=duration` is the number; the CHECK on the column allows

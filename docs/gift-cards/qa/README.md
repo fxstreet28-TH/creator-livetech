@@ -15,9 +15,9 @@ somewhere else each run. The video tiers are seeked on the element itself.
 | `02-moonlight.jpg` | Moonlight | 2,750ms of 5,500 — the wink |
 | `03-comet.jpg` | Comet | 3,380ms of 6,500 — landed, shades on |
 | `04-nova.jpg` | Nova | 4,000ms of 10,000 — beam firing at the meteor |
-| `05.jpg` | tier-05 | 7.0s of 14.9 |
-| `06.jpg` | tier-06 | 9.5s of 19.9 |
-| `07.jpg` | tier-07 | 21.0s of 42.2 |
+| `05.jpg` | tier-05 | 8.960s of 14.933 — the poster frame, watermark removed |
+| `06.jpg` | tier-06 | 11.940s of 19.900 — the poster frame, watermark removed |
+| `07.jpg` | tier-07 | 25.340s of 42.233 — the poster frame, watermark removed |
 | `gate-375px.jpg` | — | 375px: no horizontal overflow, sender name un-truncated |
 | `gate-reduced-motion.jpg` | Nova | `prefers-reduced-motion: reduce` — hero on Earth, nothing running |
 
