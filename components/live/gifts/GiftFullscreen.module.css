@@ -202,3 +202,27 @@
     animation-duration: 1ms;
   }
 }
+
+/*
+ * The anchored caption on a phone.
+ *
+ * Only the full-bleed watch layout can produce an anchored stage this narrow
+ * (see the `anchor` note in useStageScale.ts), and the caption's fluid type —
+ * up to 22px of sender name — was sized for a desktop block roughly twice as
+ * wide. At 200px it wraps to four lines and pushes the tray out of the strip
+ * it was positioned into, so the type is fixed rather than fluid here.
+ */
+@media (max-width: 767px) {
+  .anchor .caption {
+    max-width: min(52vw, 200px);
+  }
+
+  .anchor .sender {
+    font-size: 12px;
+  }
+
+  .anchor .stars,
+  .anchor .message {
+    font-size: 11px;
+  }
+}

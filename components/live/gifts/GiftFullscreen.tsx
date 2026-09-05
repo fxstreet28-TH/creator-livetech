@@ -70,7 +70,6 @@ function FullscreenStage({
 }) {
   const rarity = rarityStyle(event.rarity);
   const stars = starsFragment(event.stars_total);
-  const scale = layout.stagePx / STAGE_PX;
 
   /**
    * Set once the arc has played.
@@ -98,6 +97,23 @@ function FullscreenStage({
   const [stageNode, setStageNode] = useState<HTMLDivElement | null>(null);
   const stageBox = useElementBox(stageNode);
   const naturalWidth = stageBox.width || STAGE_PX;
+
+  /**
+   * The scale, from the height the layout asked for — and, where the layout
+   * states one, capped so the RESULT is no wider than `maxWidthPx`.
+   *
+   * A CSS tier is square, so the cap never binds on one: at a 200px stage its
+   * natural width is the authored 300 and 200/300 is already the smaller
+   * factor. A video card is the case this exists for — a 720 × 476 clip is
+   * 1.5× as wide as it is tall, so drawn at a 200px HEIGHT it is 302px wide,
+   * which on a phone is most of the screen and lands on the chat column. With
+   * the cap it is drawn 200px wide and 132px tall instead, and both kinds of
+   * gift occupy the same strip.
+   */
+  const scale = Math.min(
+    layout.stagePx / STAGE_PX,
+    layout.maxWidthPx === undefined ? Infinity : layout.maxWidthPx / naturalWidth,
+  );
   const renderedWidth = naturalWidth * scale;
 
   useEffect(() => {
@@ -123,7 +139,10 @@ function FullscreenStage({
     >
       <div
         className={styles.stageBox}
-        style={{ width: naturalWidth * scale, height: layout.stagePx }}
+        // The height follows the SAME scale rather than being `layout.stagePx`
+        // outright, so a stage the width cap shrank does not leave an empty
+        // band under it.
+        style={{ width: renderedWidth, height: STAGE_PX * scale }}
       >
         {/* Authored at 300px and scaled as a unit, so the layers keep their
             relationship to each other at any size — see useStageScale.ts for

@@ -28,7 +28,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Loader2, Volume2, WifiOff } from 'lucide-react';
+import { Loader2, Play, Volume2, WifiOff } from 'lucide-react';
 import {
   MANIFEST_RETRY_BUDGET_MS,
   attachHlsStream,
@@ -38,6 +38,22 @@ import {
 import type { LatencyMode } from '@/lib/live/types';
 import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
 
+/**
+ * How the player is dressed, not what it plays.
+ *
+ * 'framed' is the original and the default: a 16:9 box in the page's grid,
+ * with the LIVE / viewer / duration chips painted in its corners and the
+ * browser's own controls along the bottom.
+ *
+ * 'fullbleed' is the phone watch layout. The video fills the viewport and
+ * everything a viewer touches — the top bar, the reaction rail, the chat and
+ * the input row — is a translucent layer the PAGE owns and positions against
+ * the safe areas. So the player stops drawing chips (the page's top bar has
+ * the same three numbers, laid out for a thumb) and stops drawing controls
+ * (they would sit exactly where the input row is). See LiveViewerMobile.
+ */
+export type PlayerPresentation = 'framed' | 'fullbleed';
+
 interface HlsLivePlayerProps {
   playbackUrl: string;
   latencyMode: LatencyMode;
@@ -46,6 +62,7 @@ interface HlsLivePlayerProps {
   viewerCount: number;
   /** Rendered over the video — the floating reactions and the reaction rail. */
   overlay?: React.ReactNode;
+  presentation?: PlayerPresentation;
 }
 
 export function HlsLivePlayer({
@@ -55,13 +72,36 @@ export function HlsLivePlayer({
   elapsedSeconds,
   viewerCount,
   overlay,
+  presentation = 'framed',
 }: HlsLivePlayerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const handleRef = useRef<HlsHandle | null>(null);
+  const fullBleed = presentation === 'fullbleed';
 
   const [phase, setPhase] = useState<HlsPhase>('loading');
   const [error, setError] = useState<string | null>(null);
   const [audioBlocked, setAudioBlocked] = useState(false);
+  /**
+   * True once the stream's own frames turn out to be wider than they are tall.
+   *
+   * Only consulted in full-bleed, where the video is `object-fit: cover` so a
+   * portrait broadcast fills a portrait phone the way TikTok's does. A
+   * LANDSCAPE source under `cover` on a 9:19.5 screen is cropped to about a
+   * third of its width, which for a creator broadcasting from a desktop is
+   * most of the shot — so a landscape source is letterboxed with `contain`
+   * instead. Read from the element rather than assumed, because nothing in the
+   * playback response says which way up the camera was.
+   */
+  const [landscapeSource, setLandscapeSource] = useState(false);
+  /**
+   * Whether the element is currently paused.
+   *
+   * Only rendered against in full-bleed, which has no native controls: it is
+   * what puts a play button back on the screen when a browser refused even
+   * muted autoplay. Tracked from the element's own events rather than read on
+   * demand, because `video.paused` is not something React re-renders for.
+   */
+  const [paused, setPaused] = useState(false);
   /**
    * When the current wait began, and a tick to re-render against it.
    *
@@ -159,9 +199,16 @@ export function HlsLivePlayer({
 
   // Square and borderless on a phone, where the player is edge-to-edge and a
   // rounded border would just be a hairline of page colour around the video.
-  // Rounded again from lg, where it sits inside the padded grid.
+  // Rounded again from lg, where it sits inside the padded grid. Full-bleed
+  // fills whatever box the page gave it, which there is the viewport.
   return (
-    <div className="relative min-h-0 flex-1 overflow-hidden bg-black lg:rounded-2xl lg:border lg:border-white/10">
+    <div
+      className={
+        fullBleed
+          ? 'absolute inset-0 overflow-hidden bg-black'
+          : 'relative min-h-0 flex-1 overflow-hidden bg-black lg:rounded-2xl lg:border lg:border-white/10'
+      }
+    >
       <video
         ref={videoRef}
         playsInline
@@ -169,22 +216,46 @@ export function HlsLivePlayer({
         // the LiveKit element, which the SDK built and drove. It is also the
         // only way back to playing after a browser refuses even muted
         // autoplay, which iOS Low Power Mode does.
-        controls
+        //
+        // Off in full-bleed, where the control bar would land on the chat input
+        // row and the scrubber on a live edge is not a control anyway. The
+        // "tap to play" button below replaces the one thing it was load-bearing
+        // for.
+        controls={!fullBleed}
+        // Only meaningful in full-bleed; `cover` on the framed 16:9 box would
+        // crop a portrait broadcast to a letterbox slot, which is the opposite
+        // of what that layout wants.
+        onLoadedMetadata={(event) => {
+          const video = event.currentTarget;
+          if (video.videoWidth > 0 && video.videoHeight > 0) {
+            setLandscapeSource(video.videoWidth > video.videoHeight);
+          }
+        }}
+        onPlay={() => setPaused(false)}
+        onPause={() => setPaused(true)}
         aria-label={`ไลฟ์: ${title}`}
-        className="absolute inset-0 h-full w-full object-contain"
+        className={`absolute inset-0 h-full w-full ${
+          fullBleed && !landscapeSource ? 'object-cover' : 'object-contain'
+        }`}
       />
 
-      <div className="pointer-events-none absolute left-3 top-3 z-10 flex max-w-[70%] items-center gap-2">
-        <LiveBadge pulse={phase === 'playing'} />
-        <span className="truncate rounded-full bg-black/55 px-2.5 py-1 text-[11px] text-white backdrop-blur-sm">
-          {title}
-        </span>
-      </div>
+      {/* The page's own top bar carries the same three numbers in full-bleed,
+          laid out against the safe areas — see LiveViewerMobile. */}
+      {!fullBleed && (
+        <>
+          <div className="pointer-events-none absolute left-3 top-3 z-10 flex max-w-[70%] items-center gap-2">
+            <LiveBadge pulse={phase === 'playing'} />
+            <span className="truncate rounded-full bg-black/55 px-2.5 py-1 text-[11px] text-white backdrop-blur-sm">
+              {title}
+            </span>
+          </div>
 
-      <div className="pointer-events-none absolute right-3 top-3 z-10 flex items-center gap-2">
-        <ViewerCountPill count={viewerCount} />
-        <DurationPill seconds={elapsedSeconds} />
-      </div>
+          <div className="pointer-events-none absolute right-3 top-3 z-10 flex items-center gap-2">
+            <ViewerCountPill count={viewerCount} />
+            <DurationPill seconds={elapsedSeconds} />
+          </div>
+        </>
+      )}
 
       {overlay}
 
@@ -194,11 +265,31 @@ export function HlsLivePlayer({
           onClick={() => void enableAudio()}
           // Above the reaction rail rather than beside it: on a narrow phone
           // the two would overlap at bottom-centre, and this button is the
-          // difference between a silent stream and a working one.
-          className="absolute bottom-20 left-1/2 z-20 inline-flex min-h-11 -translate-x-1/2 items-center gap-2 rounded-full bg-white/15 px-4 py-2 text-sm font-semibold text-white backdrop-blur-md transition hover:bg-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+          // difference between a silent stream and a working one. In full-bleed
+          // it clears the chat column and the input row instead.
+          className={`absolute left-1/2 z-20 inline-flex min-h-11 -translate-x-1/2 items-center gap-2 rounded-full bg-white/15 px-4 py-2 text-sm font-semibold text-white backdrop-blur-md transition hover:bg-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 ${
+            fullBleed ? 'top-[38%]' : 'bottom-20'
+          }`}
         >
           <Volume2 size={16} aria-hidden />
           แตะเพื่อเปิดเสียง
+        </button>
+      )}
+
+      {/*
+        The way back in when a browser refused even muted autoplay — iOS Low
+        Power Mode, mainly. The framed player leaves this to its native
+        controls; full-bleed has none, so a paused video would otherwise be a
+        black screen with no affordance on it at all.
+      */}
+      {fullBleed && paused && phase === 'playing' && (
+        <button
+          type="button"
+          onClick={() => void videoRef.current?.play().catch(() => undefined)}
+          className="absolute left-1/2 top-1/2 z-20 inline-flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white/15 text-white backdrop-blur-md transition hover:bg-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+        >
+          <Play size={26} aria-hidden />
+          <span className="sr-only">เล่นไลฟ์</span>
         </button>
       )}
 
@@ -234,7 +325,13 @@ function PlayerOverlay({
 }) {
   if (phase === 'error') {
     return (
-      <div role="alert" className="absolute inset-0 z-20 grid place-items-center bg-black/85 px-6 text-center">
+      <div
+        role="alert"
+        // Inert: it has nothing to press, and it covers the whole player — on
+        // the framed layout that is the browser's own controls, and on the
+        // full-bleed one it is the tap that collapses an expanded chat.
+        className="pointer-events-none absolute inset-0 z-20 grid place-items-center bg-black/85 px-6 text-center"
+      >
         <div>
           <WifiOff size={30} className="mx-auto text-rose-300" aria-hidden />
           <p className="mt-3 text-base font-semibold text-white">เข้าชมไลฟ์ไม่สำเร็จ</p>
@@ -247,7 +344,7 @@ function PlayerOverlay({
   }
 
   return (
-    <div className="absolute inset-0 z-20 grid place-items-center bg-black/70 px-6 text-center">
+    <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center bg-black/70 px-6 text-center">
       <div>
         <Loader2 size={28} className="mx-auto animate-spin text-cyan-300" aria-hidden />
         <p className="mt-3 text-sm text-white/80" role="status">

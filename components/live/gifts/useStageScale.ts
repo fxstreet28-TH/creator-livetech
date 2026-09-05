@@ -3,17 +3,25 @@
 /**
  * Where a fullscreen gift is drawn, and how big.
  *
- * TWO LAYOUTS, CHOSEN BY THE PLAYER'S WIDTH
+ * TWO LAYOUTS, CHOSEN BY THE PLAYER'S WIDTH — OR STATED OUTRIGHT
  *
  * `centered` — the original. The stage sits in the middle of the player behind
- * a dimmed backdrop. It reads well on a phone, where there is no "beside the
- * video" to move to.
+ * a dimmed backdrop. It is still what a phone gets on the DESKTOP-shaped watch
+ * layout, where the video is a 16:9 strip and there is no "beside the video"
+ * to move to.
  *
  * `anchored` — desktop. The stage moves to the bottom-left corner, shrinks, and
  * loses the full-cover backdrop for a glow that reaches only as far as its own
  * edge. The reason is the creator: a gift that covers the middle of the frame
  * covers their face, and the most expensive gift on the board was doing it for
  * forty seconds at a time.
+ *
+ * A caller may also hand in an explicit `anchor`, which forces the anchored
+ * layout with geometry this file did not derive. Two do: the OBS source, whose
+ * numbers are chosen against a 1920 × 1080 scene, and the full-bleed phone
+ * watch layout, where the video fills the viewport and the free space is a
+ * strip above the chat column rather than a fraction of a player. Both know
+ * things about their canvas that a measurement of the overlay cannot recover.
  *
  * WHICH 1024 THE BREAKPOINT IS
  *
@@ -104,7 +112,15 @@ export interface OverlayBox {
   height: number;
 }
 
-/** Explicit anchored geometry, for a surface that knows its own canvas. */
+/**
+ * Explicit anchored geometry, for a surface that knows its own canvas.
+ *
+ * Passing one FORCES the anchored layout, whatever the viewport measures. Two
+ * surfaces do it and neither can be derived from a percentage of a player:
+ * the OBS source composites onto a 1920 x 1080 scene whose numbers were chosen
+ * against that scene, and the phone layout puts the video full-bleed behind a
+ * chat column and an input row that the overlay cannot see.
+ */
 export interface GiftAnchor {
   /** CSS length for the block's left inset. */
   left: string;
@@ -112,6 +128,27 @@ export interface GiftAnchor {
   bottom: string;
   /** Stage height, in px. */
   stagePx: number;
+  /**
+   * Ceiling on the stage's rendered WIDTH, in px.
+   *
+   * Only a video card can hit it: a CSS tier is square, so its width is
+   * `stagePx` and this never binds, but a 720 x 476 clip drawn at a 200px
+   * height is 302px wide — half a phone's screen, and past the chat column it
+   * is supposed to sit above. With this set the clip is scaled down until it
+   * fits instead, so both kinds of gift occupy the same width and the layout
+   * around them can be positioned against one number.
+   */
+  maxWidthPx?: number;
+  /** CSS length for the tray's own bottom inset. Defaults to the overlay's inset. */
+  trayBottom?: string;
+  /**
+   * Whether the tray steps aside when a fullscreen gift is playing. Default
+   * true — the desktop and OBS layouts put the stage in the tray's corner, so
+   * it has to. The phone layout stacks them instead (the stage sits ABOVE the
+   * tray), and a tray that also moved sideways would leave the column the chat
+   * is aligned to.
+   */
+  trayShift?: boolean;
 }
 
 export interface GiftLayout {
@@ -126,6 +163,12 @@ export interface GiftLayout {
   left: string;
   /** CSS length: the block's inset from the player's bottom edge. */
   bottom: string;
+  /** See GiftAnchor.maxWidthPx. Absent means "as wide as the clip is". */
+  maxWidthPx?: number;
+  /** See GiftAnchor.trayBottom. Absent means "the overlay's own inset". */
+  trayBottom?: string;
+  /** See GiftAnchor.trayShift. */
+  trayShift: boolean;
 }
 
 const CENTERED: GiftLayout = {
@@ -133,6 +176,7 @@ const CENTERED: GiftLayout = {
   stagePx: STAGE_PX,
   left: '0px',
   bottom: '0px',
+  trayShift: true,
 };
 
 function clamp(value: number, low: number, high: number): number {
@@ -152,6 +196,23 @@ export function giftLayout(
   desktop: boolean,
   anchor?: GiftAnchor,
 ): GiftLayout {
+  // An explicit anchor is an instruction, not a preference, so it is read
+  // BEFORE the viewport is consulted: the caller composited the numbers against
+  // a canvas it already knows the size of. This is what lets the phone layout
+  // — which is narrower than every "anchored" threshold below — put a gift in
+  // the corner instead of over the creator's face.
+  if (anchor) {
+    return {
+      anchored: true,
+      stagePx: anchor.stagePx,
+      left: anchor.left,
+      bottom: anchor.bottom,
+      maxWidthPx: anchor.maxWidthPx,
+      trayBottom: anchor.trayBottom,
+      trayShift: anchor.trayShift ?? true,
+    };
+  }
+
   if (box.width <= 0 || box.height <= 0) return CENTERED;
 
   if (!desktop || box.width < ANCHORED_MIN_PLAYER) {
@@ -163,10 +224,6 @@ export function giftLayout(
     return { ...CENTERED, stagePx: side };
   }
 
-  if (anchor) {
-    return { anchored: true, stagePx: anchor.stagePx, left: anchor.left, bottom: anchor.bottom };
-  }
-
   const wanted = Math.max(box.height * ANCHORED_FRACTION, ANCHORED_MIN_PX);
   // The guard, not the design — see CAPTION_HEADROOM_PX.
   const room = box.height - box.height * 0.1 - CAPTION_HEADROOM_PX;
@@ -175,6 +232,7 @@ export function giftLayout(
     stagePx: clamp(Math.min(wanted, room), STAGE_MIN_PX, STAGE_MAX_PX),
     left: '6%',
     bottom: '10%',
+    trayShift: true,
   };
 }
 

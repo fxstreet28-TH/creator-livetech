@@ -18,7 +18,15 @@ import type { CreatorSummary } from '@/lib/viewer/types';
 import { DeferredCta } from './DeferredCta';
 import { CreatorAvatar, creatorDisplayName, creatorHandleLabel, creatorProfileHref } from './creatorDisplay';
 
-const FOLLOW_NOTICE = 'ระบบติดตามจะเปิดใช้งานเร็ว ๆ นี้';
+/**
+ * Exported because the phone watch layout says the same thing.
+ *
+ * Its follow control is a pill in the creator capsule rather than this card's
+ * full-width button, and it reports the refusal through the page's toast
+ * instead of an inline note — but the sentence has to be the same one, or the
+ * two screens disagree about when a feature ships.
+ */
+export const FOLLOW_NOTICE = 'ระบบติดตามจะเปิดใช้งานเร็ว ๆ นี้';
 
 interface CreatorInlineCardProps {
   creator: CreatorSummary;
