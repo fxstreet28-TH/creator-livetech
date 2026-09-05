@@ -41,6 +41,21 @@ import { GiftOverlay } from '@/components/live/gifts/GiftOverlay';
  */
 const OBS_TRAY_INSET = 48;
 
+/**
+ * Where a fullscreen gift sits on a 1080p scene.
+ *
+ * Explicit pixels rather than the percentages the in-app player derives, for
+ * the same reason the tray inset above is: an OBS canvas is a known 1920 × 1080
+ * and its edges are where the streamer's own frame, webcam border and alert
+ * boxes live. These were chosen against that scene.
+ *
+ * The stage moves out of the middle here for the same reason it does in the
+ * app, only more so: OBS composites this straight over the camera, so a gift in
+ * the centre of the canvas is a gift on the creator's face with nothing behind
+ * it to soften the point.
+ */
+const OBS_ANCHOR = { left: '96px', bottom: '108px', stagePx: 520 } as const;
+
 type Phase =
   | { kind: 'connecting' }
   | { kind: 'ready'; token: string; userId: string }
@@ -224,6 +239,7 @@ export function OverlayClient({ sessionId }: { sessionId: string }) {
         latestGift={channel.latestGift}
         resetKey={sessionId}
         inset={OBS_TRAY_INSET}
+        anchor={OBS_ANCHOR}
       />
 
       {/*

@@ -32,16 +32,28 @@ const MINI_BOX = Math.round(300 * MINI_SCALE);
 export function GiftTray({
   items,
   reduceMotion = false,
+  shifted = false,
   className = '',
 }: {
   items: TrayItem[];
   reduceMotion?: boolean;
+  /**
+   * Step out from under the anchored fullscreen stage.
+   *
+   * On a desktop player the stage moves into the bottom-left corner the tray
+   * already owns, and three rows growing upward from the bottom would run
+   * straight through it. GiftOverlay sets this while such a gift is on screen;
+   * the distance comes from the stage's real measured width, published as
+   * `--gift-stage-width`, so the tray sits beside a 320px Nova and beside a
+   * 484px video card without either being a special case.
+   */
+  shifted?: boolean;
   className?: string;
 }) {
   if (items.length === 0) return null;
 
   return (
-    <div className={`${styles.tray} ${className}`}>
+    <div className={`${styles.tray} ${shifted ? styles.trayShifted : ''} ${className}`}>
       {items.map((item) => (
         <GiftTrayRow key={item.key} item={item} reduceMotion={reduceMotion} />
       ))}
