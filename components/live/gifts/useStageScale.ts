@@ -131,6 +131,9 @@ const STAGE_MIN_PX = 80;
  */
 const CAPTION_HEADROOM_PX = 72;
 
+/** See GiftAnchor.caption. */
+export type CaptionDensity = 'full' | 'compact' | 'minimal';
+
 export interface OverlayBox {
   width: number;
   height: number;
@@ -198,6 +201,18 @@ export interface GiftAnchor {
    * is aligned to.
    */
   trayShift?: boolean;
+  /**
+   * How much type the caption gets.
+   *
+   * 'full' is the fluid desktop scale, up to 22px of sender name across 52
+   * characters. 'compact' is the phone: fixed 12/11px inside the stage's own
+   * width, because the fluid scale wraps a 180px block to four lines and
+   * pushes it into the tray. 'minimal' is a phone on its side, where the whole
+   * viewport is 375px tall — it drops the sender's message so the block is two
+   * lines, keeping the name and the star total, which are the parts that say
+   * money moved.
+   */
+  caption?: CaptionDensity;
 }
 
 export interface GiftLayout {
@@ -222,6 +237,8 @@ export interface GiftLayout {
   trayShift: boolean;
   /** See GiftAnchor.captionAbove. */
   captionAbove: boolean;
+  /** See GiftAnchor.caption. */
+  caption: CaptionDensity;
 }
 
 const CENTERED: GiftLayout = {
@@ -234,6 +251,7 @@ const CENTERED: GiftLayout = {
   // is no floor for the block to sit on, so there is nothing for a caption
   // above it to be above.
   captionAbove: false,
+  caption: 'full',
 };
 
 function clamp(value: number, low: number, high: number): number {
@@ -269,6 +287,7 @@ export function giftLayout(
       trayBottom: anchor.trayBottom,
       trayShift: anchor.trayShift ?? true,
       captionAbove: anchor.captionAbove ?? true,
+      caption: anchor.caption ?? 'full',
     };
   }
 
@@ -293,6 +312,7 @@ export function giftLayout(
     bottom: `${ANCHORED_BOTTOM_PX}px`,
     trayShift: true,
     captionAbove: true,
+    caption: 'full',
   };
 }
 

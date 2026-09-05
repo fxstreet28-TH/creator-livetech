@@ -54,6 +54,17 @@ import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
  */
 export type PlayerPresentation = 'framed' | 'fullbleed';
 
+/**
+ * How a full-bleed video fills the frame. Ignored when framed.
+ *
+ * 'cover' is the default and the layout's whole premise: the broadcast fills
+ * the phone, edge to edge, the way it does in every app this competes with. A
+ * 16:9 source on a 9:19.5 screen loses its sides to the crop — accepted, and
+ * not something the player decides for itself. 'contain' is the viewer's own
+ * choice from the rail, for when the sides are the content.
+ */
+export type VideoFit = 'cover' | 'contain';
+
 interface HlsLivePlayerProps {
   playbackUrl: string;
   latencyMode: LatencyMode;
@@ -63,6 +74,7 @@ interface HlsLivePlayerProps {
   /** Rendered over the video — the floating reactions and the reaction rail. */
   overlay?: React.ReactNode;
   presentation?: PlayerPresentation;
+  fit?: VideoFit;
 }
 
 export function HlsLivePlayer({
@@ -73,6 +85,7 @@ export function HlsLivePlayer({
   viewerCount,
   overlay,
   presentation = 'framed',
+  fit = 'cover',
 }: HlsLivePlayerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const handleRef = useRef<HlsHandle | null>(null);
@@ -84,13 +97,15 @@ export function HlsLivePlayer({
   /**
    * True once the stream's own frames turn out to be wider than they are tall.
    *
-   * Only consulted in full-bleed, where the video is `object-fit: cover` so a
-   * portrait broadcast fills a portrait phone the way TikTok's does. A
-   * LANDSCAPE source under `cover` on a 9:19.5 screen is cropped to about a
-   * third of its width, which for a creator broadcasting from a desktop is
-   * most of the shot — so a landscape source is letterboxed with `contain`
-   * instead. Read from the element rather than assumed, because nothing in the
-   * playback response says which way up the camera was.
+   * It no longer decides the fit — every source is `cover` in full-bleed, and
+   * the viewer owns the exception — but it still decides WHERE the crop falls.
+   * A landscape frame cropped to a portrait phone loses two thirds of its
+   * width and, centred, half of its height with it; a creator sitting at a
+   * desk ends up as a chest. Biasing the crop upward keeps the face in the
+   * part that survives.
+   *
+   * Read from the element rather than assumed, because nothing in the playback
+   * response says which way up the camera was.
    */
   const [landscapeSource, setLandscapeSource] = useState(false);
   /**
@@ -225,6 +240,12 @@ export function HlsLivePlayer({
         // Only meaningful in full-bleed; `cover` on the framed 16:9 box would
         // crop a portrait broadcast to a letterbox slot, which is the opposite
         // of what that layout wants.
+        style={
+          fullBleed && fit === 'cover' && landscapeSource
+            ? // 30% rather than the default 50%: see landscapeSource.
+              { objectPosition: '50% 30%' }
+            : undefined
+        }
         onLoadedMetadata={(event) => {
           const video = event.currentTarget;
           if (video.videoWidth > 0 && video.videoHeight > 0) {
@@ -235,7 +256,7 @@ export function HlsLivePlayer({
         onPause={() => setPaused(true)}
         aria-label={`ไลฟ์: ${title}`}
         className={`absolute inset-0 h-full w-full ${
-          fullBleed && !landscapeSource ? 'object-cover' : 'object-contain'
+          fullBleed && fit === 'cover' ? 'object-cover' : 'object-contain'
         }`}
       />
 

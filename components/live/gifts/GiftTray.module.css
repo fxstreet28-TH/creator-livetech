@@ -32,7 +32,7 @@
    * 50px after the 105px mascot, so every name renders as "ผู้…" and the row
    * says nothing. The row is mostly text; it needs most of a phone's width.
    */
-  max-width: min(86%, 320px);
+  max-width: var(--gift-tray-max, min(86%, 320px));
   /* Overridable by GiftOverlay's `inset`, which the OBS source raises to 48px
      for a 1080p safe area. */
   padding: var(--gift-inset, 12px);
@@ -47,7 +47,7 @@
 
 @media (min-width: 640px) {
   .tray {
-    max-width: min(50%, 320px);
+    max-width: var(--gift-tray-max, min(50%, 320px));
   }
 }
 
@@ -73,7 +73,13 @@
  */
 .trayShifted {
   left: calc(var(--gift-anchor-left, 6%) + var(--gift-stage-width, 320px) + 20px);
-  right: 0;
+  /*
+   * Usually the far edge. The phone's landscape layout keeps a strip clear on
+   * the right for the reaction rail, which on that screen is at the same
+   * height the tray parks at — on every other surface the rail is nowhere near
+   * it and this is 0.
+   */
+  right: var(--gift-tray-right, 0px);
   margin-left: auto;
   /*
    * On the stage's own bottom line, not the player's.
@@ -89,7 +95,7 @@
   /* The strip can be narrower than the tray's usual column on a small desktop
      player. Rows shrink to fit rather than overflowing the edge; the row's own
      ellipsis handles what is left. */
-  max-width: min(320px, 100%);
+  max-width: min(var(--gift-tray-max, 320px), 100%);
 }
 
 .row {

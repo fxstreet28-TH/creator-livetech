@@ -24,6 +24,13 @@ import type { FullscreenItem } from './useGiftQueue';
 import { STAGE_PX, useElementBox, type GiftLayout } from './useStageScale';
 import styles from './GiftFullscreen.module.css';
 
+/** See GiftAnchor.caption — 'full' needs no class, it is the stylesheet's default. */
+const CAPTION_CLASS = {
+  full: '',
+  compact: styles.captionCompact,
+  minimal: styles.captionMinimal,
+} as const;
+
 export function GiftFullscreen({
   item,
   layout,
@@ -125,7 +132,7 @@ function FullscreenStage({
     <div
       className={`${layout.anchored ? styles.anchor : styles.backdrop} ${
         layout.captionAbove ? styles.captionAbove : ''
-      } ${reduceMotion ? styles.still : ''}`}
+      } ${CAPTION_CLASS[layout.caption]} ${reduceMotion ? styles.still : ''}`}
       style={
         {
           '--gift-anchor-left': layout.left,

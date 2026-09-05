@@ -15,10 +15,14 @@
  * decided here, once, above the split.
  *
  * The swap happens after hydration, because a media query cannot be evaluated
- * on the server: useIsMobileViewport returns null for the first frame and this
+ * on the server: useViewerLayoutMode returns null for the first frame and this
  * file paints the page's own black ground rather than guessing. Guessing wrong
  * is a 16:9 video that jumps to full-bleed, or a hydration mismatch across the
  * whole subtree.
+ *
+ * "Below 768px" is really "narrow, or short and wide": a phone on its side is
+ * 812 x 375 and needs the phone layout more than a phone upright does. See
+ * useViewerLayoutMode.
  *
  * Split out of the route file because that file has to stay a Server Component
  * — it is the only place `generateStaticParams` can live, which the Capacitor
@@ -32,7 +36,7 @@
 import Link from 'next/link';
 import { AlertTriangle, Gift } from 'lucide-react';
 import { AnimatePresence } from 'framer-motion';
-import { useIsMobileViewport } from '@/lib/hooks/useIsMobileViewport';
+import { useViewerLayoutMode } from '@/lib/hooks/useIsMobileViewport';
 import { useLiveViewer } from '@/lib/hooks/useLiveViewer';
 import { CreatorInlineCard } from '@/components/viewer/CreatorInlineCard';
 import { ViewerPageShell } from '@/components/viewer/ViewerPageShell';
@@ -56,12 +60,14 @@ import { LiveViewerMobile } from './mobile/LiveViewerMobile';
 
 export function LiveWatchView({ sessionId }: { sessionId: string }) {
   /**
-   * null for exactly one frame — see useIsMobileViewport. Passed into the hook
-   * below as well: only the phone layout wants the gift catalogue before the
-   * drawer is opened.
+   * null for exactly one frame — see useViewerLayoutMode. The orientation half
+   * of the answer is a PROP on the phone layout rather than a second branch,
+   * so rotating a handset re-renders the same tree instead of unmounting the
+   * player and the chat with it.
    */
-  const mobile = useIsMobileViewport();
-  const state = useLiveViewer(sessionId, { preloadGiftTiers: mobile === true });
+  const mode = useViewerLayoutMode();
+  const mobile = mode === 'portrait' || mode === 'landscape';
+  const state = useLiveViewer(sessionId, { preloadGiftTiers: mobile });
   const { session, creator, watch, loading, refresh, title, elapsedSeconds, channel } = state;
 
   const giftDrawer = (
@@ -93,7 +99,7 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
    * The page's own ground colour rather than a spinner: both layouts paint
    * over it, so whichever wins the next frame there is nothing to see change.
    */
-  if (mobile === null) {
+  if (mode === null) {
     return <div className="h-dvh bg-[#0a0a15]" aria-hidden />;
   }
 
@@ -125,7 +131,7 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
     if (mobile) {
       return (
         <>
-          <LiveViewerMobile sessionId={sessionId} state={state} />
+          <LiveViewerMobile sessionId={sessionId} state={state} orientation={mode} />
           {toaster}
         </>
       );
@@ -186,7 +192,7 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
   if (mobile) {
     return (
       <>
-        <LiveViewerMobile sessionId={sessionId} state={state} />
+        <LiveViewerMobile sessionId={sessionId} state={state} orientation={mode} />
         {giftDrawer}
         {toaster}
       </>

@@ -23,6 +23,7 @@
 
 import { useCallback, useMemo, useState } from 'react';
 import { LiveViewerMobile } from '@/components/live/mobile/LiveViewerMobile';
+import { useViewerOrientation } from '@/lib/hooks/useIsMobileViewport';
 import type { LiveViewerState } from '@/lib/hooks/useLiveViewer';
 import type { UseLiveChannelResult } from '@/lib/hooks/useLiveChannel';
 import type { LiveGiftEvent } from '@/lib/live/gifts';
@@ -132,6 +133,14 @@ export function LiveMobileBench() {
    * and show what a notch and a home indicator actually do to the clearances.
    */
   const [notch, setNotch] = useState(true);
+  /**
+   * The real orientation, so the bench shows what a rotated handset shows.
+   *
+   * The live page gets this from useViewerLayoutMode, which also decides
+   * mobile-vs-desktop; the bench has already decided that, so it reads the
+   * orientation half on its own.
+   */
+  const orientation = useViewerOrientation();
 
   const [latestGift, setLatestGift] = useState<LiveGiftEvent | null>(null);
   const [toast, setToast] = useState<LiveViewerState['toast']>(null);
@@ -217,10 +226,18 @@ export function LiveMobileBench() {
         a dev-server style tag and a CSS module are inserted is not guaranteed.
       */}
       {notch && (
-        <style>{`[data-live-mobile-root]{--live-safe-top:59px!important;--live-safe-bottom:34px!important}`}</style>
+        <style>
+          {orientation === 'landscape'
+            ? // Held sideways the notch moves to a LONG edge: no top inset, a
+              // short home-indicator strip, and 47px down each side. Emulating
+              // the portrait numbers here would put a 59px band above a 375px
+              // viewport and make the layout look broken when it is not.
+              `[data-live-mobile-root]{--live-safe-top:0px!important;--live-safe-bottom:21px!important;--live-safe-left:47px!important;--live-safe-right:47px!important}`
+            : `[data-live-mobile-root]{--live-safe-top:59px!important;--live-safe-bottom:34px!important}`}
+        </style>
       )}
 
-      <LiveViewerMobile sessionId={SESSION_ID} state={state} />
+      <LiveViewerMobile sessionId={SESSION_ID} state={state} orientation={orientation} />
 
       {/* The bench's own controls, over everything the layout draws. They are
           the one thing on this page that does not exist on the real screen. */}

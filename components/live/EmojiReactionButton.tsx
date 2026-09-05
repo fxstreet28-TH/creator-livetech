@@ -54,6 +54,8 @@ interface EmojiReactionButtonProps {
    * renders — this only limits what THIS rail can send.
    */
   limit?: number;
+  /** 30px circles instead of 40, for the landscape rail. See RailButton. */
+  compact?: boolean;
   className?: string;
 }
 
@@ -62,6 +64,7 @@ export function EmojiReactionButton({
   enabled,
   orientation = 'horizontal',
   limit,
+  compact = false,
   className = '',
 }: EmojiReactionButtonProps) {
   const vertical = orientation === 'vertical';
@@ -110,7 +113,7 @@ export function EmojiReactionButton({
       // video takes the first emoji with it. Vertical has a column to itself
       // and does not need to.
       className={`flex items-center gap-2 ${
-        vertical ? 'flex-col gap-2.5' : 'max-w-[70%] flex-wrap justify-end'
+        vertical ? (compact ? 'flex-col gap-1.5' : 'flex-col gap-2.5') : 'max-w-[70%] flex-wrap justify-end'
       } ${className}`}
       role="group"
       aria-label="ส่งอิโมจิให้ผู้ถ่ายทอด"
@@ -150,10 +153,11 @@ export function EmojiReactionButton({
           // video, which ends the hold and looks like a bug.
           onContextMenu={(event) => event.preventDefault()}
           className={`inline-flex select-none items-center justify-center rounded-full border border-white/15 bg-black/40 leading-none backdrop-blur-md transition hover:scale-110 hover:border-transparent hover:bg-black/55 hover:shadow-[0_0_0_1px_rgba(139,92,246,0.6),0_0_18px_rgba(34,211,238,0.35)] focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 active:scale-95 disabled:opacity-40 disabled:hover:scale-100 disabled:hover:shadow-none ${
-            // 40px in the vertical rail: the design's size, and what lets five
-            // circles plus their gaps finish above the gift stage on a 812px
-            // screen. 44 elsewhere, the app's tap-target floor.
-            vertical ? 'h-10 w-10 text-lg' : 'h-11 w-11 text-xl'
+            // 40px in the vertical rail: the design's size. 30 when the rail
+            // is compact, which is a phone on its side — six 40px circles do
+            // not fit in a 375px viewport that also has a bar and a composer.
+            // 44 elsewhere, the app's tap-target floor.
+            vertical ? (compact ? 'h-[30px] w-[30px] text-sm' : 'h-10 w-10 text-lg') : 'h-11 w-11 text-xl'
           }`}
           style={{ touchAction: 'none' }}
         >

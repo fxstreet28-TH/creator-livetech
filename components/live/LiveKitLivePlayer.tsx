@@ -36,29 +36,26 @@ import {
   thaiForConnectError,
   type RemoteTrack,
 } from '@/lib/live/livekitClient';
-import type { PlayerPresentation } from './HlsLivePlayer';
+import type { PlayerPresentation, VideoFit } from './HlsLivePlayer';
 import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
 
 export type ViewerPhase = 'connecting' | 'watching' | 'reconnecting' | 'ended' | 'failed';
 
 /**
- * `cover` in full-bleed, and only for a portrait source.
+ * The same fit rule HlsLivePlayer applies, written onto the SDK's element.
  *
- * Same rule as HlsLivePlayer: filling a portrait phone is the point of that
- * layout, but a landscape broadcast cropped to 9:19.5 loses two thirds of the
- * frame — a creator streaming from a desktop would be a strip of their
- * background — so a landscape source is letterboxed instead. Written onto the
- * element rather than rendered as a prop because the element is the SDK's:
- * tracks are attached with `track.attach()`, which owns srcObject, autoplay
- * and the muted flag.
+ * Written rather than rendered because the element is not ours: tracks are
+ * attached with `track.attach()`, which owns srcObject, autoplay and the muted
+ * flag. `cover` for every source in full-bleed unless the viewer asked
+ * otherwise, with the crop biased upward on a landscape source so a seated
+ * creator's face survives it.
  */
-function applyVideoFit(video: HTMLVideoElement, fullBleed: boolean) {
-  const cover =
-    fullBleed &&
-    video.videoWidth > 0 &&
-    video.videoHeight > 0 &&
-    video.videoHeight >= video.videoWidth;
+function applyVideoFit(video: HTMLVideoElement, fullBleed: boolean, fit: VideoFit) {
+  const cover = fullBleed && fit === 'cover';
   video.className = `absolute inset-0 h-full w-full ${cover ? 'object-cover' : 'object-contain'}`;
+  const landscapeSource =
+    video.videoWidth > 0 && video.videoHeight > 0 && video.videoWidth > video.videoHeight;
+  video.style.objectPosition = cover && landscapeSource ? '50% 30%' : '';
 }
 
 interface LiveKitLivePlayerProps {
@@ -75,6 +72,7 @@ interface LiveKitLivePlayerProps {
   onEnded: () => void;
   /** See HlsLivePlayer — the two players stay interchangeable, dress included. */
   presentation?: PlayerPresentation;
+  fit?: VideoFit;
 }
 
 export function LiveKitLivePlayer({
@@ -86,6 +84,7 @@ export function LiveKitLivePlayer({
   overlay,
   onEnded,
   presentation = 'framed',
+  fit = 'cover',
 }: LiveKitLivePlayerProps) {
   const fullBleed = presentation === 'fullbleed';
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -99,6 +98,7 @@ export function LiveKitLivePlayer({
    * change an `object-fit`.
    */
   const fullBleedRef = useRef(fullBleed);
+  const fitRef = useRef(fit);
 
   const [phase, setPhase] = useState<ViewerPhase>('connecting');
   const [error, setError] = useState<string | null>(null);
@@ -126,7 +126,7 @@ export function LiveKitLivePlayer({
       const element = track.attach();
       if (track.kind === Track.Kind.Video) {
         const video = element as HTMLVideoElement;
-        const refit = () => applyVideoFit(video, fullBleedRef.current);
+        const refit = () => applyVideoFit(video, fullBleedRef.current, fitRef.current);
         refit();
         // The source's dimensions are not known when the element is created,
         // and a creator who rotates their phone mid-broadcast changes them.
@@ -212,14 +212,16 @@ export function LiveKitLivePlayer({
    *
    * In an effect rather than assigned during render (React refs are not for
    * render-time writes), and it re-applies rather than only recording, because
-   * crossing the breakpoint with a track already attached would otherwise
-   * leave the SDK's element wearing the previous layout's `object-fit`.
+   * crossing the breakpoint — or toggling the fit from the rail — with a track
+   * already attached would otherwise leave the SDK's element wearing the
+   * previous setting.
    */
   useEffect(() => {
     fullBleedRef.current = fullBleed;
+    fitRef.current = fit;
     const video = containerRef.current?.querySelector('video');
-    if (video) applyVideoFit(video, fullBleed);
-  }, [fullBleed]);
+    if (video) applyVideoFit(video, fullBleed, fit);
+  }, [fullBleed, fit]);
 
   const enableAudio = useCallback(async () => {
     try {

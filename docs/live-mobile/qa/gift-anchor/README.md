@@ -19,17 +19,6 @@ Measured on the captures: stage bottom 24px above the player's bottom edge,
 tray row bottom on the same line, caption 8px above the stage and flush with
 its left edge, stage 282px (was 320).
 
-## Phone viewer, 375 × 812
+## Phone viewer
 
-From `/dev/live-mobile`, iPhone 14 Pro safe areas emulated.
-
-| file | what it shows |
-| --- | --- |
-| `375-nova-with-tray.jpg` | tray row up, so the stage sits at its high position — 16px above the row |
-| `375-tier07-with-tray.jpg` | the same, with the tier-07 clip: the width cap holds it to the stage's 172px, so it clears the chat column |
-| `375-tier07-no-tray.jpg` | tray empty, so the block drops 117px to 16px above the chat — the position it holds for most of a broadcast |
-
-The two phone positions are what the brief's "drop a further 40px when the tray
-is empty" turns into once a tray row's real height (117px) is accounted for.
-See the constants in `components/live/mobile/LiveViewerMobile.tsx` for why the
-literal 250px could not be used.
+Moved to `../orientation/`, which covers both ways up.

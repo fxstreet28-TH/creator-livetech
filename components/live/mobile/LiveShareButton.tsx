@@ -16,14 +16,15 @@
 
 import { useCallback, useState } from 'react';
 import { Check, Share2 } from 'lucide-react';
+import { RailButton } from './RailButton';
 
 export function LiveShareButton({
   title,
-  className = '',
+  compact = false,
 }: {
   /** The session's title, offered to the OS sheet as the share text. */
   title: string;
-  className?: string;
+  compact?: boolean;
 }) {
   /** Set for a moment after a copy, so the fallback confirms it did something. */
   const [copied, setCopied] = useState(false);
@@ -56,15 +57,15 @@ export function LiveShareButton({
     }
   }, [title]);
 
+  const size = compact ? 14 : 17;
+
   return (
-    <button
-      type="button"
+    <RailButton
+      label={copied ? 'คัดลอกลิงก์แล้ว' : 'แชร์ไลฟ์นี้'}
       onClick={() => void share()}
-      aria-label={copied ? 'คัดลอกลิงก์แล้ว' : 'แชร์ไลฟ์นี้'}
-      title={copied ? 'คัดลอกลิงก์แล้ว' : 'แชร์ไลฟ์นี้'}
-      className={`inline-flex h-10 w-10 select-none items-center justify-center rounded-full border border-white/15 bg-black/40 text-white backdrop-blur-md transition hover:bg-black/55 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 active:scale-95 ${className}`}
+      compact={compact}
     >
-      {copied ? <Check size={17} aria-hidden /> : <Share2 size={17} aria-hidden />}
-    </button>
+      {copied ? <Check size={size} aria-hidden /> : <Share2 size={size} aria-hidden />}
+    </RailButton>
   );
 }

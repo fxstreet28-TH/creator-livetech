@@ -63,6 +63,74 @@
      out from under the keyboard. Everything in the bottom stack is measured
      from this one value so the pieces cannot drift apart. */
   --live-bottom: calc(var(--live-safe-bottom) + 12px + var(--live-keyboard));
+  --live-composer-h: 42px;
+  --live-chat-gap: 8px;
+
+  /*
+   * THE COLLAPSED CHAT IS CAPPED BY THE GIFT TRAY, NOT BY 38dvh.
+   *
+   * The design gives the chat "max-height: 38vh" AND puts a tray row directly
+   * above it. On an 812px phone those are 308px and about 142px of room for
+   * the same strip, so the taller one would run the newest five messages
+   * straight through a Stardust row. 142px is about five compact lines, which
+   * is the number the design asks for; 38dvh still binds on a viewport short
+   * enough for it to be the smaller of the two.
+   *
+   * Expanded is a deliberate act by the viewer and covers the tray, which is
+   * correct: they asked to read the conversation, not to watch gifts. Its own
+   * ceiling is the TOP BAR — 70vh of an 812px phone puts the "ย่อ" chip across
+   * the LIVE pill — so the subtrahend is everything the column may not have:
+   * the composer and its gap below, the top bar above, and the chip.
+   */
+  --live-chat-max: min(38dvh, 142px);
+  --live-chat-max-expanded: min(
+    70dvh,
+    calc(100dvh - var(--live-safe-top) - var(--live-safe-bottom) - 186px)
+  );
+
+  /*
+   * THE LINE EVERYTHING ABOVE THE CHAT IS MEASURED FROM.
+   *
+   * The top edge of the collapsed chat column, derived from the four values
+   * that put it there. The gift tray sits on it and the fullscreen stage sits
+   * above that, and both of those are CSS lengths handed to GiftOverlay by
+   * LiveViewerMobile — so this variable is what stops the gift layer and the
+   * chat from holding two different opinions about where the chat starts. The
+   * probe below is the same line, measurable.
+   */
+  --live-chat-top: calc(
+    var(--live-bottom) + var(--live-composer-h) + var(--live-chat-gap) + var(--live-chat-max)
+  );
+
+  /*
+   * The tray's own width ceiling, narrowed from its default min(86%, 320px).
+   *
+   * 320px of a 375px screen reaches x=332, and the reaction rail starts at
+   * x=323. Only the TEXT column narrows — the 105px mascot, and so the row's
+   * height, are untouched.
+   */
+  --gift-tray-max: min(78%, 292px);
+}
+
+/*
+ * A zero-size marker sitting exactly on the collapsed chat's top line.
+ *
+ * The gift stage's SIZE has to be capped in JavaScript — the animations are
+ * authored at 300px and scaled by a number, so there is no CSS expression to
+ * put it in — and the cap is "the block's top must not rise above 42% of the
+ * viewport". That needs the block's BOTTOM in pixels, which is this line plus
+ * 12, and this line contains `env(safe-area-inset-bottom)`, which JavaScript
+ * cannot read. Measuring an element that CSS has already positioned is the
+ * short way round: one getBoundingClientRect, no duplicated arithmetic, and it
+ * follows the keyboard and the orientation for free.
+ */
+.chatTopProbe {
+  position: absolute;
+  left: 0;
+  width: 0;
+  height: 0;
+  bottom: var(--live-chat-top);
+  pointer-events: none;
 }
 
 /*
@@ -114,26 +182,22 @@
 }
 
 /*
- * The reaction rail, and the one piece of arithmetic in this file.
+ * The reaction rail: reactions, share, and the two view controls.
  *
- * It has to clear the top bar's two rows, and it has to FINISH above the gift
- * stage — the brief's rule is "never below 45% of viewport height", because
- * below that is where a fullscreen gift and its caption are drawn. The rail is
- * 240px tall (five 40px circles and four 10px gaps), so the second rule is a
- * ceiling on its TOP at `45dvh - 240px`, which on a 812px screen is 125px and
- * on a 932px one is 179px.
- *
- * The clamp reconciles them: the design's 150px where there is room for it,
- * less on a short screen, and never so little that the rail lands on the top
- * bar — which is what the lower bound is for on a very short viewport (a
- * phone in landscape, a small webview).
+ * Seven 40px circles and their gaps come to 340px, so where it STARTS is the
+ * whole question. It has to clear the top bar's two rows, and it must not run
+ * into the gift tray, whose rows are drawn from `--live-chat-top` upward.
+ * Horizontally the two no longer collide at all — `--gift-tray-max` narrows
+ * the tray to x=304 and this starts at x=323 — so the clamp is only about the
+ * top bar, and about a viewport short enough that the design's 92px would put
+ * the rail through it.
  */
 .rail {
   position: absolute;
   right: calc(var(--live-safe-right) + 12px);
   top: clamp(
+    calc(var(--live-safe-top) + 56px),
     calc(var(--live-safe-top) + 92px),
-    calc(45dvh - 240px),
     calc(var(--live-safe-top) + 150px)
   );
   z-index: 20;
@@ -180,41 +244,6 @@
   margin-left: calc(var(--live-safe-left) + 14px);
   /* The bubbles' own inset from that column's left edge. */
   padding-right: 2px;
-
-  /*
-   * THE COLLAPSED COLUMN IS CAPPED BY THE GIFT TRAY, NOT BY 38dvh.
-   *
-   * The design gives the chat "max-height: 38vh" AND puts the tray's bottom
-   * edge 238px up from the bottom of the screen. On an 812px phone those are
-   * 308px and 142px of room for the same strip, so the taller one would run
-   * the newest five messages straight through a Stardust row — which is the
-   * one thing the gift layout's QA is explicit about.
-   *
-   * 142px is the gap the tray actually leaves: the tray's content bottom
-   * (12px of overlay inset above its 192px offset) minus the chat's own bottom
-   * (the 42px composer plus its 8px gap, above the 12px page inset). It is
-   * about five compact lines, which is the number the design asks for. 38dvh
-   * still binds on a viewport short enough for it to be the smaller of the
-   * two.
-   *
-   * Expanded is a deliberate act by the viewer and covers the tray, which is
-   * correct: they asked to read the conversation, not to watch gifts.
-   */
-  --live-chat-max: min(38dvh, 142px);
-  /*
-   * Expanded, the ceiling is the TOP BAR rather than the design's 70vh.
-   *
-   * 70vh of an 812px phone is 568px, which puts the "ย่อ" chip — which sits
-   * above the list — across the LIVE pill. The subtrahend is everything the
-   * column is not allowed to have: 62px under it (the composer and its gap),
-   * 76px of top bar above it (two rows and their gaps), and 48px for the chip
-   * and its own gap. 70dvh still binds on a tall screen, where it is the
-   * smaller of the two.
-   */
-  --live-chat-max-expanded: min(
-    70dvh,
-    calc(100dvh - var(--live-safe-top) - var(--live-safe-bottom) - 186px)
-  );
 }
 
 /* The composer clears the same safe area the chat column does. */
@@ -239,6 +268,89 @@
   border: 0;
   padding: 0;
   cursor: default;
+}
+
+/* --------------------------------------------------------------- landscape --
+ * The same component, turned on its side.
+ *
+ * A phone held sideways is 812 x 375: seven times as much width as it needs
+ * and half the height. So nothing moves to a different corner — the chat is
+ * still bottom-left, the rail still right, the composer still along the bottom
+ * — but every vertical measurement shrinks, and the top bar collapses from two
+ * rows to one, because two rows of 34px in a 375px viewport is a tenth of the
+ * screen spent on chrome.
+ *
+ * It is a set of variable overrides and four positioning tweaks rather than a
+ * second layout, and that is load-bearing: rotating a phone must change props
+ * on the SAME element tree, or React unmounts the <video> and the viewer loses
+ * the stream and their place in the chat.
+ */
+.rootLandscape {
+  --live-bottom: calc(var(--live-safe-bottom) + 10px + var(--live-keyboard));
+  --live-composer-h: 40px;
+  /*
+   * Three lines rather than five. 84px is what is left once the composer, the
+   * tray and the top bar have taken theirs out of 375, and it is the number
+   * the brief asks for.
+   */
+  --live-chat-max: min(34dvh, 84px);
+  --live-chat-max-expanded: min(
+    78dvh,
+    calc(100dvh - var(--live-safe-top) - var(--live-safe-bottom) - 108px)
+  );
+
+  /*
+   * The tray parks left of the reaction rail, not at the screen edge.
+   *
+   * `.trayShifted` runs to `right: 0` everywhere else, because everywhere else
+   * the rail is nowhere near the height the tray sits at. Here it is: the rail
+   * is a 30px column down the right edge at exactly the tray's height, so the
+   * strip has to stop short of it — its 12px inset, its 30px width, and a gap.
+   */
+  --gift-tray-right: calc(var(--live-safe-right) + 56px);
+  /*
+   * And narrower than portrait's, so the parked row stops clear of the middle
+   * of an 812px-wide frame — which in landscape is where the creator is.
+   */
+  --gift-tray-max: min(34%, 252px);
+}
+
+/* One row, so the pill and the count share the line with the capsule. */
+.rootLandscape .topBar {
+  top: calc(var(--live-safe-top) + 8px);
+  left: calc(var(--live-safe-left) + 12px);
+  right: calc(var(--live-safe-right) + 12px);
+}
+
+/*
+ * Smaller circles, tighter gaps, and starting higher.
+ *
+ * Six 30px buttons and their 6px gaps are 210px of a 375px viewport, which
+ * fits between a one-row top bar and the composer with room either side. The
+ * 40px portrait targets would not: seven of them is 340px, and there is no
+ * 340px column on this screen that is not also the composer.
+ */
+.rootLandscape .rail {
+  top: calc(var(--live-safe-top) + 54px);
+  gap: 6px;
+}
+
+/*
+ * Wider and shorter. 45vw of 812 is 365, so the px ceiling is what binds and
+ * the column stays out of the middle of the frame, where the creator is.
+ */
+.rootLandscape .chat {
+  width: min(45vw, 300px);
+  margin-left: calc(var(--live-safe-left) + 14px);
+}
+
+/* The top scrim is sized for a two-row bar; one row needs less of the frame. */
+.rootLandscape .scrimTop {
+  height: 112px;
+}
+
+.rootLandscape .scrimBottom {
+  height: 58%;
 }
 
 @media (prefers-reduced-motion: reduce) {

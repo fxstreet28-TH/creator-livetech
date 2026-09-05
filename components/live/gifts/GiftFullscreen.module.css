@@ -58,11 +58,12 @@
   /*
    * The block can be asked to move while it is on screen: the phone layout
    * gives it one bottom while the tray has rows and a lower one while it does
-   * not, so a Stardust landing during a Nova lifts it out of the way. A slide
-   * rather than a jump, and the same curve and duration the tray uses when it
-   * steps aside for the same reason.
+   * not, so a Stardust landing during a Nova lifts it out of the way and it
+   * comes back down when the row expires. 220ms, inside the 250 the brief
+   * allows for that return, on the curve the tray uses when it steps aside for
+   * the same reason.
    */
-  transition: bottom 320ms cubic-bezier(0.2, 0.9, 0.3, 1);
+  transition: bottom 220ms cubic-bezier(0.2, 0.9, 0.3, 1);
 }
 
 /*
@@ -236,23 +237,51 @@
 /*
  * The anchored caption on a phone.
  *
- * Only the full-bleed watch layout can produce an anchored stage this narrow
- * (see the `anchor` note in useStageScale.ts), and the caption's fluid type —
- * up to 22px of sender name — was sized for a desktop block roughly twice as
- * wide. At 200px it wraps to four lines and pushes the tray out of the strip
- * it was positioned into, so the type is fixed rather than fluid here.
+ * A CLASS RATHER THAN A MEDIA QUERY, because a phone on its side is 812px wide
+ * and would miss `max-width: 767px` entirely while having half the height and
+ * needing this more, not less. The layout states what it wants; the viewport
+ * is not a reliable proxy for it.
+ *
+ * The caption's fluid type — up to 22px of sender name — was sized for a
+ * desktop block roughly twice as wide. At 180px it wraps to four lines and
+ * pushes the block into the gift tray, so the type is fixed rather than fluid
+ * here.
  */
-@media (max-width: 767px) {
-  .anchor .caption {
-    max-width: min(46vw, 180px);
-  }
+.captionCompact .caption {
+  max-width: min(46vw, 180px);
+}
 
-  .anchor .sender {
-    font-size: 12px;
-  }
+.captionCompact .sender {
+  font-size: 12px;
+}
 
-  .anchor .stars,
-  .anchor .message {
-    font-size: 11px;
-  }
+.captionCompact .stars,
+.captionCompact .message {
+  font-size: 11px;
+}
+
+/*
+ * Landscape: the same, minus the sender's message.
+ *
+ * 375px of viewport height has to hold a top bar, a gift, a tray row, three
+ * lines of chat and a composer. Two of the caption's three lines carry
+ * information nothing else on the screen does — who sent it and for how many
+ * stars — and the third is 80 characters of someone else's text that also
+ * arrives in the chat as a gift line a moment later. So that is the line that
+ * goes.
+ */
+.captionMinimal .caption {
+  max-width: min(28vw, 200px);
+}
+
+.captionMinimal .sender {
+  font-size: 12px;
+}
+
+.captionMinimal .stars {
+  font-size: 11px;
+}
+
+.captionMinimal .message {
+  display: none;
 }
