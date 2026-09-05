@@ -1,0 +1,47 @@
+/*
+ * The overlay variant's two pieces of CSS that Tailwind cannot state safely.
+ *
+ * Everything else about `variant="overlay"` is utility classes on the same
+ * elements the panel renders — this file exists for the mask, which needs the
+ * -webkit- prefix for Safari older than 15.4, and for the two-line clamp on a
+ * bubble, which needs the same.
+ */
+
+/*
+ * Older lines fade out upward rather than being cut off by the container.
+ *
+ * The list is bottom-anchored and clipped, so without this the fifth message
+ * up ends mid-glyph against the video — which reads as a rendering fault, not
+ * as history. Transparent at the top through to opaque at 28% is the design's
+ * falloff.
+ */
+.fade {
+  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 28%);
+  mask-image: linear-gradient(180deg, transparent 0%, #000 28%);
+}
+
+/*
+ * Expanded, the list is scrollable history and the fade would hide the line a
+ * viewer scrolled up to read. A much shorter one is kept purely so the top
+ * edge is not a hard cut against the video.
+ */
+.fadeExpanded {
+  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 8%);
+  mask-image: linear-gradient(180deg, transparent 0%, #000 8%);
+}
+
+/*
+ * How tall the column may get, collapsed and expanded.
+ *
+ * Through variables because the ceiling is not the chat's to choose: it is
+ * whatever the layout has left between the composer and the gift tray above
+ * it, and only the layout knows where the tray is. The defaults are the
+ * design's, for a caller that states nothing.
+ */
+.list {
+  max-height: var(--live-chat-max, 38dvh);
+}
+
+.listExpanded {
+  max-height: var(--live-chat-max-expanded, 70dvh);
+}

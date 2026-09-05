@@ -127,8 +127,13 @@ export function GiftOverlay({
    * Anchored mode puts the stage in the bottom-left corner, which is the tray's
    * corner. Centred mode does not, so the tray stays where it is — and it stays
    * put when no fullscreen gift is playing, which is most of the time.
+   *
+   * `trayShift: false` opts out entirely. The phone layout stacks the two
+   * vertically — the stage sits above the tray, which sits above the chat — so
+   * there is nothing to step aside from, and moving right would take the tray
+   * out of the left column everything else on that screen is aligned to.
    */
-  const trayShifted = layout.anchored && fullscreenItem !== null;
+  const trayShifted = layout.anchored && layout.trayShift && fullscreenItem !== null;
 
   return (
     <div
@@ -138,6 +143,7 @@ export function GiftOverlay({
       style={
         {
           ...(inset === undefined ? null : { '--gift-inset': `${inset}px` }),
+          ...(layout.trayBottom === undefined ? null : { '--gift-tray-bottom': layout.trayBottom }),
           '--gift-anchor-left': layout.left,
           '--gift-stage-width': `${Math.round(stageWidth)}px`,
         } as CSSProperties

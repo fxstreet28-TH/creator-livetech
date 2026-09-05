@@ -36,9 +36,30 @@ import {
   thaiForConnectError,
   type RemoteTrack,
 } from '@/lib/live/livekitClient';
+import type { PlayerPresentation } from './HlsLivePlayer';
 import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
 
 export type ViewerPhase = 'connecting' | 'watching' | 'reconnecting' | 'ended' | 'failed';
+
+/**
+ * `cover` in full-bleed, and only for a portrait source.
+ *
+ * Same rule as HlsLivePlayer: filling a portrait phone is the point of that
+ * layout, but a landscape broadcast cropped to 9:19.5 loses two thirds of the
+ * frame — a creator streaming from a desktop would be a strip of their
+ * background — so a landscape source is letterboxed instead. Written onto the
+ * element rather than rendered as a prop because the element is the SDK's:
+ * tracks are attached with `track.attach()`, which owns srcObject, autoplay
+ * and the muted flag.
+ */
+function applyVideoFit(video: HTMLVideoElement, fullBleed: boolean) {
+  const cover =
+    fullBleed &&
+    video.videoWidth > 0 &&
+    video.videoHeight > 0 &&
+    video.videoHeight >= video.videoWidth;
+  video.className = `absolute inset-0 h-full w-full ${cover ? 'object-cover' : 'object-contain'}`;
+}
 
 interface LiveKitLivePlayerProps {
   wsUrl: string;
@@ -52,6 +73,8 @@ interface LiveKitLivePlayerProps {
   overlay?: React.ReactNode;
   /** Fired when the broadcast stops, so the page can offer somewhere to go. */
   onEnded: () => void;
+  /** See HlsLivePlayer — the two players stay interchangeable, dress included. */
+  presentation?: PlayerPresentation;
 }
 
 export function LiveKitLivePlayer({
@@ -62,9 +85,20 @@ export function LiveKitLivePlayer({
   viewerCount,
   overlay,
   onEnded,
+  presentation = 'framed',
 }: LiveKitLivePlayerProps) {
+  const fullBleed = presentation === 'fullbleed';
   const containerRef = useRef<HTMLDivElement | null>(null);
   const roomRef = useRef<ReturnType<typeof createRoom> | null>(null);
+  /**
+   * The presentation, readable from the track-attach callback.
+   *
+   * Through a ref rather than the connect effect's dependencies: re-running
+   * that effect tears down the room and rejoins it, and a viewer rotating a
+   * phone across the breakpoint must not be disconnected from the broadcast to
+   * change an `object-fit`.
+   */
+  const fullBleedRef = useRef(fullBleed);
 
   const [phase, setPhase] = useState<ViewerPhase>('connecting');
   const [error, setError] = useState<string | null>(null);
@@ -91,8 +125,14 @@ export function LiveKitLivePlayer({
 
       const element = track.attach();
       if (track.kind === Track.Kind.Video) {
-        element.className = 'absolute inset-0 h-full w-full object-contain';
-        (element as HTMLVideoElement).playsInline = true;
+        const video = element as HTMLVideoElement;
+        const refit = () => applyVideoFit(video, fullBleedRef.current);
+        refit();
+        // The source's dimensions are not known when the element is created,
+        // and a creator who rotates their phone mid-broadcast changes them.
+        video.addEventListener('loadedmetadata', refit);
+        video.addEventListener('resize', refit);
+        video.playsInline = true;
       } else {
         // The audio element is present but has nothing to show. Hiding it
         // rather than skipping attach(): a detached audio track is silent.
@@ -167,6 +207,20 @@ export function LiveKitLivePlayer({
     };
   }, [wsUrl, token]);
 
+  /**
+   * Keep the ref — and any element already on screen — in step with the prop.
+   *
+   * In an effect rather than assigned during render (React refs are not for
+   * render-time writes), and it re-applies rather than only recording, because
+   * crossing the breakpoint with a track already attached would otherwise
+   * leave the SDK's element wearing the previous layout's `object-fit`.
+   */
+  useEffect(() => {
+    fullBleedRef.current = fullBleed;
+    const video = containerRef.current?.querySelector('video');
+    if (video) applyVideoFit(video, fullBleed);
+  }, [fullBleed]);
+
   const enableAudio = useCallback(async () => {
     try {
       await roomRef.current?.startAudio();
@@ -178,22 +232,34 @@ export function LiveKitLivePlayer({
 
   // Square and borderless on a phone, where the player is edge-to-edge and a
   // rounded border would just be a hairline of page colour around the video.
-  // Rounded again from lg, where it sits inside the padded grid.
+  // Rounded again from lg, where it sits inside the padded grid. Full-bleed
+  // fills whatever box the page gave it, which there is the viewport.
   return (
-    <div className="relative min-h-0 flex-1 overflow-hidden bg-black lg:rounded-2xl lg:border lg:border-white/10">
+    <div
+      className={
+        fullBleed
+          ? 'absolute inset-0 overflow-hidden bg-black'
+          : 'relative min-h-0 flex-1 overflow-hidden bg-black lg:rounded-2xl lg:border lg:border-white/10'
+      }
+    >
       <div ref={containerRef} className="absolute inset-0" aria-label={`ไลฟ์: ${title}`} />
 
-      <div className="pointer-events-none absolute left-3 top-3 z-10 flex max-w-[70%] items-center gap-2">
-        <LiveBadge pulse={phase === 'watching'} />
-        <span className="truncate rounded-full bg-black/55 px-2.5 py-1 text-[11px] text-white backdrop-blur-sm">
-          {title}
-        </span>
-      </div>
+      {/* The page's own top bar carries the same three numbers in full-bleed. */}
+      {!fullBleed && (
+        <>
+          <div className="pointer-events-none absolute left-3 top-3 z-10 flex max-w-[70%] items-center gap-2">
+            <LiveBadge pulse={phase === 'watching'} />
+            <span className="truncate rounded-full bg-black/55 px-2.5 py-1 text-[11px] text-white backdrop-blur-sm">
+              {title}
+            </span>
+          </div>
 
-      <div className="pointer-events-none absolute right-3 top-3 z-10 flex items-center gap-2">
-        <ViewerCountPill count={viewerCount} />
-        <DurationPill seconds={elapsedSeconds} />
-      </div>
+          <div className="pointer-events-none absolute right-3 top-3 z-10 flex items-center gap-2">
+            <ViewerCountPill count={viewerCount} />
+            <DurationPill seconds={elapsedSeconds} />
+          </div>
+        </>
+      )}
 
       {overlay}
 
@@ -203,8 +269,11 @@ export function LiveKitLivePlayer({
           onClick={() => void enableAudio()}
           // Above the reaction rail rather than beside it: on a narrow phone
           // the two would overlap at bottom-centre, and this button is the
-          // difference between a silent stream and a working one.
-          className="absolute bottom-20 left-1/2 z-20 inline-flex min-h-11 -translate-x-1/2 items-center gap-2 rounded-full bg-white/15 px-4 py-2 text-sm font-semibold text-white backdrop-blur-md transition hover:bg-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+          // difference between a silent stream and a working one. In full-bleed
+          // it clears the chat column and the input row instead.
+          className={`absolute left-1/2 z-20 inline-flex min-h-11 -translate-x-1/2 items-center gap-2 rounded-full bg-white/15 px-4 py-2 text-sm font-semibold text-white backdrop-blur-md transition hover:bg-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 ${
+            fullBleed ? 'top-[38%]' : 'bottom-20'
+          }`}
         >
           <Volume2 size={16} aria-hidden />
           แตะเพื่อเปิดเสียง
@@ -220,12 +289,17 @@ function ViewerOverlay({ phase, error }: { phase: ViewerPhase; error: string | n
   if (phase === 'ended') {
     // The page paints its own "ไลฟ์จบแล้ว" panel with a link to the creator;
     // this only keeps the video area from showing a frozen last frame.
-    return <div className="absolute inset-0 z-20 bg-black/80" aria-hidden />;
+    return <div className="pointer-events-none absolute inset-0 z-20 bg-black/80" aria-hidden />;
   }
 
   if (phase === 'failed') {
     return (
-      <div role="alert" className="absolute inset-0 z-20 grid place-items-center bg-black/85 px-6 text-center">
+      <div
+        role="alert"
+        // Inert, for the same reason HlsLivePlayer's is: nothing here is
+        // pressable, and it covers every control on the screen.
+        className="pointer-events-none absolute inset-0 z-20 grid place-items-center bg-black/85 px-6 text-center"
+      >
         <div>
           <WifiOff size={30} className="mx-auto text-rose-300" aria-hidden />
           <p className="mt-3 text-base font-semibold text-white">เข้าชมไลฟ์ไม่สำเร็จ</p>
@@ -238,7 +312,7 @@ function ViewerOverlay({ phase, error }: { phase: ViewerPhase; error: string | n
   }
 
   return (
-    <div className="absolute inset-0 z-20 grid place-items-center bg-black/70 px-6 text-center">
+    <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center bg-black/70 px-6 text-center">
       <div>
         <Loader2 size={28} className="mx-auto animate-spin text-cyan-300" aria-hidden />
         <p className="mt-3 text-sm text-white/80" role="status">

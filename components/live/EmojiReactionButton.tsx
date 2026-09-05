@@ -1,7 +1,12 @@
 'use client';
 
 /**
- * The viewer's reaction rail: six emoji across the bottom-right of the player.
+ * The viewer's reaction rail: the emoji palette, as buttons over the player.
+ *
+ * Two arrangements of the same buttons. The desktop watch layout puts six of
+ * them across the bottom-right of the 16:9 player; the full-bleed phone layout
+ * runs four plus a share button down the right edge, above the gift stage. See
+ * `orientation` and `limit` — everything below them is identical either way.
  *
  * A tap both sends and spawns locally — the Realtime channel is opened with
  * `self: false`, so without the local echo the sender would be the one person
@@ -30,10 +35,37 @@ interface EmojiReactionButtonProps {
   onReact: (emoji: string) => void;
   /** False until the channel subscription settles; the buttons stay disabled. */
   enabled: boolean;
+  /**
+   * A column instead of a wrapped row.
+   *
+   * The full-bleed phone layout runs the rail down the right edge, TikTok
+   * style, where the bottom of the screen belongs to the chat and the input
+   * row. Nothing else about the buttons changes — same handler, same throttle,
+   * same long-press repeat — because the point of the phone re-layout was to
+   * MOVE these controls, not to grow a second copy of them.
+   */
+  orientation?: 'horizontal' | 'vertical';
+  /**
+   * How many of REACTION_OPTIONS to render, from the start of the list.
+   *
+   * The vertical rail shares its column with a share button and has to end
+   * above the gift stage, so it shows the first four (❤️ 🔥 👏 😂) rather than
+   * all six. The palette itself is unchanged — a received ⭐ or 💯 still
+   * renders — this only limits what THIS rail can send.
+   */
+  limit?: number;
   className?: string;
 }
 
-export function EmojiReactionButton({ onReact, enabled, className = '' }: EmojiReactionButtonProps) {
+export function EmojiReactionButton({
+  onReact,
+  enabled,
+  orientation = 'horizontal',
+  limit,
+  className = '',
+}: EmojiReactionButtonProps) {
+  const vertical = orientation === 'vertical';
+  const options = limit === undefined ? REACTION_OPTIONS : REACTION_OPTIONS.slice(0, limit);
   // One throttle for the whole rail, not one per button: the limit is per
   // participant, and six buttons with their own allowance would be six times
   // the limit.
@@ -73,14 +105,17 @@ export function EmojiReactionButton({ onReact, enabled, className = '' }: EmojiR
 
   return (
     <div
-      // Wraps rather than overflowing: six 44px targets plus gaps is wider
-      // than a 320px phone, and a rail that runs off the left edge of the
-      // video takes the first emoji with it.
-      className={`flex max-w-[70%] flex-wrap items-center justify-end gap-2 ${className}`}
+      // Horizontal wraps rather than overflowing: six 44px targets plus gaps is
+      // wider than a 320px phone, and a rail that runs off the left edge of the
+      // video takes the first emoji with it. Vertical has a column to itself
+      // and does not need to.
+      className={`flex items-center gap-2 ${
+        vertical ? 'flex-col gap-2.5' : 'max-w-[70%] flex-wrap justify-end'
+      } ${className}`}
       role="group"
       aria-label="ส่งอิโมจิให้ผู้ถ่ายทอด"
     >
-      {REACTION_OPTIONS.map((option) => (
+      {options.map((option) => (
         <button
           key={option.emoji}
           type="button"
@@ -114,7 +149,12 @@ export function EmojiReactionButton({ onReact, enabled, className = '' }: EmojiR
           // A long press on iOS otherwise raises the copy/lookup menu over the
           // video, which ends the hold and looks like a bug.
           onContextMenu={(event) => event.preventDefault()}
-          className="inline-flex h-11 w-11 select-none items-center justify-center rounded-full border border-white/15 bg-black/40 text-xl leading-none backdrop-blur-md transition hover:scale-110 hover:border-transparent hover:bg-black/55 hover:shadow-[0_0_0_1px_rgba(139,92,246,0.6),0_0_18px_rgba(34,211,238,0.35)] focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 active:scale-95 disabled:opacity-40 disabled:hover:scale-100 disabled:hover:shadow-none"
+          className={`inline-flex select-none items-center justify-center rounded-full border border-white/15 bg-black/40 leading-none backdrop-blur-md transition hover:scale-110 hover:border-transparent hover:bg-black/55 hover:shadow-[0_0_0_1px_rgba(139,92,246,0.6),0_0_18px_rgba(34,211,238,0.35)] focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 active:scale-95 disabled:opacity-40 disabled:hover:scale-100 disabled:hover:shadow-none ${
+            // 40px in the vertical rail: the design's size, and what lets five
+            // circles plus their gaps finish above the gift stage on a 812px
+            // screen. 44 elsewhere, the app's tap-target floor.
+            vertical ? 'h-10 w-10 text-lg' : 'h-11 w-11 text-xl'
+          }`}
           style={{ touchAction: 'none' }}
         >
           <span aria-hidden>{option.emoji}</span>

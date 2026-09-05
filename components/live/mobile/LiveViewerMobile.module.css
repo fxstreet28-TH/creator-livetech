@@ -1,0 +1,248 @@
+/*
+ * The full-bleed phone watch layout — "Design C".
+ *
+ * Everything a viewer touches floats over a video that fills the viewport, in
+ * the TikTok LIVE arrangement: the creator and the exit at the top, reactions
+ * down the right edge, gifts and chat up the left, the composer along the
+ * bottom. The old stacked layout — a 16:9 strip, a creator card, a boxed chat
+ * — is what ≥768px still renders, unchanged.
+ *
+ * WHY SO MUCH OF THIS IS HERE AND NOT IN UTILITY CLASSES
+ *
+ * Three reasons, and they are the only things in this file that are not
+ * ordinary positioning:
+ *
+ *  1. `env(safe-area-inset-*)` appears in almost every offset. The app builds
+ *     as a Capacitor webview with `viewport-fit=cover`, so the page paints
+ *     under the notch and the home indicator; every layer that a thumb has to
+ *     reach, or that carries text, states its own clearance.
+ *  2. The keyboard. `--live-keyboard` is published by the component from
+ *     `visualViewport` (see useMobileViewport.ts) because iOS Safari does not
+ *     resize the layout viewport when the keyboard opens — `bottom: 0` there
+ *     means "behind the keyboard".
+ *  3. The reaction rail's vertical position is a clamp against two ceilings at
+ *     once, which is not expressible as a utility class.
+ */
+
+/*
+ * The page.
+ *
+ * `fixed` rather than a tall block: this layout never scrolls — the chat
+ * scrolls inside itself and everything else is pinned — and a phone browser
+ * that thinks the document is scrollable will rubber-band the whole video when
+ * a viewer swipes at the chat.
+ *
+ * `100dvh` rather than `100vh` so the box tracks the browser chrome
+ * collapsing on scroll instead of hiding the input row behind it.
+ */
+.root {
+  position: fixed;
+  inset: 0;
+  height: 100dvh;
+  overflow: hidden;
+  background: #000;
+  color: #fff;
+  /* The keyboard's own height, republished by the component. 0 on Android and
+     on a desktop-sized window. */
+  --live-keyboard: 0px;
+  /*
+   * The safe areas, once, as variables.
+   *
+   * Named rather than written as `env(...)` at each use for two reasons: the
+   * gift overlay's insets are computed in JavaScript and handed down as CSS
+   * lengths (see LiveViewerMobile), so they have to be able to name the same
+   * quantity; and /dev/live-mobile can override these to emulate a notch,
+   * which is the only way to see this layout's clearances in a desktop browser
+   * — `env()` itself cannot be set.
+   */
+  --live-safe-top: env(safe-area-inset-top);
+  --live-safe-bottom: env(safe-area-inset-bottom);
+  --live-safe-left: env(safe-area-inset-left);
+  --live-safe-right: env(safe-area-inset-right);
+  /* Where the input row sits: the design's 12px, past the home indicator, and
+     out from under the keyboard. Everything in the bottom stack is measured
+     from this one value so the pieces cannot drift apart. */
+  --live-bottom: calc(var(--live-safe-bottom) + 12px + var(--live-keyboard));
+}
+
+/*
+ * The two scrims.
+ *
+ * A phone's white balance is the creator's, not ours: a bright frame turns
+ * white text into nothing at all. These are the only reason the overlay is
+ * readable over an arbitrary broadcast, and they are `pointer-events: none`
+ * because they cover controls on both edges.
+ */
+.scrimTop,
+.scrimBottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.scrimTop {
+  top: 0;
+  height: 180px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.65), rgba(0, 0, 0, 0));
+}
+
+.scrimBottom {
+  bottom: 0;
+  height: 42%;
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0) 0%,
+    rgba(0, 0, 0, 0.75) 60%,
+    rgba(0, 0, 0, 0.9) 100%
+  );
+}
+
+/* ------------------------------------------------------------------ chrome --
+ * z-index 20 across the board: above the gift overlay's own stack, which tops
+ * out at 14 (GiftFullscreen's anchored stage). A gift must never cover the
+ * exit button or the composer, however expensive it was.
+ */
+
+.topBar {
+  position: absolute;
+  top: calc(var(--live-safe-top) + 8px);
+  left: calc(var(--live-safe-left) + 12px);
+  right: calc(var(--live-safe-right) + 12px);
+  z-index: 20;
+}
+
+/*
+ * The reaction rail, and the one piece of arithmetic in this file.
+ *
+ * It has to clear the top bar's two rows, and it has to FINISH above the gift
+ * stage — the brief's rule is "never below 45% of viewport height", because
+ * below that is where a fullscreen gift and its caption are drawn. The rail is
+ * 240px tall (five 40px circles and four 10px gaps), so the second rule is a
+ * ceiling on its TOP at `45dvh - 240px`, which on a 812px screen is 125px and
+ * on a 932px one is 179px.
+ *
+ * The clamp reconciles them: the design's 150px where there is room for it,
+ * less on a short screen, and never so little that the rail lands on the top
+ * bar — which is what the lower bound is for on a very short viewport (a
+ * phone in landscape, a small webview).
+ */
+.rail {
+  position: absolute;
+  right: calc(var(--live-safe-right) + 12px);
+  top: clamp(
+    calc(var(--live-safe-top) + 92px),
+    calc(45dvh - 240px),
+    calc(var(--live-safe-top) + 150px)
+  );
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+/*
+ * The chat column and the composer, as one stack anchored to the bottom.
+ *
+ * Together rather than separately because the chat's position is defined
+ * against the composer's — "8px above the input row" — and two independently
+ * anchored layers would have to restate the same three offsets and would come
+ * apart the moment one of them changed.
+ */
+.bottomStack {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: var(--live-bottom);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  /* The stack itself is a positioning frame over the video; only the bubbles
+     and the controls inside it take taps. */
+  pointer-events: none;
+  /* Riding the keyboard up should look like the row moving, not like the page
+     jumping — and it must not animate on the way down either, which is what
+     made the old layout look like it bounced. */
+  transition: bottom 180ms ease-out;
+}
+
+/*
+ * The chat column: a strip up the left, never more than 70% of the width.
+ *
+ * The right 30% is the reaction rail's, and the cap in px stops a tablet-ish
+ * 767px viewport from running one message across the whole frame.
+ */
+.chat {
+  width: min(70vw, 262px);
+  margin-left: calc(var(--live-safe-left) + 14px);
+  /* The bubbles' own inset from that column's left edge. */
+  padding-right: 2px;
+
+  /*
+   * THE COLLAPSED COLUMN IS CAPPED BY THE GIFT TRAY, NOT BY 38dvh.
+   *
+   * The design gives the chat "max-height: 38vh" AND puts the tray's bottom
+   * edge 238px up from the bottom of the screen. On an 812px phone those are
+   * 308px and 142px of room for the same strip, so the taller one would run
+   * the newest five messages straight through a Stardust row — which is the
+   * one thing the gift layout's QA is explicit about.
+   *
+   * 142px is the gap the tray actually leaves: the tray's content bottom
+   * (12px of overlay inset above its 192px offset) minus the chat's own bottom
+   * (the 42px composer plus its 8px gap, above the 12px page inset). It is
+   * about five compact lines, which is the number the design asks for. 38dvh
+   * still binds on a viewport short enough for it to be the smaller of the
+   * two.
+   *
+   * Expanded is a deliberate act by the viewer and covers the tray, which is
+   * correct: they asked to read the conversation, not to watch gifts.
+   */
+  --live-chat-max: min(38dvh, 142px);
+  /*
+   * Expanded, the ceiling is the TOP BAR rather than the design's 70vh.
+   *
+   * 70vh of an 812px phone is 568px, which puts the "ย่อ" chip — which sits
+   * above the list — across the LIVE pill. The subtrahend is everything the
+   * column is not allowed to have: 62px under it (the composer and its gap),
+   * 76px of top bar above it (two rows and their gaps), and 48px for the chip
+   * and its own gap. 70dvh still binds on a tall screen, where it is the
+   * smaller of the two.
+   */
+  --live-chat-max-expanded: min(
+    70dvh,
+    calc(100dvh - var(--live-safe-top) - var(--live-safe-bottom) - 186px)
+  );
+}
+
+/* The composer clears the same safe area the chat column does. */
+.composer {
+  padding-left: var(--live-safe-left);
+  padding-right: var(--live-safe-right);
+}
+
+/*
+ * What collapses the expanded chat.
+ *
+ * Only mounted while the chat IS expanded — an always-present tap-catcher over
+ * the video would eat the taps meant for the play and unmute buttons. Above
+ * the gift overlay (14) and below the chrome (20), so the composer, the rail
+ * and the exit all stay live underneath the viewer's finger.
+ */
+.collapseCatcher {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bottomStack {
+    transition: none;
+  }
+}

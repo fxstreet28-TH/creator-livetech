@@ -4,6 +4,22 @@
  * The body of /live/[sessionId]: the player, the chat, the creator, and the
  * four things that can happen instead of a live.
  *
+ * TWO LAYOUTS, ONE PAGE. Below 768px this hands off to LiveViewerMobile, the
+ * full-bleed phone arrangement; from 768px it renders the grid below, which is
+ * unchanged. They are siblings rather than one responsive tree because the two
+ * share no boxes at all — the phone layout has no creator card, no chat panel
+ * and no 16:9 player to make responsive — and everything they DO share (the
+ * session, entitlement, the Realtime channel, the gift queue, the wallet) is
+ * lifted into useLiveViewer so there is one of each however the screen is
+ * arranged. The states that are not a live — locked, ended, not found — are
+ * decided here, once, above the split.
+ *
+ * The swap happens after hydration, because a media query cannot be evaluated
+ * on the server: useIsMobileViewport returns null for the first frame and this
+ * file paints the page's own black ground rather than guessing. Guessing wrong
+ * is a 16:9 video that jumps to full-bleed, or a hydration mismatch across the
+ * whole subtree.
+ *
  * Split out of the route file because that file has to stay a Server Component
  * — it is the only place `generateStaticParams` can live, which the Capacitor
  * `output: 'export'` build requires of every dynamic segment. Same split as
@@ -13,18 +29,14 @@
  * entitlement cannot be read from `live_sessions` alone.
  */
 
-import { useCallback, useState } from 'react';
 import Link from 'next/link';
 import { AlertTriangle, Gift } from 'lucide-react';
 import { AnimatePresence } from 'framer-motion';
-import { useDashboardUser } from '@/lib/hooks/useDashboardUser';
-import { useGiftTiers } from '@/lib/hooks/useGiftTiers';
-import { useLiveChannel } from '@/lib/hooks/useLiveChannel';
-import { useLiveWatch } from '@/lib/hooks/useLiveWatch';
-import { useWalletSummary } from '@/lib/hooks/useWalletSummary';
+import { useIsMobileViewport } from '@/lib/hooks/useIsMobileViewport';
+import { useLiveViewer } from '@/lib/hooks/useLiveViewer';
 import { CreatorInlineCard } from '@/components/viewer/CreatorInlineCard';
 import { ViewerPageShell } from '@/components/viewer/ViewerPageShell';
-import { FeedbackToast, type FeedbackToastState } from '@/components/feedback/FeedbackToast';
+import { FeedbackToast } from '@/components/feedback/FeedbackToast';
 import { GiftDrawer } from './gifts/GiftDrawer';
 import { GiftOverlay } from './gifts/GiftOverlay';
 import {
@@ -38,65 +50,52 @@ import { FloatingReactionsLayer } from './FloatingReactionsLayer';
 import { HlsLivePlayer } from './HlsLivePlayer';
 import { LiveAccessLockCard } from './LiveAccessLockCard';
 import { LiveChat } from './LiveChat';
+import { LiveEndedCard } from './LiveEndedCard';
 import { LiveKitLivePlayer } from './LiveKitLivePlayer';
-import { useElapsedSeconds } from './LiveStatsBar';
+import { LiveViewerMobile } from './mobile/LiveViewerMobile';
 
 export function LiveWatchView({ sessionId }: { sessionId: string }) {
-  const { session, creator, watch, loading, refresh } = useLiveWatch(sessionId);
-  const { user, displayName } = useDashboardUser();
+  /**
+   * null for exactly one frame — see useIsMobileViewport. Passed into the hook
+   * below as well: only the phone layout wants the gift catalogue before the
+   * drawer is opened.
+   */
+  const mobile = useIsMobileViewport();
+  const state = useLiveViewer(sessionId, { preloadGiftTiers: mobile === true });
+  const { session, creator, watch, loading, refresh, title, elapsedSeconds, channel } = state;
 
-  /** Set when a LiveKit room closes under us — the creator pressed "จบไลฟ์". */
-  const [endedWhileWatching, setEndedWhileWatching] = useState(false);
+  const giftDrawer = (
+    <GiftDrawer
+      open={state.giftOpen}
+      onClose={state.closeGift}
+      sessionId={sessionId}
+      tiers={state.giftTiers.tiers}
+      tiersError={state.giftTiers.error}
+      balance={state.balance}
+      onSent={state.handleSent}
+    />
+  );
 
-  const elapsedSeconds = useElapsedSeconds(session?.started_at ?? null);
-  const title = session?.title?.trim() || 'ไลฟ์สด';
-
-  const handleEnded = useCallback(() => setEndedWhileWatching(true), []);
+  /* The repo's one toast, reused rather than a second one added — the same
+     reason LiveChat reports a failed send inside its own box. Shared by both
+     layouts: a gift sent from a phone confirms the same way. */
+  const toaster = (
+    <AnimatePresence>
+      {state.toast && (
+        <FeedbackToast key={state.toast.key} toast={state.toast} onDismiss={state.dismissToast} />
+      )}
+    </AnimatePresence>
+  );
 
   /**
-   * Chat, reactions and the viewer count, on the session's Realtime channel.
+   * The frame before the media query has an answer.
    *
-   * Opened here rather than inside the player because it is the same channel
-   * whichever way the video arrives — that independence is the point of the
-   * redesign, and it is why the two players below are interchangeable.
-   *
-   * Called unconditionally, above the early returns: hooks cannot be
-   * conditional, and a null sessionId keeps it idle until there is something
-   * to join.
+   * The page's own ground colour rather than a spinner: both layouts paint
+   * over it, so whichever wins the next frame there is nothing to see change.
    */
-  const watchable = watch.kind === 'hls' || watch.kind === 'livekit';
-  const channel = useLiveChannel({
-    sessionId: watchable ? sessionId : null,
-    userId: user?.id ?? null,
-    displayName: displayName || 'ผู้ชม',
-    creatorUserId: watchable ? watch.creatorUserId : null,
-  });
-
-  /**
-   * Gifting. All of it above the early returns, because hooks cannot be
-   * conditional — the catalogue read is gated on the drawer being opened rather
-   * than on the page state, so a viewer who never gifts never pays for it.
-   */
-  const [giftOpen, setGiftOpen] = useState(false);
-  const [toast, setToast] = useState<FeedbackToastState | null>(null);
-  const giftTiers = useGiftTiers(giftOpen);
-  const wallet = useWalletSummary();
-  /**
-   * The balance after the most recent send.
-   *
-   * `live-send-gift` returns it, and it is fresher than useWalletSummary's copy
-   * — which was read when the page loaded and has no reason to know a star was
-   * just spent. Refetching the whole summary per gift would be a round trip for
-   * a number the send already answered with.
-   */
-  const [balanceAfterSend, setBalanceAfterSend] = useState<number | null>(null);
-
-  const handleSent = useCallback((walletBalance: number) => {
-    setBalanceAfterSend(walletBalance);
-    setToast({ message: 'ส่งของขวัญแล้ว 🎁', key: Date.now() });
-  }, []);
-
-  const dismissToast = useCallback(() => setToast(null), []);
+  if (mobile === null) {
+    return <div className="h-dvh bg-[#0a0a15]" aria-hidden />;
+  }
 
   if (loading) {
     return (
@@ -117,6 +116,21 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
   }
 
   if (watch.kind === 'ended' || watch.kind === 'cancelled') {
+    /*
+      On a phone the layout STAYS and the video is what is replaced — top bar,
+      creator, the way out, all where they were a second ago. On the desktop
+      grid there is no full-bleed frame to keep, so the whole page becomes the
+      panel it always did.
+    */
+    if (mobile) {
+      return (
+        <>
+          <LiveViewerMobile sessionId={sessionId} state={state} />
+          {toaster}
+        </>
+      );
+    }
+
     return (
       <StatePanel
         heading={watch.kind === 'ended' ? 'ไลฟ์นี้จบแล้ว' : 'ไลฟ์ถูกยกเลิก'}
@@ -169,6 +183,16 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
     );
   }
 
+  if (mobile) {
+    return (
+      <>
+        <LiveViewerMobile sessionId={sessionId} state={state} />
+        {giftDrawer}
+        {toaster}
+      </>
+    );
+  }
+
   /**
    * The reaction layer and rail, handed to whichever player is rendering.
    *
@@ -191,8 +215,6 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
       />
     </>
   );
-
-  const balance = balanceAfterSend ?? (wallet.loading ? null : wallet.balance);
 
   return (
     <main className="flex h-dvh flex-col overflow-hidden bg-[#0a0a15] text-white">
@@ -232,11 +254,15 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
               elapsedSeconds={elapsedSeconds}
               viewerCount={channel.viewerCount}
               overlay={playerOverlay}
-              onEnded={handleEnded}
+              onEnded={state.handleEnded}
             />
           )}
 
-          {endedWhileWatching && <EndedOverlay creator={creator} />}
+          {state.endedWhileWatching && (
+            <div className="absolute inset-0 z-30 grid place-items-center rounded-2xl bg-black/85 px-6 text-center">
+              <LiveEndedCard creator={creator} />
+            </div>
+          )}
         </div>
 
         <div className="flex min-h-0 flex-col gap-3 overflow-y-auto px-3 pb-3 lg:overflow-visible lg:p-0">
@@ -264,7 +290,7 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
             action={
               <button
                 type="button"
-                onClick={() => setGiftOpen(true)}
+                onClick={state.openGift}
                 aria-label="ส่งของขวัญ"
                 className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border border-amber-300/35 bg-amber-400/10 px-3 text-xs font-bold text-amber-100 transition hover:bg-amber-400/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
               >
@@ -276,55 +302,9 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
         </div>
       </div>
 
-      <GiftDrawer
-        open={giftOpen}
-        onClose={() => setGiftOpen(false)}
-        sessionId={sessionId}
-        tiers={giftTiers.tiers}
-        tiersError={giftTiers.error}
-        balance={balance}
-        onSent={handleSent}
-      />
-
-      {/* The repo's one toast, reused rather than a second one added — the same
-          reason LiveChat reports a failed send inside its own box. */}
-      <AnimatePresence>
-        {toast && <FeedbackToast key={toast.key} toast={toast} onDismiss={dismissToast} />}
-      </AnimatePresence>
+      {giftDrawer}
+      {toaster}
     </main>
-  );
-}
-
-/** "ไลฟ์จบแล้ว", painted over the player when the room closes mid-watch. */
-function EndedOverlay({ creator }: { creator: CreatorSummary | null }) {
-  const profileHref = creatorProfileHref(creator);
-  const label = creatorHandleLabel(creator) ?? creatorDisplayName(creator);
-
-  return (
-    <div className="absolute inset-0 z-30 grid place-items-center rounded-2xl bg-black/85 px-6 text-center">
-      <div>
-        <p className="text-lg font-bold text-white">ไลฟ์จบแล้ว</p>
-        <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-white/55">
-          ขอบคุณที่รับชม — ไลฟ์นี้ไม่มีการบันทึก
-        </p>
-        <div className="mt-5 flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
-          {profileHref && (
-            <Link
-              href={profileHref}
-              className="inline-flex min-h-11 items-center justify-center rounded-xl bg-gradient-to-r from-purple-500 to-pink-500 px-5 py-3 text-sm font-bold text-white transition hover:shadow-lg hover:shadow-purple-500/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
-            >
-              ดูโปรไฟล์ {label}
-            </Link>
-          )}
-          <Link
-            href="/discover?tab=live"
-            className="inline-flex min-h-11 items-center justify-center rounded-xl border border-white/12 bg-white/[0.04] px-5 py-3 text-sm font-medium text-white/80 transition hover:bg-white/[0.08] focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
-          >
-            ดูไลฟ์อื่น
-          </Link>
-        </div>
-      </div>
-    </div>
   );
 }
 
