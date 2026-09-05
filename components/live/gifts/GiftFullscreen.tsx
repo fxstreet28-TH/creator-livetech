@@ -1,48 +1,76 @@
 'use client';
 
 /**
- * The centre stage, for tiers whose `display_mode` is 'fullscreen'.
+ * The stage for tiers whose `display_mode` is 'fullscreen'.
  *
  * One at a time, chosen by useGiftQueue. The tray keeps working underneath —
  * they are separate layers of the same overlay, so a Stardust can still land
  * while a Nova is playing, which is what a busy stream actually looks like.
  *
- * The backdrop is deliberately light (rgba(5,4,22,.45)): this covers the
- * creator's video for up to ten seconds, and a dim that made the broadcast
- * unwatchable would turn the most expensive gift on the board into the most
- * resented one.
+ * WHERE IT SITS IS A LAYOUT DECISION, NOT THIS FILE'S
+ *
+ * `layout` arrives from GiftOverlay, which owns the one measurement of the
+ * player. On a phone the stage is centred behind a dim; on a desktop player it
+ * is anchored bottom-left with a glow that stops at its own edge, so the
+ * creator's face stays visible for the forty seconds a tier-07 clip runs. See
+ * useStageScale.ts for how that is decided.
  */
 
-import { useState, type CSSProperties } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { rarityStyle, starsFragment, type LiveGiftEvent } from '@/lib/live/gifts';
 import { GiftAnimation } from './animations';
 import type { FullscreenItem } from './useGiftQueue';
-import { STAGE_PX, useStageSize } from './useStageScale';
+import { STAGE_PX, useElementBox, type GiftLayout } from './useStageScale';
 import styles from './GiftFullscreen.module.css';
 
 export function GiftFullscreen({
   item,
+  layout,
   reduceMotion = false,
+  onWidthChange,
 }: {
   item: FullscreenItem | null;
+  layout: GiftLayout;
   reduceMotion?: boolean;
+  /**
+   * The stage's rendered width, reported upward so the tray can step aside.
+   *
+   * A CSS tier is square and its width is `layout.stagePx`, but a video card is
+   * as wide as its clip's aspect ratio makes it — which nothing knows until the
+   * poster has laid out. The tray needs the real number to sit beside it rather
+   * than a constant guessed from the widest clip anyone might add later.
+   */
+  onWidthChange?: (width: number) => void;
 }) {
   if (!item) return null;
   // Keyed on the queue's item key so a new gift REPLACES the old component
   // rather than re-rendering it with new props — the animations run once with
   // `forwards`, so a reused element would hold the previous gift's last frame.
-  return <FullscreenStage key={item.key} event={item.event} reduceMotion={reduceMotion} />;
+  return (
+    <FullscreenStage
+      key={item.key}
+      event={item.event}
+      layout={layout}
+      reduceMotion={reduceMotion}
+      onWidthChange={onWidthChange}
+    />
+  );
 }
 
 function FullscreenStage({
   event,
+  layout,
   reduceMotion,
+  onWidthChange,
 }: {
   event: LiveGiftEvent;
+  layout: GiftLayout;
   reduceMotion: boolean;
+  onWidthChange?: (width: number) => void;
 }) {
   const rarity = rarityStyle(event.rarity);
   const stars = starsFragment(event.stars_total);
+  const scale = layout.stagePx / STAGE_PX;
 
   /**
    * Set once the arc has played.
@@ -54,15 +82,40 @@ function FullscreenStage({
    */
   const [done, setDone] = useState(false);
 
-  // The element is held in state, and the setter IS the ref — see useStageSize
-  // for why the measurement is not a callback ref of its own.
+  /**
+   * The stage's UNSCALED width, measured from the element.
+   *
+   * `transform: scale()` deliberately does not affect layout, so what is
+   * observed here is the authored 300 for a CSS tier and the clip's own
+   * 300 × (w / h) for a video card; multiplying by the scale gives the
+   * footprint the box has to reserve.
+   *
+   * Observed rather than read once on mount, because a video card has no width
+   * until its poster has loaded — on a cold cache that is several frames after
+   * the element exists, and a one-shot measurement would have latched the
+   * empty box.
+   */
   const [stageNode, setStageNode] = useState<HTMLDivElement | null>(null);
-  const stageSize = useStageSize(stageNode);
+  const stageBox = useElementBox(stageNode);
+  const naturalWidth = stageBox.width || STAGE_PX;
+  const renderedWidth = naturalWidth * scale;
+
+  useEffect(() => {
+    onWidthChange?.(renderedWidth);
+  }, [renderedWidth, onWidthChange]);
 
   return (
     <div
-      ref={setStageNode}
-      className={`${styles.backdrop} ${reduceMotion ? styles.backdropStill : ''}`}
+      className={`${layout.anchored ? styles.anchor : styles.backdrop} ${
+        reduceMotion ? styles.still : ''
+      }`}
+      style={
+        {
+          '--gift-anchor-left': layout.left,
+          '--gift-anchor-bottom': layout.bottom,
+          '--rarity-glow': rarity.glow,
+        } as CSSProperties
+      }
       // Decoration over a video. A screen reader announcing a gift every few
       // seconds would make the page unusable — the same call the chat log and
       // the reaction layer already make.
@@ -70,24 +123,17 @@ function FullscreenStage({
     >
       <div
         className={styles.stageBox}
-        style={
-          {
-            width: stageSize,
-            height: stageSize,
-            '--rarity-glow': rarity.glow,
-          } as CSSProperties
-        }
+        style={{ width: naturalWidth * scale, height: layout.stagePx }}
       >
-        {/* The stage is authored at 300px and scaled as a unit, so its layers
-            keep their relationship to each other at any size. Sized by
-            useStageScale — see its header for why this cannot be CSS. */}
+        {/* Authored at 300px and scaled as a unit, so the layers keep their
+            relationship to each other at any size — see useStageScale.ts for
+            why the factor cannot be computed in CSS. The origin is `top left`
+            so the scaled result fills the box it was measured into, rather than
+            spilling out of it in every direction. */}
         <div
+          ref={setStageNode}
           className={styles.stageInner}
-          style={{
-            width: STAGE_PX,
-            height: STAGE_PX,
-            transform: `scale(${stageSize / STAGE_PX})`,
-          }}
+          style={{ height: STAGE_PX, transform: `scale(${scale})` }}
         >
           <GiftAnimation
             animationKey={event.animation_key}

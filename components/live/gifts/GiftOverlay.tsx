@@ -23,12 +23,13 @@
  * unusable — the same call the chat log and the reaction layer already make.
  */
 
-import { useEffect, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useReducedMotion } from 'framer-motion';
 import type { LiveGiftEvent } from '@/lib/live/gifts';
 import { GiftFullscreen } from './GiftFullscreen';
 import { GiftTray } from './GiftTray';
 import { useGiftQueue } from './useGiftQueue';
+import { giftLayout, useElementBox, useIsDesktop, type GiftAnchor } from './useStageScale';
 import styles from './GiftOverlay.module.css';
 
 export interface GiftOverlayProps {
@@ -55,6 +56,15 @@ export interface GiftOverlayProps {
    * it. Raised on the OBS overlay, where 1080p needs a real safe area.
    */
   inset?: number;
+  /**
+   * Explicit anchored geometry, overriding the percentages derived from the
+   * player's size.
+   *
+   * For a surface that knows its own canvas: the OBS source composites onto a
+   * 1920 × 1080 scene, and the numbers there were chosen against that scene
+   * rather than derived from a fraction of it. Everything else omits it.
+   */
+  anchor?: GiftAnchor;
   className?: string;
 }
 
@@ -62,9 +72,36 @@ export function GiftOverlay({
   latestGift,
   resetKey = null,
   inset,
+  anchor,
   className = '',
 }: GiftOverlayProps) {
   const { trayItems, fullscreenItem, enqueue, clear } = useGiftQueue();
+
+  /**
+   * The ONE measurement of the player, and everything geometric derives from
+   * it.
+   *
+   * The element is held in state and the setter IS the ref — see
+   * useStageScale.ts for why the measurement is not a callback ref of its own.
+   * Measuring here rather than inside GiftFullscreen matters because the TRAY
+   * needs the answer too: on a desktop player the stage moves into the corner
+   * the tray already occupies, and the two have to agree about where that is.
+   */
+  const [rootNode, setRootNode] = useState<HTMLDivElement | null>(null);
+  const box = useElementBox(rootNode);
+  const desktop = useIsDesktop();
+  const layout = useMemo(() => giftLayout(box, desktop, anchor), [box, desktop, anchor]);
+
+  /**
+   * How wide the stage is actually drawing, reported by GiftFullscreen.
+   *
+   * A CSS tier is square, but a video card is as wide as its clip — 1.5× the
+   * stage height for a 720 × 476 one — and the tray has to step past whichever
+   * it is. A constant sized for the widest clip anyone might add would leave
+   * the tray stranded in the middle of the player for every other gift.
+   */
+  const [stageWidth, setStageWidth] = useState(0);
+  const handleStageWidth = useCallback((width: number) => setStageWidth(width), []);
 
   /**
    * `prefers-reduced-motion`, via framer-motion's hook because the repo already
@@ -84,14 +121,35 @@ export function GiftOverlay({
     clear();
   }, [resetKey, clear]);
 
+  /**
+   * The tray steps aside only when it would otherwise be underneath.
+   *
+   * Anchored mode puts the stage in the bottom-left corner, which is the tray's
+   * corner. Centred mode does not, so the tray stays where it is — and it stays
+   * put when no fullscreen gift is playing, which is most of the time.
+   */
+  const trayShifted = layout.anchored && fullscreenItem !== null;
+
   return (
     <div
+      ref={setRootNode}
       aria-hidden
       className={`${styles.overlay} ${className}`}
-      style={inset === undefined ? undefined : ({ '--gift-inset': `${inset}px` } as CSSProperties)}
+      style={
+        {
+          ...(inset === undefined ? null : { '--gift-inset': `${inset}px` }),
+          '--gift-anchor-left': layout.left,
+          '--gift-stage-width': `${Math.round(stageWidth)}px`,
+        } as CSSProperties
+      }
     >
-      <GiftFullscreen item={fullscreenItem} reduceMotion={reduceMotion} />
-      <GiftTray items={trayItems} reduceMotion={reduceMotion} />
+      <GiftFullscreen
+        item={fullscreenItem}
+        layout={layout}
+        reduceMotion={reduceMotion}
+        onWidthChange={handleStageWidth}
+      />
+      <GiftTray items={trayItems} reduceMotion={reduceMotion} shifted={trayShifted} />
     </div>
   );
 }

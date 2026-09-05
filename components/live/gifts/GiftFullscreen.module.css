@@ -1,12 +1,17 @@
 /*
- * The centre stage for a fullscreen gift.
+ * The stage for a fullscreen gift, in its two layouts.
  *
- * Sized against the OVERLAY's box, not the viewport: this is mounted inside the
- * player's relatively-positioned container so it covers the video and nothing
- * else — a fixed-position layer would sit over the chat, the header and the
- * end-live dialog too.
+ * Both are positioned against the OVERLAY's box, not the viewport: this is
+ * mounted inside the player's relatively-positioned container so it covers the
+ * video and nothing else — a fixed-position layer would sit over the chat, the
+ * header and the end-live dialog too.
  */
 
+/* ---------------------------------------------------------------- centred --
+ * Phones and narrow players. The stage is in the middle behind a light dim,
+ * because on a 375px screen there is no "beside the video" to move to: every
+ * part of the frame is the middle of it.
+ */
 .backdrop {
   position: absolute;
   inset: 0;
@@ -16,7 +21,7 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
-  /* Light on purpose: this covers the broadcast for up to ten seconds. */
+  /* Light on purpose: this covers the broadcast for up to forty seconds. */
   background: rgba(5, 4, 22, 0.45);
   /* The whole overlay is inert. The play button, the volume control and the
      chat input under it all stay reachable while a gift plays. */
@@ -24,38 +29,77 @@
   animation: backdropIn 260ms ease-out 1 both;
 }
 
-/*
- * Sized inline by useStageScale, not here.
+/* --------------------------------------------------------------- anchored --
+ * Desktop players. Bottom-left, out of the centre of frame.
  *
- * The obvious `width: min(70vw, 70vh)` sizes the gift against the VIEWPORT,
- * and this overlay covers the player — which on a desktop layout is about 70%
- * of the width with a chat panel beside it, so a viewport-sized stage
- * overflows it. See useStageScale.ts for why the scale factor cannot be
- * computed in CSS either.
+ * THE FULL-COVER DIM IS GONE, AND THAT IS THE POINT.
+ *
+ * A dim over the whole player is a dim over the creator. What replaces it is a
+ * radial glow that fades out by 65% of its own box — enough separation for a
+ * mascot to read against a bright frame, reaching nowhere near the middle of
+ * the shot. It is painted on `.stageBox` (below) rather than here, because
+ * "behind the stage only" is a statement about the stage's box, not the
+ * player's.
+ *
+ * `align-items: flex-start` is what makes the caption left-aligned under the
+ * stage rather than centred on it; the caption's own `text-align` follows.
  */
-.stageBox {
-  position: relative;
-  filter: drop-shadow(0 0 34px var(--rarity-glow, rgba(255, 255, 255, 0.4)));
+.anchor {
+  position: absolute;
+  left: var(--gift-anchor-left, 6%);
+  bottom: var(--gift-anchor-bottom, 10%);
+  z-index: 14;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  pointer-events: none;
+  animation: anchorIn 300ms cubic-bezier(0.2, 1.05, 0.35, 1) 1 both;
 }
 
 /*
- * The 300px stage, centred on the box and scaled about its own middle.
+ * The box the scaled stage occupies.
  *
- * Absolutely positioned with a half-size negative margin rather than laid out
- * by the parent, because `transform` does not affect layout: a 300px child of a
- * 147px flex box (which is what `min(70%, ...)` comes to on a 375px phone)
- * OVERFLOWS to the right and below before any scaling happens, and scaling
- * about `center center` then shrinks it around a point that is not the box's
- * centre. The mascot ended up in the bottom-right corner with the caption
- * across it — visible only at phone width, because on a desktop the scaled size
- * is larger than 300px and the overflow is negative.
+ * Sized inline: the height is the layout's stage size and the width is the
+ * stage's own measured width times the same scale — square for a CSS tier, and
+ * as wide as the clip for a video card, so a 720 × 476 clip is drawn at the
+ * stage's full height instead of being shrunk to fit a square.
+ */
+.stageBox {
+  position: relative;
+  flex: none;
+  filter: drop-shadow(0 0 34px var(--rarity-glow, rgba(255, 255, 255, 0.4)));
+}
+
+.anchor .stageBox::before {
+  content: '';
+  position: absolute;
+  /* Past the stage's own edges, so the falloff happens outside the mascot
+     rather than across it. */
+  inset: -22%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(5, 4, 22, 0.45), rgba(5, 4, 22, 0) 65%);
+  /* Behind the stage, and never over the caption. */
+  z-index: -1;
+  pointer-events: none;
+}
+
+/*
+ * The authored 300px-tall stage, scaled about its top-left corner.
+ *
+ * `top left` rather than `center`: the box above is sized to the scaled result,
+ * so scaling about the middle would leave the stage overhanging it equally in
+ * every direction — which is what once put the mascot in the bottom-right
+ * corner of a 375px player with the caption across it. `width: max-content`
+ * lets a video card be wider than the 300 a CSS tier fills, which is how the
+ * two end up the same HEIGHT rather than the same footprint.
  */
 .stageInner {
   position: absolute;
-  left: 50%;
-  top: 50%;
-  margin: -150px 0 0 -150px;
-  transform-origin: center center;
+  left: 0;
+  top: 0;
+  width: max-content;
+  transform-origin: top left;
 }
 
 .caption {
@@ -67,6 +111,14 @@
   text-shadow: 0 2px 14px rgba(0, 0, 0, 0.75);
   animation: captionIn 420ms cubic-bezier(0.2, 1.1, 0.3, 1) 1 both;
   transition: opacity 500ms ease-out;
+}
+
+/* Directly under the stage and flush with its left edge — same type, same
+   sizes, only the alignment and the padding change. */
+.anchor .caption {
+  padding: 0;
+  text-align: left;
+  max-width: min(52ch, 100%);
 }
 
 .captionOut {
@@ -109,6 +161,13 @@
   100% { opacity: 1; }
 }
 
+/* The anchored block rises from the corner it is anchored to, rather than
+   fading a full-player dim in over the broadcast. */
+@keyframes anchorIn {
+  0% { opacity: 0; transform: translateY(18px) scale(0.96); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
 @keyframes captionIn {
   0% { opacity: 0; transform: translateY(14px); }
   100% { opacity: 1; transform: translateY(0); }
@@ -122,11 +181,11 @@
  * movement goes, and the caption never fades out, because under reduced motion
  * the text IS the animation.
  */
-.backdropStill {
+.still {
   animation: backdropFade 1500ms ease-in-out 1 both;
 }
 
-.backdropStill .caption {
+.still .caption {
   animation: none;
 }
 
@@ -138,6 +197,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .backdrop,
+  .anchor,
   .caption {
     animation-duration: 1ms;
   }

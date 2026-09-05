@@ -179,6 +179,65 @@ pixels inside the old footprint on tier-05 and tier-07, and on tier-06 only a
 bright ice reflection clipping the box's right edge, with no glyph structure
 anywhere.
 
+### 1e. The fullscreen stage moves off the creator's face on desktop
+
+A fullscreen gift used to be centred behind a dim over the whole player. On a
+phone that is the only place it can go. On a desktop it was sitting on the
+creator's face — for forty seconds at a time, on the most expensive tier on the
+board.
+
+On a desktop player the stage now anchors bottom-left, the full-cover dim is
+replaced by a radial glow that stops at the stage's own edge, and the caption
+sits directly under the stage, left-aligned. Measured on the bench:
+
+| | player | stage | block left | block bottom | stage right edge |
+|---|---|---|---|---|---|
+| 1280 window | 892 × 502 | 320 × 320 | 6.1% | 10.2% | 42.0% |
+| 1920 window | 1532 × 862 | 413 × 413 | 6.1% | 10.1% | 33.0% |
+| OBS 1080p | 1920 × 1080 | 520 × 520 | 96px | 108px | 32.1% |
+
+Under 1024px nothing changes: same centred layout, same `rgba(5,4,22,.45)`
+backdrop, same centred caption. Verified at 375px.
+
+**Which 1024 the breakpoint is.** The brief said "≥1024px player", and taken
+literally that is not the desktop breakpoint it reads as: the watch page gives
+the player 7 of 10 columns with chat beside it, so a 1024px window is a 692px
+player and a 1280px window an 871px one. Gating on the player's own width at
+1024 would have left the stage on the creator's face until the window reached
+about 1500px — and the brief's own QA asks to see the new layout at 1280. So the
+gate is both halves: the standard 1024px viewport breakpoint the rest of the app
+uses, AND a player at least 580px wide, which is what the block plus a readable
+tray beside it needs. A desktop window with a narrow player keeps the centred
+layout.
+
+**The tray goes to the far right, not to just-right-of-the-stage.** The brief
+said to push it right of the stage if the two collide, and they do — the stage
+lands in the tray's own corner. Pushing it to *immediately* right of the stage
+put it in the middle of the frame, because a tier-07 card is 47% of a 1920
+player wide. That is the creator's face, which is the thing this layout exists
+to keep clear. The tray now opens a strip that starts past the stage and runs to
+the player's edge, and parks at the far end of it: 79.8%–99.2% at 1920,
+65.4%–98.5% at 1280. No overlap between stage, caption and tray at any tested
+size.
+
+**The video card is now as tall as a CSS stage, and that is the one place two
+goals in the brief pull apart.** A 720 × 476 clip drawn at the stage's height is
+1.51× as wide as the square, so:
+
+| | card | right edge | crosses a 40-60% face box |
+|---|---|---|---|
+| 1280 | 484 × 320 | 60.4% | yes, all of it |
+| 1920 | 625 × 413 | 46.8% | yes, the left third |
+| OBS 1080p | 787 × 520 | 46.0% | yes, the left third |
+
+The CSS tiers are clear at 1920 (33.0%) and clip the edge of that box by 2% at
+1280. The video card cannot be both "the same height as the stage" and clear of
+the middle at a 1.51:1 aspect — there is no size that satisfies both. The brief
+asked for the height, so the height is what shipped. Capping the block's right
+edge at 40% of the player instead is a one-line change; it makes the video card
+SHORTER than the Nova that costs a tenth as much, which is the thing the height
+rule was there to fix.
+
 ### 2. No `increment_tip_stars_received` RPC, and no separate earnings ledger
 
 The brief referred to both. Neither exists, and neither is needed.
