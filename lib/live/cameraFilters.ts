@@ -133,11 +133,26 @@ export interface FilteredStream {
   stop: () => void;
 }
 
+/**
+ * How large a published frame may be, when a caller states a cap.
+ *
+ * A phone that is asked for nothing (which is the fix for the zoom — see
+ * lib/live/cameraCapture.ts) hands back a full sensor mode, and 4032x3024 is
+ * not something to encode, push over RTMP and pay a CDN for. The whole frame is
+ * scaled DOWN to fit, keeping its ratio: no crop, no lost field of view, just
+ * fewer pixels.
+ *
+ * Deliberately NOT applied by re-constraining the track. iOS may satisfy a
+ * size constraint by cropping the sensor again, which is the bug this is
+ * downstream of.
+ */
 export async function createFilteredStream(
   source: MediaStream,
   initialFilter: FilterId,
   frameRate = 30,
   initialFlipped = false,
+  /** Longest published edge, in px. Omitted on desktop, which is unchanged. */
+  maxLongEdge?: number,
 ): Promise<FilteredStream> {
   const [sourceVideoTrack] = source.getVideoTracks();
   if (!sourceVideoTrack) throw new Error('No video track to filter');
@@ -194,13 +209,17 @@ export async function createFilteredStream(
       an actual change — doing it every frame would clear the filter and the
       transform below on every frame.
     */
-    if (
-      video.videoWidth > 0 &&
-      video.videoHeight > 0 &&
-      (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight)
-    ) {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+    if (video.videoWidth > 0 && video.videoHeight > 0) {
+      // The camera's own ratio, capped in SIZE only where the caller asked for
+      // a cap. Rounded to even numbers because some encoders reject odd ones.
+      const longest = Math.max(video.videoWidth, video.videoHeight);
+      const scale = maxLongEdge && longest > maxLongEdge ? maxLongEdge / longest : 1;
+      const nextWidth = Math.round((video.videoWidth * scale) / 2) * 2;
+      const nextHeight = Math.round((video.videoHeight * scale) / 2) * 2;
+      if (canvas.width !== nextWidth || canvas.height !== nextHeight) {
+        canvas.width = nextWidth;
+        canvas.height = nextHeight;
+      }
     }
 
     // save/restore around the whole paint: both the filter and the transform
@@ -216,17 +235,19 @@ export async function createFilteredStream(
       ctx.scale(-1, 1);
     }
     /*
-      The source rectangle. At zoom 1 this is the whole frame and drawImage is
-      the 1:1 copy it always was; above 1 it is a centred sub-rect, scaled up
-      to fill the same canvas. Computed from the CANVAS dimensions, which are
-      the video's, so it stays correct through a resize, a camera swap and a
-      rotation without any extra bookkeeping.
+      The source rectangle, in SOURCE pixels — which are no longer the same as
+      the canvas's once a cap is downscaling the frame.
+
+      At zoom 1 this is the whole camera frame drawn across the whole canvas:
+      the full field of view, scaled but never cropped. Above 1 it is a centred
+      sub-rect of the source, scaled up to fill the same canvas, so the output
+      resolution never changes with zoom.
     */
     const zoom = currentZoom > 1 ? currentZoom : 1;
-    const sw = canvas.width / zoom;
-    const sh = canvas.height / zoom;
-    const sx = (canvas.width - sw) / 2;
-    const sy = (canvas.height - sh) / 2;
+    const sw = video.videoWidth / zoom;
+    const sh = video.videoHeight / zoom;
+    const sx = (video.videoWidth - sw) / 2;
+    const sy = (video.videoHeight - sh) / 2;
     ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
     ctx.restore();
     schedule();
