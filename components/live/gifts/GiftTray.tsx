@@ -33,6 +33,7 @@ export function GiftTray({
   items,
   reduceMotion = false,
   shifted = false,
+  containerRef,
   className = '',
 }: {
   items: TrayItem[];
@@ -48,12 +49,24 @@ export function GiftTray({
    * 484px video card without either being a special case.
    */
   shifted?: boolean;
+  /**
+   * Handed the tray element, so a caller can measure where its top edge landed.
+   *
+   * The phone watch layout stacks the fullscreen stage ON TOP of the tray, and
+   * a tray is as tall as however many rows are on screen — one, two or three,
+   * each as tall as its sender's name wraps. The stage's position is therefore
+   * a measurement, not a constant; see LiveViewerMobile.
+   */
+  containerRef?: (node: HTMLDivElement | null) => void;
   className?: string;
 }) {
   if (items.length === 0) return null;
 
   return (
-    <div className={`${styles.tray} ${shifted ? styles.trayShifted : ''} ${className}`}>
+    <div
+      ref={containerRef}
+      className={`${styles.tray} ${shifted ? styles.trayShifted : ''} ${className}`}
+    >
       {items.map((item) => (
         <GiftTrayRow key={item.key} item={item} reduceMotion={reduceMotion} />
       ))}

@@ -1,8 +1,8 @@
 'use client';
 
 /**
- * The two viewport measurements the full-bleed watch layout needs and CSS
- * cannot give it.
+ * The viewport measurements the full-bleed watch layout needs and CSS cannot
+ * give it.
  */
 
 import { useEffect, useState } from 'react';
@@ -58,22 +58,32 @@ export function useKeyboardInset(): number {
 }
 
 /**
- * The viewport's width in px, kept current.
+ * The viewport's width and height in px, kept current.
  *
  * Needed because the gift stage's size is a NUMBER handed to GiftOverlay, not
  * a CSS length: the animations are authored at 300px and scaled as a unit, so
  * the factor has to exist in JavaScript (see useStageScale.ts). `min(52vw,
- * 200px)` therefore has to be computed rather than written.
+ * 200px)` therefore has to be computed rather than written, and so does the
+ * "never above 45% of the viewport" ceiling the stage is clamped against.
  *
- * Zero until the first effect, which is the safe direction — the caller floors
- * the result, so one frame of the minimum stage is the worst case and no gift
- * is on screen on a first paint anyway.
+ * `innerHeight` rather than `visualViewport.height`: the ceiling is a rule
+ * about the SCREEN, and it must not move when the keyboard opens — the stage
+ * shrinking every time someone types would be worse than either position.
+ *
+ * Zeroes until the first effect, which is the safe direction — the caller
+ * treats an unmeasured height as "no ceiling yet" and falls back to the
+ * design's stage size, and no gift is on screen on a first paint anyway.
  */
-export function useViewportWidth(): number {
-  const [width, setWidth] = useState(0);
+export function useViewportSize(): { width: number; height: number } {
+  const [size, setSize] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
-    const read = () => setWidth(window.innerWidth);
+    const read = () =>
+      setSize((current) =>
+        current.width === window.innerWidth && current.height === window.innerHeight
+          ? current
+          : { width: window.innerWidth, height: window.innerHeight },
+      );
     read();
     window.addEventListener('resize', read);
     window.addEventListener('orientationchange', read);
@@ -83,5 +93,5 @@ export function useViewportWidth(): number {
     };
   }, []);
 
-  return width;
+  return size;
 }

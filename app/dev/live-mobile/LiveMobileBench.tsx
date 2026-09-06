@@ -10,15 +10,22 @@
  * reaction rail, the composer — is the same code the live page mounts, so a
  * layout that works here works there.
  *
- * TWO THINGS IT CANNOT SHOW, and both are honest rather than mocked away:
+ * THE VIDEO IS REAL, AND IT IS LANDSCAPE ON PURPOSE.
  *
- *  - THE VIDEO. There is no broadcast, so the player renders its real
- *    "กำลังรอสัญญาณ" state over a black frame. That state is translucent, so
- *    the gift stage under it is dimmed rather than hidden; everything a viewer
- *    touches sits above it and is unaffected.
- *  - THE KEYBOARD. `visualViewport` reports one only when a real one opens.
- *    Focus the input on a device, or in a browser's device emulation with a
- *    virtual keyboard, to see the composer ride up.
+ * `public/dev/live-sample/` is a 1280 x 720 clip packaged as a short VOD HLS
+ * playlist, so the player mounted here is the production one — HlsLivePlayer,
+ * lib/live/hlsPlayer.ts, hls.js — attached to a real 16:9 source. That is the
+ * only way to check the thing this layout is actually judged on: whether a
+ * landscape broadcast fills a portrait phone edge to edge, or sits in a band
+ * with black above and below it. The clip's own edges are colour-coded so a
+ * letterbox cannot hide in a screenshot; see the README beside it.
+ *
+ * "video: none" switches back to the unreachable URL, which is how to see the
+ * player's real "กำลังรอสัญญาณ" waiting state.
+ *
+ * THE ONE THING IT CANNOT SHOW is THE KEYBOARD: `visualViewport` reports one
+ * only when a real one opens. Focus the input on a device, or in a browser's
+ * device emulation with a virtual keyboard, to see the composer ride up.
  */
 
 import { useCallback, useMemo, useState } from 'react';
@@ -30,6 +37,43 @@ import type { LiveChatEntry } from '@/lib/live/types';
 import type { CreatorSummary } from '@/lib/viewer/types';
 
 const SESSION_ID = 'dev-mobile-bench';
+
+/**
+ * The 16:9 test broadcast, in two codecs — see public/dev/live-sample/README.md.
+ *
+ * VOD playlists rather than live ones. hls.js plays them identically; the
+ * difference is only that they end, and nothing in this layout is positioned
+ * against the live edge.
+ *
+ * WHY THERE ARE TWO. H.264 is what production streams and what every real
+ * phone decodes, so it is the default. It is also what a stock Chromium build
+ * — Playwright's, and therefore any screenshot taken in CI — cannot decode at
+ * all: `MediaSource.isTypeSupported('video/mp4; codecs="avc1…"')` is false
+ * there, hls.js attaches a MediaSource and no frame ever arrives, and a
+ * screenshot of that is a black screen indistinguishable from the letterbox
+ * it was taken to disprove. The VP9 fMP4 rendition is the same eight seconds
+ * of the same frame, and it is what makes this bench's proof re-runnable
+ * without a licensed browser build.
+ */
+const LANDSCAPE_H264 = '/dev/live-sample/index.m3u8';
+const LANDSCAPE_VP9 = '/dev/live-sample/index-vp9.m3u8';
+
+/** Deliberately unreachable, for the player's own waiting state. */
+const NO_SOURCE = 'https://example.invalid/dev/playlist.m3u8';
+
+/**
+ * The rendition this browser can actually decode.
+ *
+ * Read once, lazily, and never on the server: `MediaSource` does not exist
+ * there, and getting this wrong in either direction shows a black frame rather
+ * than an error.
+ */
+function landscapeSource(): string {
+  if (typeof MediaSource === 'undefined') return LANDSCAPE_H264;
+  return MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E01E"')
+    ? LANDSCAPE_H264
+    : LANDSCAPE_VP9;
+}
 
 const CREATOR: CreatorSummary = {
   id: 'dev-creator',
@@ -101,6 +145,21 @@ export function LiveMobileBench() {
    * and show what a notch and a home indicator actually do to the clearances.
    */
   const [notch, setNotch] = useState(true);
+  /**
+   * Which source the player is attached to. The landscape clip by default —
+   * a black waiting state cannot show whether the video is letterboxed, which
+   * is the whole reason this bench exists.
+   */
+  const [video, setVideo] = useState(true);
+  /**
+   * Resolved once, lazily — see landscapeSource.
+   *
+   * The server run of the initialiser has no `MediaSource` and answers H.264;
+   * the client's answers for real. Nothing renders the URL, so the two
+   * disagreeing is not a hydration mismatch — it reaches hls.js from an effect,
+   * by which point the client's answer is the one that exists.
+   */
+  const [source] = useState(landscapeSource);
 
   const [latestGift, setLatestGift] = useState<LiveGiftEvent | null>(null);
   const [toast, setToast] = useState<LiveViewerState['toast']>(null);
@@ -150,9 +209,7 @@ export function LiveMobileBench() {
         ? { kind: 'ended' }
         : {
             kind: 'hls',
-            // Deliberately unreachable: there is no broadcast, and the player's
-            // own waiting state is what a viewer sees before one starts.
-            playbackUrl: 'https://example.invalid/dev/playlist.m3u8',
+            playbackUrl: video ? source : NO_SOURCE,
             latencyMode: 'low_latency',
             creatorUserId: CREATOR.id,
           },
@@ -173,7 +230,7 @@ export function LiveMobileBench() {
       showToast: (message: string) => setToast({ message, key: Date.now() }),
       dismissToast: () => setToast(null),
     }),
-    [channel, ended, noop, startedAt, toast],
+    [channel, ended, noop, source, startedAt, toast, video],
   );
 
   return (
@@ -203,6 +260,9 @@ export function LiveMobileBench() {
           {expandChat ? 'chat: history' : 'chat: 5 lines'}
         </BenchButton>
         <BenchButton onClick={() => setEnded((on) => !on)}>{ended ? 'ended' : 'live'}</BenchButton>
+        <BenchButton onClick={() => setVideo((on) => !on)}>
+          {video ? 'video: 16:9 sample' : 'video: none'}
+        </BenchButton>
         <BenchButton onClick={() => setNotch((on) => !on)}>
           {notch ? 'safe areas: iPhone' : 'safe areas: none'}
         </BenchButton>

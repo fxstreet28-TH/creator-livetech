@@ -29,7 +29,13 @@ import type { LiveGiftEvent } from '@/lib/live/gifts';
 import { GiftFullscreen } from './GiftFullscreen';
 import { GiftTray } from './GiftTray';
 import { useGiftQueue } from './useGiftQueue';
-import { giftLayout, useElementBox, useIsDesktop, type GiftAnchor } from './useStageScale';
+import {
+  giftLayout,
+  useElementBox,
+  useIsDesktop,
+  useTopFromViewportBottom,
+  type GiftAnchor,
+} from './useStageScale';
 import styles from './GiftOverlay.module.css';
 
 export interface GiftOverlayProps {
@@ -65,6 +71,18 @@ export interface GiftOverlayProps {
    * rather than derived from a fraction of it. Everything else omits it.
    */
   anchor?: GiftAnchor;
+  /**
+   * Reports where the tray's TOP edge is, measured up from the bottom of the
+   * viewport — and 0 whenever no row is on screen.
+   *
+   * Only the phone watch layout asks for it, and it is the whole of "16px above
+   * the tray when a row is rendered": the stage stacks on top of the tray
+   * there, and a tray's height is however many rows the queue is holding. The
+   * alternative was a constant tall enough for the worst case, which is a
+   * reserved slot that keeps every gift high on the screen even when the tray
+   * is empty — which is what this replaced.
+   */
+  onTrayTopChange?: (px: number) => void;
   className?: string;
 }
 
@@ -73,6 +91,7 @@ export function GiftOverlay({
   resetKey = null,
   inset,
   anchor,
+  onTrayTopChange,
   className = '',
 }: GiftOverlayProps) {
   const { trayItems, fullscreenItem, enqueue, clear } = useGiftQueue();
@@ -102,6 +121,20 @@ export function GiftOverlay({
    */
   const [stageWidth, setStageWidth] = useState(0);
   const handleStageWidth = useCallback((width: number) => setStageWidth(width), []);
+
+  /**
+   * Where the tray's top edge ended up — see `onTrayTopChange`.
+   *
+   * The element is held in state and the setter IS the ref, the same idiom the
+   * player measurement above uses. GiftTray renders nothing at all when the
+   * queue is empty, so the node goes null and the hook reports 0, which is
+   * exactly the "no tray row is rendered" the phone layout branches on.
+   */
+  const [trayNode, setTrayNode] = useState<HTMLDivElement | null>(null);
+  const trayTop = useTopFromViewportBottom(trayNode);
+  useEffect(() => {
+    onTrayTopChange?.(trayTop);
+  }, [trayTop, onTrayTopChange]);
 
   /**
    * `prefers-reduced-motion`, via framer-motion's hook because the repo already
@@ -155,7 +188,12 @@ export function GiftOverlay({
         reduceMotion={reduceMotion}
         onWidthChange={handleStageWidth}
       />
-      <GiftTray items={trayItems} reduceMotion={reduceMotion} shifted={trayShifted} />
+      <GiftTray
+        items={trayItems}
+        reduceMotion={reduceMotion}
+        shifted={trayShifted}
+        containerRef={setTrayNode}
+      />
     </div>
   );
 }

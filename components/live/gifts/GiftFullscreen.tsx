@@ -130,6 +130,13 @@ function FullscreenStage({
           '--gift-anchor-left': layout.left,
           '--gift-anchor-bottom': layout.bottom,
           '--rarity-glow': rarity.glow,
+          // The block's own ceiling — see GiftAnchor.maxHeightPx. Applied here
+          // rather than in the stylesheet because it is a px figure the caller
+          // measured against its canvas, and `overflow: hidden` comes with it
+          // so a caption that overruns is cut instead of pushing the stage up.
+          ...(layout.maxHeightPx === undefined
+            ? null
+            : { maxHeight: layout.maxHeightPx, overflow: 'hidden' }),
         } as CSSProperties
       }
       // Decoration over a video. A screen reader announcing a gift every few
