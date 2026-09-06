@@ -58,20 +58,18 @@ export function CreatorLiveMobileBench() {
   /** Emulate an iPhone's safe areas — env() cannot be set from a stylesheet. */
   const [notch, setNotch] = useState(true);
   /**
-   * The two switches that make the zoom bug reproducible without an iPhone.
+   * Phone path or desktop path.
    *
-   * `portrait` off asks the camera for a landscape frame, which is what a
-   * refusing iOS camera effectively hands back — it exercises the
-   * `portraitRefused` branch, where the picture must be LETTERBOXED and
-   * published 16:9 rather than cover-cropped into a portrait canvas.
+   * On (the default) the camera is opened the way a phone opens it — asking for
+   * nothing but facing and frame rate, so the source arrives at the camera's
+   * OWN ratio. Run this bench with a 4:3 synthetic source (see the README
+   * beside the test cards) and the whole pipeline is exercised at the ratio a
+   * real iPhone actually gives.
    *
-   * `aspectHint` off drops the 9:16 `aspectRatio` ideal. That ideal is itself
-   * a candidate cause of the reported zoom: a 4:3 sensor satisfies it by
-   * CROPPING. Flipping it on device and watching the debug chip's numbers is
-   * how that gets settled in one tap instead of another release.
+   * Off takes the desktop constraints instead, which is how the landscape
+   * source and its letterboxed self-view get checked from here.
    */
   const [portrait, setPortrait] = useState(true);
-  const [aspectHint, setAspectHint] = useState(true);
 
   const noopSend = useCallback(async () => undefined, []);
   const giftTotals = useMemo(() => ({ count: 12, stars: 340 }), []);
@@ -83,7 +81,7 @@ export function CreatorLiveMobileBench() {
       )}
 
       <CreatorLiveMobile
-        key={`${portrait ? 'p' : 'l'}-${aspectHint ? 'a' : 'n'}`}
+        key={portrait ? 'phone' : 'desktop'}
         liveSessionId={SESSION_ID}
         // Deliberately unreachable: there is no room, and the connection
         // overlay it produces is part of what this bench is for.
@@ -95,7 +93,6 @@ export function CreatorLiveMobileBench() {
         elapsedSeconds={761}
         debugCamera
         portrait={portrait}
-        aspectRatioHint={aspectHint}
         filterId={filterId}
         onFilterIdChange={setFilterId}
         orientation={orientation}
@@ -137,14 +134,11 @@ export function CreatorLiveMobileBench() {
         <BenchButton onClick={() => setNotch((on) => !on)}>
           {notch ? 'safe areas: iPhone' : 'safe areas: none'}
         </BenchButton>
-        {/* Both re-key the layout so the camera is re-opened through the
-            ladder with the new constraints — a live applyConstraints would
-            not exercise the escalation this is here to test. */}
+        {/* Re-keys the layout so the camera is re-OPENED with the other
+            constraint set. A live applyConstraints would not do: on iOS that
+            is itself a way to get cropped, which is what this is all about. */}
         <BenchButton onClick={() => setPortrait((on) => !on)}>
-          {portrait ? 'source: portrait' : 'source: landscape'}
-        </BenchButton>
-        <BenchButton onClick={() => setAspectHint((on) => !on)}>
-          {aspectHint ? 'aspectRatio hint: on' : 'aspectRatio hint: off'}
+          {portrait ? 'camera: phone (unconstrained)' : 'camera: desktop (16:9)'}
         </BenchButton>
       </div>
     </>

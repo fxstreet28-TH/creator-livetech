@@ -55,6 +55,7 @@ import type { CameraOrientation } from '@/lib/live/cameraOrientation';
 import type { FilterId } from '@/lib/live/cameraFilters';
 import {
   CreatorBroadcaster,
+  ULTRA_WIDE_STEP,
   ZOOM_STEPS,
   type BroadcastControls,
 } from '../CreatorBroadcaster';
@@ -101,8 +102,6 @@ export interface CreatorLiveMobileProps {
    * tell that the browser handed back a crop of a wider sensor mode.
    */
   debugCamera?: boolean;
-  /** See CreatorBroadcaster.aspectRatioHint. The bench's A/B switch. */
-  aspectRatioHint?: boolean;
   /**
    * Ask the camera for an upright frame. True for a phone held upright, which
    * is every case this layout ships for today.
@@ -143,7 +142,6 @@ export function CreatorLiveMobile(props: CreatorLiveMobileProps) {
     onEndRequest,
     endDialog,
     debugCamera = false,
-    aspectRatioHint,
     portrait = true,
   } = props;
 
@@ -217,7 +215,6 @@ export function CreatorLiveMobile(props: CreatorLiveMobileProps) {
         // The whole point of the phone path: ask the camera for a portrait
         // frame so the broadcast is portrait-shaped end to end.
         portrait={portrait}
-        {...(aspectRatioHint === undefined ? {} : { aspectRatioHint })}
         overlay={
           <GiftOverlay
             latestGift={latestGift}
@@ -271,6 +268,7 @@ export function CreatorLiveMobile(props: CreatorLiveMobileProps) {
             {sheet === 'camera' && (
               <ZoomSlider
                 zoom={c.zoom}
+                minZoom={c.minZoom}
                 maxZoom={c.maxZoom}
                 hardware={c.hardwareZoom}
                 onChange={c.setZoom}
@@ -450,7 +448,9 @@ function Rail({
       {/* 1× → 2× → 3× → 1×. The label IS the state: a zoom a creator cannot
           read off the screen is one they forget they left on. */}
       <RailButton
-        onClick={() => controls.setZoom(nextZoomStep(controls.zoom, controls.maxZoom))}
+        onClick={() =>
+          controls.setZoom(nextZoomStep(controls.zoom, controls.minZoom, controls.maxZoom))
+        }
         label={`ซูม ${controls.zoom.toFixed(1)} เท่า`}
         active={controls.zoom > 1}
         icon={<span className={styles.zoomLabel}>{formatZoom(controls.zoom)}</span>}
@@ -487,15 +487,23 @@ function Rail({
 }
 
 /**
- * The next rung, wrapping back to 1x.
+ * The next rung, wrapping round.
  *
  * Rungs rather than a continuous step because a rail button is a thumb tap,
  * not a dial — the slider and the pinch are there for anything in between. A
  * rung past what this camera can do is skipped rather than clamped, so a
  * device whose ceiling is 2x cycles 1 → 2 → 1 instead of appearing to stick.
+ *
+ * 0.5x joins the front of the cycle only where the camera's own zoom range
+ * reaches below 1 — a rear ultra-wide. It is hidden entirely otherwise, rather
+ * than shown and clamped to 1: a button that promises a wider shot and gives
+ * the same one is worse than no button.
  */
-function nextZoomStep(current: number, maxZoom: number): number {
-  const usable = ZOOM_STEPS.filter((step) => step <= maxZoom + 0.001);
+function nextZoomStep(current: number, minZoom: number, maxZoom: number): number {
+  const usable = [
+    ...(minZoom < 1 ? [ULTRA_WIDE_STEP] : []),
+    ...ZOOM_STEPS.filter((step) => step <= maxZoom + 0.001),
+  ];
   if (usable.length === 0) return 1;
   const index = usable.findIndex((step) => step > current + 0.001);
   return index === -1 ? usable[0] : usable[index];
@@ -525,11 +533,13 @@ function touchDistance(touches: React.TouchList): number {
  */
 function ZoomSlider({
   zoom,
+  minZoom,
   maxZoom,
   hardware,
   onChange,
 }: {
   zoom: number;
+  minZoom: number;
   maxZoom: number;
   hardware: boolean;
   onChange: (next: number) => void;
@@ -542,8 +552,8 @@ function ZoomSlider({
       </div>
       <input
         type="range"
-        min={1}
-        max={Math.max(1.1, maxZoom)}
+        min={minZoom}
+        max={Math.max(minZoom + 0.1, maxZoom)}
         step={0.1}
         value={zoom}
         onChange={(event) => onChange(Number(event.target.value))}

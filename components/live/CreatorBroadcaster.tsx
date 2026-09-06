@@ -154,15 +154,6 @@ interface CreatorBroadcasterProps {
   /** Told when the creator flips the camera, so the page can remember it. */
   onFacingModeChange?: (next: CameraFacing) => void;
   /**
-   * Send the 9:16 `aspectRatio` ideal on a portrait capture. Default true.
-   *
-   * The A/B for the sensor-crop hypothesis: a 4:3 iPhone sensor satisfies a
-   * 9:16 ideal by CROPPING, not by letterboxing, so this hint is itself a
-   * candidate cause of the reported zoom. Only /dev/creator-live turns it off
-   * — see lib/live/cameraCapture.ts.
-   */
-  aspectRatioHint?: boolean;
-  /**
    * The control surface, for a layout that draws its own.
    *
    * A render prop rather than a set of exported handles because the state it
@@ -204,6 +195,11 @@ export interface BroadcastControls {
   setZoom: (next: number) => void;
   /** The ceiling, from the camera where it has one and 3 where it does not. */
   maxZoom: number;
+  /**
+   * The floor. 1 unless the camera reports a zoom range reaching below it,
+   * which on a phone means a rear ultra-wide lens. Nothing can fake it.
+   */
+  minZoom: number;
   /** True when the camera itself is zooming, false when the canvas is. */
   hardwareZoom: boolean;
   /**
@@ -216,8 +212,27 @@ export interface BroadcastControls {
   portraitRefused: boolean;
 }
 
-/** The zoom rungs the rail's button cycles through. */
+/**
+ * The longest edge a PHONE publishes.
+ *
+ * The camera is asked for nothing, so it may answer with a full sensor mode —
+ * 4032x3024 on a recent iPhone. That is not something to encode, push over
+ * RTMP and pay a CDN for, so the filter canvas scales the whole frame down to
+ * fit. 1280 keeps a 3:4 upright frame at 960x1280, which is the 720p-class
+ * pixel budget the quality rungs already assume.
+ */
+const PHONE_MAX_LONG_EDGE = 1280;
+
+/**
+ * The zoom rungs the rail's button cycles through.
+ *
+ * 0.5x is offered ONLY where the camera reports a zoom capability reaching
+ * below 1 — a rear ultra-wide lens on the devices that have one. It cannot be
+ * faked: digital zoom crops, and there is no cropping your way to a wider
+ * field of view than the sensor gave.
+ */
 export const ZOOM_STEPS = [1, 2, 3] as const;
+export const ULTRA_WIDE_STEP = 0.5;
 /** The slider's ceiling when the camera exposes no range of its own. */
 export const DIGITAL_MAX_ZOOM = 3;
 
@@ -242,7 +257,6 @@ export function CreatorBroadcaster({
   portrait = false,
   facingMode = 'user',
   onFacingModeChange,
-  aspectRatioHint = true,
   controls,
 }: CreatorBroadcasterProps) {
   const fullBleed = presentation === 'fullbleed';
@@ -297,10 +311,6 @@ export function CreatorBroadcaster({
   useEffect(() => {
     portraitRef.current = portrait;
   }, [portrait]);
-  const aspectRatioHintRef = useRef(aspectRatioHint);
-  useEffect(() => {
-    aspectRatioHintRef.current = aspectRatioHint;
-  }, [aspectRatioHint]);
 
   const [openMenu, setOpenMenu] = useState<'look' | 'camera' | null>(null);
   const [phase, setPhase] = useState<BroadcastPhase>('connecting');
@@ -404,19 +414,17 @@ export function CreatorBroadcaster({
       // on Windows Chrome, which holds a device briefly after release.
       if (!camera) {
         try {
-          // Through the escalating ladder rather than one getUserMedia call:
-          // a phone that answers a portrait request with a landscape track
-          // gets asked again, larger, and if it still refuses the broadcast
-          // goes out LANDSCAPE rather than being cover-cropped into a portrait
-          // frame — which is the 2-3x zoom a creator reported. Every attempt
-          // and its result is logged. See lib/live/cameraCapture.ts.
+          // On a phone this asks for NOTHING but the facing and the frame
+          // rate: every size or ratio hint is read by iOS as permission to
+          // crop its 4:3 sensor, which is the 2x telephoto view a creator
+          // reported at 1x. Desktop still asks for its quality rung. See
+          // lib/live/cameraCapture.ts.
           const opened = await openCamera({
             quality,
             portrait: portraitRef.current,
             deviceId: videoDeviceId,
             facingMode: videoDeviceId ? null : facingRef.current,
             audio: true,
-            aspectRatioHint: aspectRatioHintRef.current,
           });
           camera = opened.stream;
           cameraRef.current = camera;
@@ -441,6 +449,11 @@ export function CreatorBroadcaster({
             filterId,
             resolutionFor(quality).frameRate,
             orientationRef.current.flipOutput,
+            // Phone only. A camera asked for nothing hands back a full sensor
+            // mode; the whole frame is scaled down to fit, ratio intact, never
+            // cropped. Desktop passes nothing and is unchanged — a 1080p rung
+            // must still publish 1920x1080.
+            portraitRef.current ? PHONE_MAX_LONG_EDGE : undefined,
           );
           filteredRef.current = filtered;
         } catch (err) {
@@ -626,7 +639,6 @@ export function CreatorBroadcaster({
         portrait: portraitRef.current,
         facingMode: next,
         audio: false,
-        aspectRatioHint: aspectRatioHintRef.current,
       });
 
       const previous = sourceVideoRef.current;
@@ -675,7 +687,10 @@ export function CreatorBroadcaster({
    */
   const applyZoom = useCallback(
     async (next: number) => {
-      const clamped = Math.max(1, Math.min(zoomRange?.max ?? DIGITAL_MAX_ZOOM, next));
+      // Below 1 only where the camera itself goes there: the canvas can crop
+      // in, never out.
+      const floor = zoomRange && zoomRange.min < 1 ? zoomRange.min : 1;
+      const clamped = Math.max(floor, Math.min(zoomRange?.max ?? DIGITAL_MAX_ZOOM, next));
       setZoomState(clamped);
 
       const track = sourceVideoRef.current?.getVideoTracks()[0];
@@ -777,6 +792,7 @@ export function CreatorBroadcaster({
           zoom,
           setZoom: (next: number) => void applyZoom(next),
           maxZoom: zoomRange?.max ?? DIGITAL_MAX_ZOOM,
+          minZoom: zoomRange && zoomRange.min < 1 ? zoomRange.min : 1,
           hardwareZoom: zoomRange !== null,
           cameraReport: describeCamera(camera),
           portraitRefused: camera?.portraitRefused === true,

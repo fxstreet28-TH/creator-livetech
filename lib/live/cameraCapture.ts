@@ -1,48 +1,39 @@
 'use client';
 
 /**
- * Opening a camera, and finding out what you actually got.
+ * Opening a camera, and reporting what it gave.
  *
- * WHY THIS IS A MODULE AND NOT A CONSTRAINTS OBJECT
+ * THE PHONE RULE, AND IT IS THE WHOLE FIX: ASK FOR NOTHING.
  *
- * A creator broadcasting from an iPhone reported a picture zoomed 2-3x against
- * the native camera app — in the host preview AND in the published stream. The
- * canvas is not the culprit: it is sized to the track every frame and drawn
- * 1:1 (see createFilteredStream), so whatever the camera hands over is exactly
- * what viewers receive. That leaves getUserMedia, and getUserMedia on iOS
- * Safari does not answer the question you think you asked.
+ * An iPhone sensor is 4:3. iOS Safari satisfies a 9:16 or 16:9 `aspectRatio`,
+ * and a width/height pair implying one, by CROPPING that sensor rather than by
+ * letterboxing it — and it crops at native pixel density rather than
+ * downscaling. So every size hint we sent was read as "give me the middle of
+ * the picture", and the creator got a ~2x telephoto view of themselves while
+ * the native camera app, which asks for nothing, showed the full frame.
  *
- * TWO WAYS A CONSTRAINT BECOMES A ZOOM, and they need different fixes:
+ * Two rounds of escalating ladders made this worse rather than better: each
+ * rung was another way of describing a crop. The fix is to stop describing.
+ * On a phone the request is `{ facingMode, frameRate }` and nothing else, one
+ * call, no re-request — which returns the sensor's own field of view at its own
+ * ratio, which is what the native app shows.
  *
- *  1. THE TRACK COMES BACK LANDSCAPE. Ask an upright phone for a portrait
- *     frame and Safari may still hand back 1280x720. Drawn into a portrait
- *     canvas under `object-fit: cover` that is a ~1.8x horizontal crop, and it
- *     is what the earlier fix was aimed at. The answer is to ASK AGAIN at a
- *     larger portrait size, and if it still refuses, to accept a landscape
- *     source and publish it as landscape rather than cover-cropping it into a
- *     portrait frame. A 16:9 broadcast is a worse phone experience than a 9:16
- *     one; a 16:9 broadcast with two thirds of the picture thrown away is not
- *     a broadcast at all.
+ * The consequences are handled downstream rather than fought here:
  *
- *  2. THE TRACK COMES BACK PORTRAIT AND IS STILL A CROP. This is the one that
- *     is invisible without numbers. An iPhone sensor mode is 4:3; a 9:16
- *     `aspectRatio` ideal is satisfied by CROPPING that mode, not by
- *     letterboxing it, and a small `width`/`height` ideal can be satisfied by
- *     a centre crop at native pixel density rather than by downscaling the
- *     full field of view. Both produce a perfectly well-formed 720x1280 track
- *     that is a telephoto view of the room.
+ *  - THE RATIO is the camera's, usually 3:4 upright. It is published as-is.
+ *    The phone layouts cover-crop it for display and the desktop viewer
+ *    pillarboxes it; nothing re-crops the TRACK.
+ *  - THE SIZE may be larger than the broadcast needs (a 4032x3024 sensor mode
+ *    is not something to encode). The filter canvas downscales the whole frame
+ *    — see maxLongEdge in createFilteredStream. Never applyConstraints after
+ *    the fact: iOS may satisfy that by cropping again, which is the bug.
  *
- * WHICH ONE IS HAPPENING IS AN EMPIRICAL QUESTION, so this module records
- * every attempt — the constraints asked for, the settings returned, and the
- * track's own capabilities — and hands the report back for the debug chip and
- * the console. `getCapabilities().width.max` against `getSettings().width` is
- * the tell for case 2: a 720-wide track from a camera that can do 1920 wide,
- * with an aspectRatio that does not appear in the capability range, is a crop.
+ * DESKTOP IS UNCHANGED and still asks for its quality rung: a webcam has no
+ * sensor crop to fall into, the framed player wants a known ratio, and that
+ * path is approved.
  *
- * NOTHING HERE APPLIES A CROP OF ITS OWN. 1x means the full field of view the
- * browser is willing to give, like the native camera app. Zoom is a separate,
- * explicit control — see applyZoomConstraint below and the digital fallback in
- * createFilteredStream.
+ * Zoom is a separate, explicit control. 1x is the full field of view — never an
+ * implicit crop.
  */
 
 import type { BroadcastQuality } from './types';
@@ -50,7 +41,7 @@ import { resolutionFor, type CameraFacing } from './livekitClient';
 
 /** One getUserMedia call and what came back. */
 export interface CameraAttempt {
-  /** Which rung of the ladder this was, for the report. */
+  /** 'phone-native' or 'desktop' — which constraint set was used. */
   label: string;
   constraints: MediaTrackConstraints;
   /** The track's own account of itself. Null when the call threw. */
@@ -75,6 +66,10 @@ export interface CameraOpenResult {
    * one. The caller must then publish LANDSCAPE rather than cover-cropping.
    */
   portraitRefused: boolean;
+  /**
+   * The one call that was made. An array because a failure records itself
+   * here too, and because the shape survived the ladder this used to be.
+   */
   attempts: CameraAttempt[];
 }
 
@@ -87,21 +82,13 @@ export interface OpenCameraOptions {
   facingMode?: CameraFacing | null;
   /** Whether to open a microphone too. False for a camera swap mid-broadcast. */
   audio?: boolean;
-  /**
-   * Send `aspectRatio: { ideal: 9/16 }` on the portrait attempts.
-   *
-   * On by default because it is what makes a 4:3 camera hand back a 9:16
-   * frame at all. Off is the A/B for case 2 in the header: if 1x stops being
-   * zoomed with this off, the aspect ratio ideal was being satisfied by a
-   * sensor crop, and the answer is to publish the camera's own ratio and let
-   * the viewer's `object-fit: cover` do the framing. Exposed so the on-device
-   * run can settle it in one tap rather than in another release.
-   */
-  aspectRatioHint?: boolean;
 }
 
-/** 9:16, as getUserMedia wants it: width over height. */
-const PORTRAIT_ASPECT = 9 / 16;
+/**
+ * The frame rate a phone asks for. The ONLY thing constrained on that path —
+ * see the header. 30 is what every quality rung already used.
+ */
+const PHONE_FRAME_RATE = 30;
 
 function orientationOf(settings: MediaTrackSettings): CameraOpenResult['orientation'] {
   const w = settings.width ?? 0;
@@ -122,120 +109,84 @@ function identity(options: OpenCameraOptions): MediaTrackConstraints {
 }
 
 /**
- * The ladder, in the order it is tried. NO `exact` anywhere: an exact
- * constraint that a camera cannot meet is an OverconstrainedError, and a
- * broadcast that refuses to start is worse than one framed imperfectly.
- */
-function ladderFor(options: OpenCameraOptions): { label: string; constraints: MediaTrackConstraints }[] {
-  const { width, height, frameRate } = resolutionFor(options.quality);
-  const longEdge = Math.max(width, height);
-  const shortEdge = Math.min(width, height);
-  const base = { ...identity(options), frameRate: { ideal: frameRate } };
-
-  if (!options.portrait) {
-    // Desktop. Unchanged, and deliberately unconstrained in aspect: a webcam
-    // is 16:9 or 4:3 and either is fine in a framed player.
-    return [
-      {
-        label: 'landscape',
-        constraints: { ...base, width: { ideal: longEdge }, height: { ideal: shortEdge } },
-      },
-    ];
-  }
-
-  const aspect = options.aspectRatioHint === false ? {} : { aspectRatio: { ideal: PORTRAIT_ASPECT } };
-
-  return [
-    // 1. The size the quality rung means, upright.
-    {
-      label: 'portrait',
-      constraints: { ...base, width: { ideal: shortEdge }, height: { ideal: longEdge }, ...aspect },
-    },
-    // 2. Bigger. A camera that answered a 720x1280 request with a landscape
-    //    track often has a portrait mode further up its list, and asking for
-    //    1080x1920 is what reaches it. It also side-steps the centre-crop
-    //    case: a sensor asked for its own full height has nothing to crop to.
-    {
-      label: 'portrait-hd',
-      constraints: { ...base, width: { ideal: 1080 }, height: { ideal: 1920 }, ...aspect },
-    },
-  ];
-}
-
-/**
- * Open a camera, escalating until it gives an upright frame or runs out of
- * things to try.
+ * The constraints for one open. ONE set — there is no ladder any more.
  *
- * Throws only when EVERY rung failed — the caller turns that into the Thai
- * media error. A rung that succeeds but returns the wrong orientation is not
- * a failure; it is an answer, and `portraitRefused` carries it.
+ * NO `exact` anywhere on either path: an exact constraint a camera cannot meet
+ * is an OverconstrainedError, and a broadcast that refuses to start is worse
+ * than one framed imperfectly.
  */
-export async function openCamera(options: OpenCameraOptions): Promise<CameraOpenResult> {
-  const attempts: CameraAttempt[] = [];
-  let lastError: unknown = null;
-  let fallback: { stream: MediaStream; settings: MediaTrackSettings } | null = null;
-
-  for (const rung of ladderFor(options)) {
-    let stream: MediaStream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: rung.constraints,
-        audio: options.audio !== false,
-      });
-    } catch (err) {
-      lastError = err;
-      attempts.push({
-        label: rung.label,
-        constraints: rung.constraints,
-        settings: null,
-        error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
-      });
-      continue;
-    }
-
-    const [track] = stream.getVideoTracks();
-    const settings = track?.getSettings() ?? {};
-    attempts.push({ label: rung.label, constraints: rung.constraints, settings, error: null });
-
-    const orientation = orientationOf(settings);
-    const wanted = options.portrait ? 'portrait' : 'landscape';
-
-    if (!options.portrait || orientation !== 'landscape') {
-      logReport(rung.label, attempts, settings, track);
-      return {
-        stream,
-        settings,
-        capabilities: readCapabilities(track),
-        orientation,
-        portraitRefused: false,
-        attempts,
-      };
-    }
-
-    // Wrong way up. Keep it as the fallback and try the next rung — but only
-    // ONE camera may be open at a time on iOS, so the loser is released before
-    // the next request rather than after.
-    if (fallback) fallback.stream.getTracks().forEach((t) => t.stop());
-    fallback = { stream, settings };
-    void wanted;
-  }
-
-  if (fallback) {
-    const [track] = fallback.stream.getVideoTracks();
-    logReport('portrait-refused', attempts, fallback.settings, track);
+function constraintsFor(options: OpenCameraOptions): {
+  label: string;
+  constraints: MediaTrackConstraints;
+} {
+  if (options.portrait) {
+    // THE PHONE. No width, no height, no aspectRatio — see the header. Every
+    // one of those is read by iOS as permission to crop the sensor.
     return {
-      stream: fallback.stream,
-      settings: fallback.settings,
-      capabilities: readCapabilities(track),
-      orientation: 'landscape',
-      // The caller must publish landscape. Cover-cropping this into a portrait
-      // canvas is the 2-3x zoom that started all of this.
-      portraitRefused: true,
-      attempts,
+      label: 'phone-native',
+      constraints: { ...identity(options), frameRate: { ideal: PHONE_FRAME_RATE } },
     };
   }
 
-  throw lastError ?? new Error('No camera available');
+  // Desktop, unchanged and approved: the quality rung, in landscape.
+  const { width, height, frameRate } = resolutionFor(options.quality);
+  return {
+    label: 'desktop',
+    constraints: {
+      ...identity(options),
+      width: { ideal: Math.max(width, height) },
+      height: { ideal: Math.min(width, height) },
+      frameRate: { ideal: frameRate },
+    },
+  };
+}
+
+/**
+ * Open the camera. ONE call — no escalation, no re-request.
+ *
+ * Throws when it fails, which the caller turns into the Thai media error. What
+ * came back is reported rather than judged: `orientation` says which way up the
+ * frame is, and the caller fits its preview to that instead of assuming.
+ */
+export async function openCamera(options: OpenCameraOptions): Promise<CameraOpenResult> {
+  const { label, constraints } = constraintsFor(options);
+  const attempts: CameraAttempt[] = [];
+
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: constraints,
+      audio: options.audio !== false,
+    });
+  } catch (err) {
+    attempts.push({
+      label,
+      constraints,
+      settings: null,
+      error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+    });
+    logReport(`${label}-failed`, attempts, {}, undefined);
+    throw err;
+  }
+
+  const [track] = stream.getVideoTracks();
+  const settings = track?.getSettings() ?? {};
+  attempts.push({ label, constraints, settings, error: null });
+  logReport(label, attempts, settings, track);
+
+  const orientation = orientationOf(settings);
+  return {
+    stream,
+    settings,
+    capabilities: readCapabilities(track),
+    orientation,
+    // A phone asked for nothing and still handed back a landscape frame. It
+    // should not happen now that no ratio is being requested, and the caller
+    // letterboxes rather than cover-cropping if it does — a 16:9 track squeezed
+    // into a 9:16 box is the zoom this whole change exists to remove.
+    portraitRefused: options.portrait === true && orientation === 'landscape',
+    attempts,
+  };
 }
 
 function readCapabilities(track: MediaStreamTrack | undefined): MediaTrackCapabilities | null {
@@ -265,7 +216,7 @@ function logReport(
   const capabilities = readCapabilities(track) as
     | (MediaTrackCapabilities & { width?: { max?: number }; height?: { max?: number } })
     | null;
-  const ladder = attempts
+  const asked = attempts
     .map((a) => `${a.label}=${a.settings ? `${a.settings.width}x${a.settings.height}` : a.error}`)
     .join(' -> ');
 
@@ -276,7 +227,7 @@ function logReport(
     `[camera] ${outcome}: ${settings.width ?? 0}x${settings.height ?? 0} ` +
       `ar=${aspectLabel(settings)} fps=${settings.frameRate ?? '?'} ` +
       `camMax=${capabilities?.width?.max ?? '?'}x${capabilities?.height?.max ?? '?'} ` +
-      `| ladder: ${ladder}`,
+      `| asked: ${asked}`,
   );
   // The full capability object separately, where it can be expanded rather
   // than truncated into the line above.
