@@ -45,6 +45,14 @@ import {
   VIEWER_PERSIST_MS,
 } from '@/lib/live/constants';
 import {
+  applyZoomConstraint,
+  describeCamera,
+  hardwareZoomRange,
+  openCamera,
+  type CameraOpenResult,
+  type ZoomRange,
+} from '@/lib/live/cameraCapture';
+import {
   RoomEvent,
   Track,
   connectAsPublisher,
@@ -54,6 +62,7 @@ import {
   resolutionFor,
   thaiForConnectError,
   thaiForMediaError,
+  type CameraFacing,
   type Room,
 } from '@/lib/live/livekitClient';
 import type { BroadcastQuality, LiveDelivery } from '@/lib/live/types';
@@ -113,7 +122,104 @@ interface CreatorBroadcasterProps {
    */
   overlay?: React.ReactNode;
   onPhaseChange?: (phase: BroadcastPhase) => void;
+  /**
+   * How this is dressed, not what it publishes. Same split as the players.
+   *
+   * 'framed' is the desktop studio: a bordered 16:9-ish box with the LIVE and
+   * viewer pills in its corners and the control row beneath it.
+   *
+   * 'fullbleed' is the phone host layout. The self-view fills the viewport and
+   * every control is a translucent layer the PAGE owns and positions against
+   * the safe areas — including the one that ends the broadcast, which on the
+   * squeezed-down desktop studio was pushed off-screen entirely and left a
+   * creator with no way to stop. So this draws the picture and nothing else,
+   * and hands its controls out through `controls`.
+   */
+  presentation?: BroadcastPresentation;
+  /**
+   * Ask the camera for a portrait frame.
+   *
+   * The whole reason a phone broadcast came out landscape-shaped: the quality
+   * rungs are expressed in landscape, so a phone held upright was asking a
+   * portrait camera for 1280x720 and getting it. Escalated and verified rather
+   * than assumed — see lib/live/cameraCapture.ts.
+   */
+  portrait?: boolean;
+  /**
+   * Which camera to open on a device that has more than one. Ignored when
+   * `videoDeviceId` names a specific camera — a desktop picks by id, a phone
+   * picks by facing.
+   */
+  facingMode?: CameraFacing;
+  /** Told when the creator flips the camera, so the page can remember it. */
+  onFacingModeChange?: (next: CameraFacing) => void;
+  /**
+   * Send the 9:16 `aspectRatio` ideal on a portrait capture. Default true.
+   *
+   * The A/B for the sensor-crop hypothesis: a 4:3 iPhone sensor satisfies a
+   * 9:16 ideal by CROPPING, not by letterboxing, so this hint is itself a
+   * candidate cause of the reported zoom. Only /dev/creator-live turns it off
+   * — see lib/live/cameraCapture.ts.
+   */
+  aspectRatioHint?: boolean;
+  /**
+   * The control surface, for a layout that draws its own.
+   *
+   * A render prop rather than a set of exported handles because the state it
+   * needs — the mute flags, the level meter, the connection phase — lives in
+   * here with the Room, and lifting it into the page would mean lifting the
+   * Room with it. Only 'fullbleed' calls this; the framed layout has its own
+   * row, unchanged.
+   */
+  controls?: (controls: BroadcastControls) => React.ReactNode;
 }
+
+/** See CreatorBroadcasterProps.presentation. */
+export type BroadcastPresentation = 'framed' | 'fullbleed';
+
+/** What a layout needs to draw its own controls. See `controls`. */
+export interface BroadcastControls {
+  phase: BroadcastPhase;
+  /** Thai, renderable. Null while nothing is wrong. */
+  error: string | null;
+  retry: () => void;
+  /** The room is up; whether the CDN is receiving it is the next two. */
+  deliveryLive: boolean;
+  deliveryError: string | null;
+  micOn: boolean;
+  toggleMic: () => void;
+  camOn: boolean;
+  toggleCamera: () => void;
+  /** 0..1, polled off the local participant. For a level meter. */
+  audioLevel: number;
+  facing: CameraFacing;
+  /** Front/back. A no-op while a previous flip is still opening a camera. */
+  flipCamera: () => void;
+  flippingCamera: boolean;
+  /**
+   * Current zoom, 1 = the full field of view the browser gave. Never an
+   * implicit crop: 1 is what the native camera app shows.
+   */
+  zoom: number;
+  setZoom: (next: number) => void;
+  /** The ceiling, from the camera where it has one and 3 where it does not. */
+  maxZoom: number;
+  /** True when the camera itself is zooming, false when the canvas is. */
+  hardwareZoom: boolean;
+  /**
+   * What the camera actually gave, as numbers: "720x1280 ar0.563 portrait".
+   * Rendered in the dev bench and logged on every open — this is the thing
+   * that turns "it looks zoomed" into a decision.
+   */
+  cameraReport: string;
+  /** Set when the camera refused an upright frame; the broadcast is 16:9. */
+  portraitRefused: boolean;
+}
+
+/** The zoom rungs the rail's button cycles through. */
+export const ZOOM_STEPS = [1, 2, 3] as const;
+/** The slider's ceiling when the camera exposes no range of its own. */
+export const DIGITAL_MAX_ZOOM = 3;
 
 export function CreatorBroadcaster({
   liveSessionId,
@@ -132,7 +238,14 @@ export function CreatorBroadcaster({
   reactions,
   overlay,
   onPhaseChange,
+  presentation = 'framed',
+  portrait = false,
+  facingMode = 'user',
+  onFacingModeChange,
+  aspectRatioHint = true,
+  controls,
 }: CreatorBroadcasterProps) {
+  const fullBleed = presentation === 'fullbleed';
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const lookButtonRef = useRef<HTMLButtonElement | null>(null);
   const cameraButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -151,6 +264,43 @@ export function CreatorBroadcaster({
   useEffect(() => {
     orientationRef.current = orientation;
   }, [orientation]);
+
+  /**
+   * The video stream currently being drawn onto the filter canvas.
+   *
+   * Held separately from the camera the connect effect opened, because the
+   * front/back flip replaces it: the flip opens a NEW video-only stream, points
+   * the canvas at it, and stops the old one — while the ORIGINAL stream's audio
+   * track keeps running, because it is the one already published. Stopping the
+   * whole stream on a flip is how you end up broadcasting silence.
+   */
+  const sourceVideoRef = useRef<MediaStream | null>(null);
+  const cameraRef = useRef<MediaStream | null>(null);
+  const [facing, setFacing] = useState<CameraFacing>(facingMode);
+  const facingRef = useRef(facing);
+  const [flippingCamera, setFlippingCamera] = useState(false);
+  /**
+   * What the camera gave us, kept so the preview can be fitted to the frame it
+   * actually produced rather than to the one that was asked for.
+   */
+  const [camera, setCamera] = useState<CameraOpenResult | null>(null);
+  /**
+   * Zoom, and where it is applied.
+   *
+   * Per session only: state on a component that is mounted for exactly one
+   * broadcast, so the next live starts at 1x. A zoom a creator forgot they
+   * left on is a broadcast framed wrong from its first second.
+   */
+  const [zoom, setZoomState] = useState(1);
+  const [zoomRange, setZoomRange] = useState<ZoomRange | null>(null);
+  const portraitRef = useRef(portrait);
+  useEffect(() => {
+    portraitRef.current = portrait;
+  }, [portrait]);
+  const aspectRatioHintRef = useRef(aspectRatioHint);
+  useEffect(() => {
+    aspectRatioHintRef.current = aspectRatioHint;
+  }, [aspectRatioHint]);
 
   const [openMenu, setOpenMenu] = useState<'look' | 'camera' | null>(null);
   const [phase, setPhase] = useState<BroadcastPhase>('connecting');
@@ -254,16 +404,27 @@ export function CreatorBroadcaster({
       // on Windows Chrome, which holds a device briefly after release.
       if (!camera) {
         try {
-          const { width, height, frameRate } = resolutionFor(quality);
-          camera = await navigator.mediaDevices.getUserMedia({
-            video: {
-              ...(videoDeviceId ? { deviceId: { exact: videoDeviceId } } : {}),
-              width: { ideal: width },
-              height: { ideal: height },
-              frameRate: { ideal: frameRate },
-            },
+          // Through the escalating ladder rather than one getUserMedia call:
+          // a phone that answers a portrait request with a landscape track
+          // gets asked again, larger, and if it still refuses the broadcast
+          // goes out LANDSCAPE rather than being cover-cropped into a portrait
+          // frame — which is the 2-3x zoom a creator reported. Every attempt
+          // and its result is logged. See lib/live/cameraCapture.ts.
+          const opened = await openCamera({
+            quality,
+            portrait: portraitRef.current,
+            deviceId: videoDeviceId,
+            facingMode: videoDeviceId ? null : facingRef.current,
             audio: true,
+            aspectRatioHint: aspectRatioHintRef.current,
           });
+          camera = opened.stream;
+          cameraRef.current = camera;
+          sourceVideoRef.current = camera;
+          if (!cancelled) {
+            setCamera(opened);
+            setZoomRange(hardwareZoomRange(camera.getVideoTracks()[0]));
+          }
         } catch (err) {
           if (cancelled) return;
           console.error('[CreatorBroadcaster] getUserMedia failed', err);
@@ -364,6 +525,12 @@ export function CreatorBroadcaster({
       // the loop drawing a dead <video>.
       filtered?.stop();
       camera?.getTracks().forEach((track) => track.stop());
+      // The flip may have swapped in a different camera since; that one is not
+      // `camera` and would otherwise be left holding the device.
+      const swapped = sourceVideoRef.current;
+      if (swapped && swapped !== camera) swapped.getTracks().forEach((track) => track.stop());
+      cameraRef.current = null;
+      sourceVideoRef.current = null;
     };
     // micEnabled and filterId are the STARTING values only — both are changed
     // afterwards through the controls below, not through a reconnect.
@@ -433,10 +600,190 @@ export function CreatorBroadcaster({
     setMicOn(next);
   };
 
+  /**
+   * Front camera to back camera, and back, WITHOUT republishing anything.
+   *
+   * The published track is the filter canvas, so switching cameras is a matter
+   * of pointing that canvas at a different source: `setSource` swaps the
+   * detached <video>'s srcObject and the very next frame is drawn from the new
+   * camera. LiveKit never renegotiates, the egress never notices, and Bunny's
+   * ingest never reconnects — which matters, because a renegotiation mid-
+   * broadcast is a visible stall for every viewer.
+   *
+   * `audio: false` is load-bearing: the mic already publishing belongs to the
+   * stream opened at connect time, and asking for a second one here would
+   * either fail or leave two microphones open.
+   */
+  const flipCamera = useCallback(async () => {
+    const filtered = filteredRef.current;
+    if (!filtered || flippingCamera) return;
+
+    const next: CameraFacing = facingRef.current === 'user' ? 'environment' : 'user';
+    setFlippingCamera(true);
+    try {
+      const opened = await openCamera({
+        quality,
+        portrait: portraitRef.current,
+        facingMode: next,
+        audio: false,
+        aspectRatioHint: aspectRatioHintRef.current,
+      });
+
+      const previous = sourceVideoRef.current;
+      await filtered.setSource(opened.stream);
+      sourceVideoRef.current = opened.stream;
+      setCamera(opened);
+      // The new camera has its own zoom range — a back camera often zooms
+      // where a front one does not — so the range is re-read rather than
+      // carried over, and the level is reset to the honest 1x.
+      setZoomRange(hardwareZoomRange(opened.stream.getVideoTracks()[0]));
+      setZoomState(1);
+      filtered.setZoom(1);
+
+      // Only the VIDEO tracks of the old source, and only once the new one is
+      // drawing: the original stream's audio track is the published mic.
+      previous?.getVideoTracks().forEach((track) => track.stop());
+
+      facingRef.current = next;
+      setFacing(next);
+      onFacingModeChange?.(next);
+    } catch (err) {
+      // A phone with one camera, or a permission the creator revoked. The
+      // broadcast is unaffected — it is still drawing the camera it had — so
+      // this is logged, not surfaced as a broadcast error.
+      console.error('[CreatorBroadcaster] flip camera failed', err);
+    } finally {
+      setFlippingCamera(false);
+    }
+  }, [flippingCamera, quality, onFacingModeChange]);
+
+
   // The self-view is the canvas, so the output flip is already in these
   // frames — which is exactly why the creator's own preference cannot be read
   // off `mirrorPreview` alone.
+  /**
+   * Put a zoom level into effect, on whichever mechanism this camera has.
+   *
+   * HARDWARE FIRST, ALWAYS. A camera that can zoom itself keeps the sensor's
+   * full resolution; the canvas crop throws pixels away to reach the same
+   * framing. So the constraint is tried first and the canvas is left at 1
+   * whenever it lands, and only a camera with no zoom capability — or one that
+   * refuses the constraint — falls through to cropping.
+   *
+   * Either way the creator's self-view and the published frames agree, because
+   * both are the same canvas fed by the same track.
+   */
+  const applyZoom = useCallback(
+    async (next: number) => {
+      const clamped = Math.max(1, Math.min(zoomRange?.max ?? DIGITAL_MAX_ZOOM, next));
+      setZoomState(clamped);
+
+      const track = sourceVideoRef.current?.getVideoTracks()[0];
+      if (zoomRange) {
+        const applied = await applyZoomConstraint(track, clamped, zoomRange);
+        if (applied) {
+          filteredRef.current?.setZoom(1);
+          return;
+        }
+        // It said it could and then would not. Fall through rather than
+        // leaving the creator with a control that does nothing.
+      }
+      filteredRef.current?.setZoom(clamped);
+    },
+    [zoomRange],
+  );
+
   const previewFlipped = shouldFlipPreview(orientation.mirrorPreview, orientation.flipOutput);
+
+  /*
+    HOW THE SELF-VIEW IS FITTED, and why it is not always `cover`.
+
+    `cover` fills a portrait phone with a portrait camera, which is the point.
+    Point it at a LANDSCAPE track — a camera that refused an upright frame —
+    and it crops away about two thirds of the width, which is most of the
+    reported zoom. So the fit follows what the camera ACTUALLY gave: cover
+    while the source is upright, contain the moment it is not.
+
+    The creator then sees letterboxing that a phone viewer will not (the
+    viewer's player covers, by design). That is the correct trade: the host
+    screen's job is to show the framing being published, and a host who cannot
+    see their own edges cannot frame anything.
+  */
+  const sourceIsLandscape = camera?.orientation === 'landscape';
+
+  /*
+    THE PHONE HOST LAYOUT.
+
+    The self-view is the viewport — `fixed inset-0` at 100vw x 100dvh, z-0
+    under the page's chrome — and `object-cover`, so a portrait camera fills a
+    portrait phone edge to edge. Same box, same reasoning and the same z-order
+    as the viewer's full-bleed player; see HlsLivePlayer.
+
+    Everything else this component draws in 'framed' — the pills, the level
+    meter, the control row — is the PAGE's here, and reaches it through
+    `controls`. That is not tidiness: the control row is where "จบไลฟ์" lived,
+    and on a squeezed-down desktop studio it wrapped off the bottom of a phone
+    screen and left the creator unable to end their own broadcast.
+  */
+  if (fullBleed) {
+    return (
+      <>
+        <div className="fixed inset-0 z-0 h-[100dvh] w-screen overflow-hidden bg-black">
+          <video
+            ref={videoRef}
+            autoPlay
+            muted
+            playsInline
+            aria-label="ภาพที่กำลังถ่ายทอด"
+            className={[
+              'absolute inset-0 h-full w-full',
+              sourceIsLandscape ? 'object-contain' : 'object-cover',
+              previewFlipped ? 'scale-x-[-1]' : '',
+            ].join(' ')}
+          />
+          <FloatingReactionsLayer reactions={reactions} />
+          {overlay}
+          {phase !== 'live' && (
+            <ConnectionOverlay
+              phase={phase}
+              error={error}
+              onRetry={() => setAttempt((n) => n + 1)}
+              fullBleed
+            />
+          )}
+        </div>
+        {/*
+          eslint-disable-next-line react-hooks/refs -- Every value below is
+          useState, not a ref: phase, error, deliveryLive, deliveryError,
+          micOn, camOn, audioLevel, facing and flippingCamera are all state,
+          and the four callbacks are passed, never invoked, here. The rule
+          fires because those callbacks close over roomRef and filteredRef and
+          it cannot see that they are only ever called from an event handler.
+        */}
+        {controls?.({
+          phase,
+          error,
+          retry: () => setAttempt((n) => n + 1),
+          deliveryLive,
+          deliveryError,
+          micOn,
+          toggleMic: () => void toggleMic(),
+          camOn,
+          toggleCamera: () => void toggleCamera(),
+          audioLevel,
+          facing,
+          flipCamera: () => void flipCamera(),
+          flippingCamera,
+          zoom,
+          setZoom: (next: number) => void applyZoom(next),
+          maxZoom: zoomRange?.max ?? DIGITAL_MAX_ZOOM,
+          hardwareZoom: zoomRange !== null,
+          cameraReport: describeCamera(camera),
+          portraitRefused: camera?.portraitRefused === true,
+        })}
+      </>
+    );
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
@@ -659,14 +1006,26 @@ function ConnectionOverlay({
   phase,
   error,
   onRetry,
+  fullBleed = false,
 }: {
   phase: BroadcastPhase;
   error: string | null;
   onRetry: () => void;
+  /**
+   * Keep clear of the phone layout's right-hand rail.
+   *
+   * The framed studio has nothing beside this box, so it centres in it. In
+   * full-bleed the rail is 44px of controls 12px from the right edge, and a
+   * centred paragraph ran straight under them — the copy telling a creator
+   * their connection dropped was the thing being covered.
+   */
+  fullBleed?: boolean;
 }) {
+  const padding = fullBleed ? 'pl-6 pr-[72px]' : 'px-6';
+
   if (phase === 'failed') {
     return (
-      <div role="alert" className="absolute inset-0 z-20 grid place-items-center bg-black/85 px-6 text-center">
+      <div role="alert" className={`absolute inset-0 z-20 grid place-items-center bg-black/85 text-center ${padding}`}>
         <div>
           <WifiOff size={30} className="mx-auto text-rose-300" aria-hidden />
           <p className="mt-3 text-base font-semibold text-white">ไลฟ์หลุด — ลองใหม่</p>
@@ -689,7 +1048,7 @@ function ConnectionOverlay({
   }
 
   return (
-    <div className="absolute inset-0 z-20 grid place-items-center bg-black/70 px-6 text-center">
+    <div className={`absolute inset-0 z-20 grid place-items-center bg-black/70 text-center ${padding}`}>
       <div>
         <Loader2 size={28} className="mx-auto animate-spin text-cyan-300" aria-hidden />
         <p className="mt-3 text-sm text-white/80" role="status">

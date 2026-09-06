@@ -19,7 +19,8 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Camera, Mic, MicOff, RefreshCw } from 'lucide-react';
 import type { BroadcastQuality } from '@/lib/live/types';
-import { resolutionFor, thaiForMediaError } from '@/lib/live/livekitClient';
+import { thaiForMediaError } from '@/lib/live/livekitClient';
+import { openCamera, type CameraOpenResult } from '@/lib/live/cameraCapture';
 import { filterCssFor, type FilterId } from '@/lib/live/cameraFilters';
 import { shouldFlipPreview, type CameraOrientation } from '@/lib/live/cameraOrientation';
 import { CameraControlsMenu } from './CameraControlsMenu';
@@ -51,6 +52,15 @@ interface CameraPreviewProps {
    */
   orientation: CameraOrientation;
   onOrientationChange: (next: CameraOrientation) => void;
+  /**
+   * Open the camera in portrait, and show the preview full-bleed.
+   *
+   * The phone setup screen. It matters that the PREVIEW asks for the same
+   * shape the broadcast will: a creator framing themselves against a 16:9 box
+   * and then going live into a 9:16 one has been shown the wrong thing. Both
+   * go through the same ladder — see lib/live/cameraCapture.ts.
+   */
+  portrait?: boolean;
   /** Told whether a usable camera track is live, so the form can gate its CTA. */
   onReadyChange?: (ready: boolean) => void;
 }
@@ -66,12 +76,15 @@ export function CameraPreview({
   orientation,
   onOrientationChange,
   onReadyChange,
+  portrait = false,
 }: CameraPreviewProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const selectId = useId();
 
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  /** What the camera actually gave — fits the preview, and names it below. */
+  const [camera, setCamera] = useState<CameraOpenResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(true);
   /** Bumped to re-run the effect after "ลองใหม่". */
@@ -87,6 +100,13 @@ export function CameraPreview({
     readyRef.current = onReadyChange;
   }, [onReadyChange]);
 
+  // Same reasoning as readyRef: this must not restart the camera when the
+  // viewport crosses the breakpoint mid-setup.
+  const portraitRef = useRef(portrait);
+  useEffect(() => {
+    portraitRef.current = portrait;
+  }, [portrait]);
+
   useEffect(() => {
     let cancelled = false;
     let stream: MediaStream | null = null;
@@ -96,14 +116,19 @@ export function CameraPreview({
       setError(null);
 
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
-            width: { ideal: resolutionFor(quality).width },
-            height: { ideal: resolutionFor(quality).height },
-          },
+        // The SAME ladder the broadcast uses, so the framing a creator sets
+        // up in is the framing they go live in. A setup preview that opened
+        // its camera differently would show them one field of view and
+        // publish another — which is exactly the complaint this is fixing.
+        const opened = await openCamera({
+          quality,
+          portrait: portraitRef.current,
+          deviceId,
+          facingMode: deviceId ? null : 'user',
           audio: true,
         });
+        stream = opened.stream;
+        if (!cancelled) setCamera(opened);
       } catch (err) {
         if (cancelled) return;
         console.error('[CameraPreview] getUserMedia failed', err);
@@ -204,7 +229,14 @@ export function CameraPreview({
 
   return (
     <section aria-label="ตรวจสอบกล้องและไมโครโฟน" className="min-w-0">
-      <div className="relative aspect-video w-full overflow-hidden rounded-2xl border border-white/10 bg-black">
+      {/* 16:9 on a desktop, 9:16 on the phone setup screen — the shape the
+          broadcast will actually be, so a creator frames themselves in the box
+          their audience gets rather than in one that will be cropped away. */}
+      <div
+        className={`relative w-full overflow-hidden rounded-2xl border border-white/10 bg-black ${
+          portrait ? 'aspect-[9/16] max-h-[58dvh]' : 'aspect-video'
+        }`}
+      >
         <video
           ref={videoRef}
           autoPlay
@@ -214,7 +246,12 @@ export function CameraPreview({
           muted
           aria-label="ภาพตัวอย่างจากกล้อง"
           className={[
-            'h-full w-full object-cover',
+            // `contain` when the camera would not give an upright frame:
+            // cover-cropping a landscape track into a portrait box is most of
+            // the 2-3x zoom a creator reported. See CreatorBroadcaster.
+            camera?.orientation === 'landscape' && portrait
+              ? 'h-full w-full object-contain'
+              : 'h-full w-full object-cover',
             // `false` because this element shows the raw camera: nothing has
             // flipped these frames yet, so the creator's preference is the
             // only thing deciding which way round they appear.

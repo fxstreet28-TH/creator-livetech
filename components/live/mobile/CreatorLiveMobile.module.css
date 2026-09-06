@@ -1,0 +1,453 @@
+/*
+ * The phone host layout — the creator's side of "Design C".
+ *
+ * Deliberately the same skeleton as LiveViewerMobile.module.css: same fixed
+ * root, same safe-area variables, same keyboard variable, same z-order. The
+ * two screens are the same arrangement seen from opposite ends, and a creator
+ * checking their own framing against what the audience gets is only meaningful
+ * if the furniture is in the same places.
+ *
+ * THE ONE THING THAT IS NOT SHARED is the end button's z-index. Everything the
+ * viewer draws tops out at 20; here "จบไลฟ์" sits at 30, above the bottom
+ * sheets and above the chat, because the bug this layout was built for was a
+ * creator who could not reach it.
+ */
+
+.root {
+  position: fixed;
+  inset: 0;
+  height: 100dvh;
+  overflow: hidden;
+  background: #000;
+  color: #fff;
+  --live-keyboard: 0px;
+  --live-safe-top: env(safe-area-inset-top);
+  --live-safe-bottom: env(safe-area-inset-bottom);
+  --live-safe-left: env(safe-area-inset-left);
+  --live-safe-right: env(safe-area-inset-right);
+  --live-bottom: calc(var(--live-safe-bottom) + 12px + var(--live-keyboard));
+}
+
+/* ------------------------------------------------------------------ scrims --
+ * A creator's own camera is as likely to be bright as any broadcast, and the
+ * top bar carries the one control that must always be readable.
+ */
+.scrimTop,
+.scrimBottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.scrimTop {
+  top: 0;
+  height: 170px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0));
+}
+
+.scrimBottom {
+  bottom: 0;
+  height: 40%;
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0) 0%,
+    rgba(0, 0, 0, 0.7) 60%,
+    rgba(0, 0, 0, 0.9) 100%
+  );
+}
+
+/* ----------------------------------------------------------------- top bar */
+
+.topBar {
+  position: absolute;
+  top: calc(var(--live-safe-top) + 8px);
+  left: calc(var(--live-safe-left) + 12px);
+  right: calc(var(--live-safe-right) + 12px);
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.topStats {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px 5px 5px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(12px);
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.connectingPill {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/*
+ * "จบไลฟ์" — the control this whole layout exists for.
+ *
+ * z-index 30 puts it above the bottom sheets (25), the chrome (20) and the
+ * gift overlay (14). `margin-left: auto` pins it to the right of the bar, and
+ * because the bar is `flex-wrap` a long delivery message wraps BELOW it rather
+ * than pushing it anywhere. It is 44px tall — a real touch target, not a
+ * 30px icon — and red, because it stops something that is running and costing
+ * money.
+ *
+ * `position: relative` only so the z-index applies.
+ */
+.endButton {
+  position: relative;
+  z-index: 30;
+  margin-left: auto;
+  min-height: 44px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 999px;
+  background: #e5384f;
+  box-shadow: 0 2px 16px rgba(229, 56, 79, 0.5);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 800;
+  transition: transform 120ms ease-out, background 120ms ease-out;
+}
+
+.endButton:active {
+  transform: scale(0.96);
+  background: #c92b41;
+}
+
+.endButton:focus-visible {
+  outline: 2px solid #22d3ee;
+  outline-offset: 2px;
+}
+
+.deliveryPill {
+  flex-basis: 100%;
+  align-self: flex-start;
+  width: fit-content;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.85);
+  color: #1a1206;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.deliveryPillBad {
+  background: rgba(244, 63, 94, 0.9);
+  color: #fff;
+}
+
+/* --------------------------------------------------------------- the rail --
+ * Six controls at 44px with 10px gaps is 314px tall, which does NOT fit above
+ * the viewer rail's "finish by 45% of the viewport" line on an 812px screen —
+ * and does not need to. That rule exists because the viewer's gift stage is
+ * drawn across the lower middle; here the stage is anchored bottom-LEFT and is
+ * at most 200px wide, while this rail is 44px hard against the RIGHT edge, so
+ * the two cannot meet however tall the rail gets. Measured on a 375 x 812
+ * screen: stage right edge 175px, rail left edge 319px.
+ *
+ * What it does have to clear is the chat column, which is capped at
+ * min(70vw, 262px) — 276px including its inset, 43px clear of this.
+ *
+ * So the rail simply hangs from the TOP, 84px under the safe area — clear of
+ * the top bar's 44px button and its 8px inset — and grows downwards. No clamp:
+ * there is nothing below it to collide with, and a clamp whose bounds all
+ * resolve to the same value is a constant wearing a disguise.
+ */
+.rail {
+  position: absolute;
+  right: calc(var(--live-safe-right) + 12px);
+  top: calc(var(--live-safe-top) + 84px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.railButton {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(12px);
+  color: #fff;
+  overflow: hidden;
+  transition: background 120ms ease-out, transform 120ms ease-out;
+}
+
+.railButton:active {
+  transform: scale(0.94);
+}
+
+.railButton:disabled {
+  opacity: 0.5;
+}
+
+.railButton:focus-visible {
+  outline: 2px solid #22d3ee;
+  outline-offset: 2px;
+}
+
+.railButtonActive {
+  background: rgba(255, 255, 255, 0.85);
+  color: #0a0a15;
+}
+
+/* Mic or camera OFF. Red, because it is a state the creator can forget they
+   are in and the audience cannot tell them about. */
+.railButtonDanger {
+  background: rgba(244, 63, 94, 0.85);
+  color: #fff;
+}
+
+.railBadge {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #22d3ee;
+}
+
+/* The live mic level, painted across the bottom of the mic button. Scaled on
+   the X axis from a transform so it costs no layout per frame. */
+.level {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 3px;
+  background: linear-gradient(90deg, #22d3ee, #a855f7);
+  transform-origin: left center;
+  transition: transform 150ms ease-out;
+}
+
+/*
+ * The pinch surface.
+ *
+ * Covers the video and nothing else matters about it: z-1 puts it under every
+ * control (z-20) so it cannot swallow a tap, and `touch-action: none` is what
+ * stops Safari treating a two-finger drag as a page zoom before the handler
+ * ever sees it. `pointer-events` stays on — a touch listener on an inert
+ * element receives nothing.
+ */
+.pinchLayer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  touch-action: none;
+  background: transparent;
+}
+
+/* The camera's real numbers, on ?debug=camera and in the bench. Monospace
+   because every character of it is a figure being compared to another. */
+.debugChip {
+  position: absolute;
+  top: calc(var(--live-safe-top) + 62px);
+  left: calc(var(--live-safe-left) + 12px);
+  z-index: 21;
+  max-width: calc(100% - 80px);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(10px);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  line-height: 1.35;
+  color: #7dd3fc;
+}
+
+.debugWarn {
+  color: #fda4af;
+}
+
+/* The rail's zoom button is a NUMBER, not an icon — see its note. */
+.zoomLabel {
+  font-size: 13px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+/* --------------------------------------------------------- zoom slider --- */
+
+.zoomSlider {
+  position: absolute;
+  left: calc(var(--live-safe-left) + 16px);
+  right: calc(var(--live-safe-right) + 16px);
+  /* Directly above the กล้อง sheet, which is where its switches are. */
+  bottom: calc(62dvh + 8px);
+  z-index: 26;
+  padding: 12px 14px 10px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(12, 16, 27, 0.96);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+
+.zoomSliderHead {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.zoomRange {
+  width: 100%;
+  margin-top: 8px;
+  accent-color: #22d3ee;
+}
+
+.zoomNote {
+  margin-top: 6px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* -------------------------------------------------------- bottom stack --- */
+
+.bottomStack {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: var(--live-bottom);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 8px;
+  pointer-events: none;
+  transition: bottom 180ms ease-out;
+}
+
+/* 🎁 N · ⭐ N — what the broadcast has earned, where the creator can see it
+   without opening anything. */
+.giftChip {
+  align-self: flex-start;
+  margin-left: calc(var(--live-safe-left) + 14px);
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(12px);
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  pointer-events: auto;
+}
+
+/* The chat column, sized exactly as the viewer's — see that file's note on
+   why the cap is the gift tray rather than 38dvh. */
+.chat {
+  width: min(70vw, 262px);
+  margin-left: calc(var(--live-safe-left) + 14px);
+  padding-right: 2px;
+  --live-chat-max: min(38dvh, 142px);
+  --live-chat-max-expanded: min(
+    70dvh,
+    calc(100dvh - var(--live-safe-top) - var(--live-safe-bottom) - 186px)
+  );
+}
+
+.composer {
+  padding-left: var(--live-safe-left);
+  padding-right: var(--live-safe-right);
+}
+
+.collapseCatcher {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: default;
+}
+
+/* ------------------------------------------------------------- sheets --- */
+
+.sheetScrim {
+  position: absolute;
+  inset: 0;
+  z-index: 24;
+  border: 0;
+  padding: 0;
+  background: rgba(0, 0, 0, 0.5);
+  cursor: default;
+}
+
+/*
+ * A bottom sheet, not the desktop's anchored dropdown.
+ *
+ * The desktop studio hangs a 22rem panel off whichever control opened it,
+ * which on a 375px screen runs off the edge. A sheet is full width, thumb-
+ * reachable, and clears the home indicator.
+ *
+ * z-index 25 is above the chrome and BELOW the end button at 30 — a creator
+ * with a look picker open must still be able to stop the broadcast.
+ */
+.sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 25;
+  max-height: 62dvh;
+  overflow-y: auto;
+  padding: 10px 16px calc(var(--live-safe-bottom) + 20px);
+  border-radius: 20px 20px 0 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  background: #0c101b;
+  box-shadow: 0 -18px 50px rgba(0, 0, 0, 0.65);
+  animation: sheetIn 220ms cubic-bezier(0.2, 0.9, 0.3, 1) 1 both;
+}
+
+.sheetGrip {
+  width: 40px;
+  height: 4px;
+  margin: 0 auto 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.25);
+}
+
+@keyframes sheetIn {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bottomStack,
+  .endButton,
+  .railButton,
+  .level {
+    transition: none;
+  }
+  .sheet {
+    animation-duration: 1ms;
+  }
+}

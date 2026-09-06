@@ -194,8 +194,16 @@ export const HEARTBEAT_STALE_MS = 90_000;
 /**
  * True when a session claims to be on air but has stopped saying so.
  *
- * The one place that judgement is made, so the viewer page and the dashboard
- * cannot disagree about whether a broadcast is running.
+ * PASS A SERVER-ANCHORED `now`. The default is the device clock, and a device
+ * running two minutes fast judges every live broadcast stale — which on the
+ * watch page means "ไลฟ์จบแล้ว" painted over a stream that is running, and
+ * unlike a missing card it does not correct itself: every poll reaches the
+ * same wrong conclusion. useServerNow measures the offset once per page from
+ * the `server_now()` RPC; useLiveWatch passes the corrected value.
+ *
+ * The live tab does not call this at all any more — the freshness cut for the
+ * listing is made inside `list_discoverable_live_sessions`, on the database's
+ * own clock, where it cannot skew.
  *
  * A NULL heartbeat is NOT stale. Two kinds of row have one: a session created
  * before this shipped, and one whose studio has not managed its first beat

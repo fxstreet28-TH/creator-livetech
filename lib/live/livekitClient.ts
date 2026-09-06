@@ -71,6 +71,9 @@ export function resolutionFor(quality: BroadcastQuality): {
   return { width, height, frameRate: 30 };
 }
 
+/** Which camera a phone should open. Ignored by every device with only one. */
+export type CameraFacing = 'user' | 'environment';
+
 /**
  * A room configured for one-to-many broadcast.
  *
