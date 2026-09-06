@@ -15,7 +15,7 @@
  * a WebView that will not open a camera.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Loader2 } from 'lucide-react';
@@ -27,6 +27,7 @@ import { useCameraOrientation } from '@/lib/hooks/useCameraOrientation';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
 import { CREATOR_PPV_ENABLED } from '@/lib/features';
 import { createLiveSession, endLiveSession, fetchLiveQuota, thaiForQuotaRefusal } from '@/lib/live/api';
+import { useLiveHeartbeat } from '@/lib/hooks/useLiveHeartbeat';
 import type {
   BroadcastQuality,
   EndLiveResponse,
@@ -246,12 +247,47 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
   }, [creatorId]);
 
   /**
+   * The session was closed by something that is not this tab.
+   *
+   * Two ways that happens: the watchdog reaped it because this tab was asleep
+   * or offline for longer than the grace period, or the creator ended the same
+   * broadcast from a second tab. Either way the row says 'ended', so this
+   * screen must stop pretending to be on air — the alternative is a creator
+   * talking to a camera whose stream stopped minutes ago.
+   *
+   * Dropping `broadcast` unmounts CreatorBroadcaster, whose cleanup disconnects
+   * the room, exactly as confirmEnd does. There is no summary to show: the
+   * numbers live on the row, and this tab was not the one that closed it.
+   */
+  const handleSessionClosedElsewhere = useCallback(() => {
+    setBroadcast(null);
+    setEndOpen(false);
+    setEnding(false);
+    setEndError('ไลฟ์นี้ถูกปิดแล้ว — การเชื่อมต่อขาดนานเกินไป หรือถูกปิดจากอุปกรณ์อื่น');
+  }, []);
+
+  /**
+   * The heartbeat: what keeps this session out of the watchdog's jaws, and
+   * what puts it in them the moment this tab stops running.
+   *
+   * See useLiveHeartbeat. It also fires the best-effort end request on
+   * `pagehide`, so the ordinary "closed the tab" case closes at once rather
+   * than 90 seconds later.
+   */
+  useLiveHeartbeat({
+    sessionId: broadcast && !summary ? broadcast.liveSessionId : null,
+    getChatMessageCount: () => channel.chatMessageCount,
+    onSessionClosed: handleSessionClosedElsewhere,
+  });
+
+  /**
    * The tab-close warning.
    *
-   * It cannot end the session — unload handlers are not guaranteed to run and
-   * cannot await a round trip — so the copy says what is true: closing the tab
-   * does not close the live, and "จบไลฟ์" is what does. A session left open
-   * keeps billing until someone ends it.
+   * Still worth asking, even though the session is now closed either way: the
+   * creator loses the summary screen and their audience loses the broadcast,
+   * and neither is something to do by accident. What changed is the copy — it
+   * no longer has to warn that a closed tab bills forever, because it does not
+   * any more.
    */
   useEffect(() => {
     if (!broadcast || summary) return;

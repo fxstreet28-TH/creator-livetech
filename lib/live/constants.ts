@@ -159,6 +159,61 @@ export const VIEWER_COUNT_POLL_MS = 5_000;
 export const VIEWER_PERSIST_MS = 30_000;
 
 /**
+ * How often the broadcasting studio says it is still on air.
+ *
+ * THIS IS THE ONE THING THAT CLOSES AN ABANDONED SESSION. Nothing else in the
+ * system can tell "the creator is broadcasting" from "the creator closed the
+ * tab an hour ago": a LiveKit room outlives its publisher, an HLS playlist
+ * that stops growing looks like a stalled upload, and `status` is only ever
+ * written by somebody pressing "จบไลฟ์". So the studio states it, and
+ * live-watchdog closes anything that stops saying it.
+ *
+ * 20s against the watchdog's 90s grace is four beats of headroom — a phone
+ * changing cell or a laptop briefly sleeping must not end a live broadcast.
+ * Changing either means changing both; the grace period is stated in
+ * `live_watchdog_grace_seconds()` and in live-watchdog/index.ts.
+ */
+export const HEARTBEAT_INTERVAL_MS = 20_000;
+
+/**
+ * How stale a heartbeat has to be before a READER treats the session as over.
+ *
+ * The same 90 seconds the watchdog uses, and read on the two screens that
+ * would otherwise show a broadcast that has stopped: the viewer page, which
+ * would spin on "กำลังเชื่อมต่อ…" forever, and the dashboard's
+ * "🔴 กำลังไลฟ์ตอนนี้" strip.
+ *
+ * They do not wait for the watchdog to write the row, because they cannot: a
+ * cron job runs once a minute and the Edge Function it calls can be down, and
+ * neither screen should be wrong for as long as that takes. The row is the
+ * durable answer; this is the same conclusion drawn a minute earlier from the
+ * same evidence.
+ */
+export const HEARTBEAT_STALE_MS = 90_000;
+
+/**
+ * True when a session claims to be on air but has stopped saying so.
+ *
+ * The one place that judgement is made, so the viewer page and the dashboard
+ * cannot disagree about whether a broadcast is running.
+ *
+ * A NULL heartbeat is NOT stale. Two kinds of row have one: a session created
+ * before this shipped, and one whose studio has not managed its first beat
+ * yet — a second or two after go-live. Treating either as over would end
+ * broadcasts that are fine, so the honest answer for "no evidence" is "not
+ * stale" and the watchdog leaves those rows alone too.
+ */
+export function isBroadcastStale(
+  lastHeartbeatAt: string | null | undefined,
+  now: number = Date.now(),
+): boolean {
+  if (!lastHeartbeatAt) return false;
+  const beat = Date.parse(lastHeartbeatAt);
+  if (Number.isNaN(beat)) return false;
+  return now - beat > HEARTBEAT_STALE_MS;
+}
+
+/**
  * Automatic reconnect attempts after LiveKit drops, before the broadcaster is
  * asked to retry by hand. livekit-client does its own internal retries first;
  * these are full reconnects on top of that, after it has given up.

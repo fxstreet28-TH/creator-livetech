@@ -47,7 +47,11 @@ import { getBrowserSupabase } from '@/lib/supabase-browser';
 import { fetchCreatorSummary } from '@/lib/viewer/publicFeed';
 import type { CreatorSummary } from '@/lib/viewer/types';
 import { fetchLivePlayback, fetchLiveSession, lockLevelFromMessage } from '@/lib/live/api';
-import { LIVE_STATUS_POLL_MS, PLAYBACK_REFRESH_MS } from '@/lib/live/constants';
+import {
+  LIVE_STATUS_POLL_MS,
+  PLAYBACK_REFRESH_MS,
+  isBroadcastStale,
+} from '@/lib/live/constants';
 import type { LatencyMode, LiveSessionDetail } from '@/lib/live/types';
 
 /**
@@ -127,6 +131,25 @@ export function useLiveWatch(sessionId: string | null): LiveWatchResult {
       // A readable row that is already over answers the question by itself.
       // Asking for a URL would only spend a round trip to be told 409.
       if (row?.status === 'ended') {
+        setWatch({ kind: 'ended' });
+        setLoading(false);
+        return;
+      }
+      /*
+        A row that still SAYS 'live' but stopped reporting is over too.
+
+        The broadcaster's tab was closed, or their laptop shut, or their train
+        went into a tunnel and never came out. live-watchdog will write the row
+        within the minute, but a viewer must not be made to wait for a cron
+        job: without this they sit on "กำลังเชื่อมต่อ…" against a playlist that
+        stopped growing, which is indistinguishable from a stream that is
+        merely buffering, forever. Two sessions did exactly that for 16h and
+        0.8h before the heartbeat existed.
+
+        Read from the same 90s the watchdog uses, so the screen and the row
+        never disagree about what happened — only about when they noticed.
+      */
+      if (row && isBroadcastStale(row.last_heartbeat_at)) {
         setWatch({ kind: 'ended' });
         setLoading(false);
         return;
@@ -229,7 +252,10 @@ export function useLiveWatch(sessionId: string | null): LiveWatchResult {
 
       const { session: row } = await fetchLiveSession(supabase, sessionId);
       if (cancelled || !row) return;
-      if (row.status === 'ended' || row.ended_at !== null) {
+      // The stale-heartbeat arm is the one that catches a broadcaster who
+      // vanished rather than one who pressed "จบไลฟ์" — see the load path
+      // above. It fires up to a minute before the watchdog writes the row.
+      if (row.status === 'ended' || row.ended_at !== null || isBroadcastStale(row.last_heartbeat_at)) {
         setSession(row);
         setWatch({ kind: 'ended' });
       } else if (row.status === 'cancelled') {
