@@ -45,9 +45,16 @@ import {
   VIEWER_PERSIST_MS,
 } from '@/lib/live/constants';
 import {
+  applyZoomConstraint,
+  describeCamera,
+  hardwareZoomRange,
+  openCamera,
+  type CameraOpenResult,
+  type ZoomRange,
+} from '@/lib/live/cameraCapture';
+import {
   RoomEvent,
   Track,
-  cameraConstraintsFor,
   connectAsPublisher,
   createRoom,
   leaveRoom,
@@ -134,7 +141,8 @@ interface CreatorBroadcasterProps {
    *
    * The whole reason a phone broadcast came out landscape-shaped: the quality
    * rungs are expressed in landscape, so a phone held upright was asking a
-   * portrait camera for 1280x720 and getting it. See cameraConstraintsFor.
+   * portrait camera for 1280x720 and getting it. Escalated and verified rather
+   * than assumed — see lib/live/cameraCapture.ts.
    */
   portrait?: boolean;
   /**
@@ -145,6 +153,15 @@ interface CreatorBroadcasterProps {
   facingMode?: CameraFacing;
   /** Told when the creator flips the camera, so the page can remember it. */
   onFacingModeChange?: (next: CameraFacing) => void;
+  /**
+   * Send the 9:16 `aspectRatio` ideal on a portrait capture. Default true.
+   *
+   * The A/B for the sensor-crop hypothesis: a 4:3 iPhone sensor satisfies a
+   * 9:16 ideal by CROPPING, not by letterboxing, so this hint is itself a
+   * candidate cause of the reported zoom. Only /dev/creator-live turns it off
+   * — see lib/live/cameraCapture.ts.
+   */
+  aspectRatioHint?: boolean;
   /**
    * The control surface, for a layout that draws its own.
    *
@@ -179,7 +196,30 @@ export interface BroadcastControls {
   /** Front/back. A no-op while a previous flip is still opening a camera. */
   flipCamera: () => void;
   flippingCamera: boolean;
+  /**
+   * Current zoom, 1 = the full field of view the browser gave. Never an
+   * implicit crop: 1 is what the native camera app shows.
+   */
+  zoom: number;
+  setZoom: (next: number) => void;
+  /** The ceiling, from the camera where it has one and 3 where it does not. */
+  maxZoom: number;
+  /** True when the camera itself is zooming, false when the canvas is. */
+  hardwareZoom: boolean;
+  /**
+   * What the camera actually gave, as numbers: "720x1280 ar0.563 portrait".
+   * Rendered in the dev bench and logged on every open — this is the thing
+   * that turns "it looks zoomed" into a decision.
+   */
+  cameraReport: string;
+  /** Set when the camera refused an upright frame; the broadcast is 16:9. */
+  portraitRefused: boolean;
 }
+
+/** The zoom rungs the rail's button cycles through. */
+export const ZOOM_STEPS = [1, 2, 3] as const;
+/** The slider's ceiling when the camera exposes no range of its own. */
+export const DIGITAL_MAX_ZOOM = 3;
 
 export function CreatorBroadcaster({
   liveSessionId,
@@ -202,6 +242,7 @@ export function CreatorBroadcaster({
   portrait = false,
   facingMode = 'user',
   onFacingModeChange,
+  aspectRatioHint = true,
   controls,
 }: CreatorBroadcasterProps) {
   const fullBleed = presentation === 'fullbleed';
@@ -238,10 +279,28 @@ export function CreatorBroadcaster({
   const [facing, setFacing] = useState<CameraFacing>(facingMode);
   const facingRef = useRef(facing);
   const [flippingCamera, setFlippingCamera] = useState(false);
+  /**
+   * What the camera gave us, kept so the preview can be fitted to the frame it
+   * actually produced rather than to the one that was asked for.
+   */
+  const [camera, setCamera] = useState<CameraOpenResult | null>(null);
+  /**
+   * Zoom, and where it is applied.
+   *
+   * Per session only: state on a component that is mounted for exactly one
+   * broadcast, so the next live starts at 1x. A zoom a creator forgot they
+   * left on is a broadcast framed wrong from its first second.
+   */
+  const [zoom, setZoomState] = useState(1);
+  const [zoomRange, setZoomRange] = useState<ZoomRange | null>(null);
   const portraitRef = useRef(portrait);
   useEffect(() => {
     portraitRef.current = portrait;
   }, [portrait]);
+  const aspectRatioHintRef = useRef(aspectRatioHint);
+  useEffect(() => {
+    aspectRatioHintRef.current = aspectRatioHint;
+  }, [aspectRatioHint]);
 
   const [openMenu, setOpenMenu] = useState<'look' | 'camera' | null>(null);
   const [phase, setPhase] = useState<BroadcastPhase>('connecting');
@@ -345,19 +404,27 @@ export function CreatorBroadcaster({
       // on Windows Chrome, which holds a device briefly after release.
       if (!camera) {
         try {
-          camera = await navigator.mediaDevices.getUserMedia({
-            // Oriented to the device. A phone held upright asks for a portrait
-            // frame and gets one; a desktop is unchanged. See
-            // cameraConstraintsFor for why this used to come out landscape.
-            video: cameraConstraintsFor(quality, {
-              portrait: portraitRef.current,
-              deviceId: videoDeviceId,
-              facingMode: videoDeviceId ? null : facingRef.current,
-            }),
+          // Through the escalating ladder rather than one getUserMedia call:
+          // a phone that answers a portrait request with a landscape track
+          // gets asked again, larger, and if it still refuses the broadcast
+          // goes out LANDSCAPE rather than being cover-cropped into a portrait
+          // frame — which is the 2-3x zoom a creator reported. Every attempt
+          // and its result is logged. See lib/live/cameraCapture.ts.
+          const opened = await openCamera({
+            quality,
+            portrait: portraitRef.current,
+            deviceId: videoDeviceId,
+            facingMode: videoDeviceId ? null : facingRef.current,
             audio: true,
+            aspectRatioHint: aspectRatioHintRef.current,
           });
+          camera = opened.stream;
           cameraRef.current = camera;
           sourceVideoRef.current = camera;
+          if (!cancelled) {
+            setCamera(opened);
+            setZoomRange(hardwareZoomRange(camera.getVideoTracks()[0]));
+          }
         } catch (err) {
           if (cancelled) return;
           console.error('[CreatorBroadcaster] getUserMedia failed', err);
@@ -554,17 +621,24 @@ export function CreatorBroadcaster({
     const next: CameraFacing = facingRef.current === 'user' ? 'environment' : 'user';
     setFlippingCamera(true);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: cameraConstraintsFor(quality, {
-          portrait: portraitRef.current,
-          facingMode: next,
-        }),
+      const opened = await openCamera({
+        quality,
+        portrait: portraitRef.current,
+        facingMode: next,
         audio: false,
+        aspectRatioHint: aspectRatioHintRef.current,
       });
 
       const previous = sourceVideoRef.current;
-      await filtered.setSource(stream);
-      sourceVideoRef.current = stream;
+      await filtered.setSource(opened.stream);
+      sourceVideoRef.current = opened.stream;
+      setCamera(opened);
+      // The new camera has its own zoom range — a back camera often zooms
+      // where a front one does not — so the range is re-read rather than
+      // carried over, and the level is reset to the honest 1x.
+      setZoomRange(hardwareZoomRange(opened.stream.getVideoTracks()[0]));
+      setZoomState(1);
+      filtered.setZoom(1);
 
       // Only the VIDEO tracks of the old source, and only once the new one is
       // drawing: the original stream's audio track is the published mic.
@@ -587,7 +661,55 @@ export function CreatorBroadcaster({
   // The self-view is the canvas, so the output flip is already in these
   // frames — which is exactly why the creator's own preference cannot be read
   // off `mirrorPreview` alone.
+  /**
+   * Put a zoom level into effect, on whichever mechanism this camera has.
+   *
+   * HARDWARE FIRST, ALWAYS. A camera that can zoom itself keeps the sensor's
+   * full resolution; the canvas crop throws pixels away to reach the same
+   * framing. So the constraint is tried first and the canvas is left at 1
+   * whenever it lands, and only a camera with no zoom capability — or one that
+   * refuses the constraint — falls through to cropping.
+   *
+   * Either way the creator's self-view and the published frames agree, because
+   * both are the same canvas fed by the same track.
+   */
+  const applyZoom = useCallback(
+    async (next: number) => {
+      const clamped = Math.max(1, Math.min(zoomRange?.max ?? DIGITAL_MAX_ZOOM, next));
+      setZoomState(clamped);
+
+      const track = sourceVideoRef.current?.getVideoTracks()[0];
+      if (zoomRange) {
+        const applied = await applyZoomConstraint(track, clamped, zoomRange);
+        if (applied) {
+          filteredRef.current?.setZoom(1);
+          return;
+        }
+        // It said it could and then would not. Fall through rather than
+        // leaving the creator with a control that does nothing.
+      }
+      filteredRef.current?.setZoom(clamped);
+    },
+    [zoomRange],
+  );
+
   const previewFlipped = shouldFlipPreview(orientation.mirrorPreview, orientation.flipOutput);
+
+  /*
+    HOW THE SELF-VIEW IS FITTED, and why it is not always `cover`.
+
+    `cover` fills a portrait phone with a portrait camera, which is the point.
+    Point it at a LANDSCAPE track — a camera that refused an upright frame —
+    and it crops away about two thirds of the width, which is most of the
+    reported zoom. So the fit follows what the camera ACTUALLY gave: cover
+    while the source is upright, contain the moment it is not.
+
+    The creator then sees letterboxing that a phone viewer will not (the
+    viewer's player covers, by design). That is the correct trade: the host
+    screen's job is to show the framing being published, and a host who cannot
+    see their own edges cannot frame anything.
+  */
+  const sourceIsLandscape = camera?.orientation === 'landscape';
 
   /*
     THE PHONE HOST LAYOUT.
@@ -614,7 +736,8 @@ export function CreatorBroadcaster({
             playsInline
             aria-label="ภาพที่กำลังถ่ายทอด"
             className={[
-              'absolute inset-0 h-full w-full object-cover',
+              'absolute inset-0 h-full w-full',
+              sourceIsLandscape ? 'object-contain' : 'object-cover',
               previewFlipped ? 'scale-x-[-1]' : '',
             ].join(' ')}
           />
@@ -651,6 +774,12 @@ export function CreatorBroadcaster({
           facing,
           flipCamera: () => void flipCamera(),
           flippingCamera,
+          zoom,
+          setZoom: (next: number) => void applyZoom(next),
+          maxZoom: zoomRange?.max ?? DIGITAL_MAX_ZOOM,
+          hardwareZoom: zoomRange !== null,
+          cameraReport: describeCamera(camera),
+          portraitRefused: camera?.portraitRefused === true,
         })}
       </>
     );

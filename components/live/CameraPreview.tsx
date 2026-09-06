@@ -19,7 +19,8 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Camera, Mic, MicOff, RefreshCw } from 'lucide-react';
 import type { BroadcastQuality } from '@/lib/live/types';
-import { cameraConstraintsFor, thaiForMediaError } from '@/lib/live/livekitClient';
+import { thaiForMediaError } from '@/lib/live/livekitClient';
+import { openCamera, type CameraOpenResult } from '@/lib/live/cameraCapture';
 import { filterCssFor, type FilterId } from '@/lib/live/cameraFilters';
 import { shouldFlipPreview, type CameraOrientation } from '@/lib/live/cameraOrientation';
 import { CameraControlsMenu } from './CameraControlsMenu';
@@ -56,8 +57,8 @@ interface CameraPreviewProps {
    *
    * The phone setup screen. It matters that the PREVIEW asks for the same
    * shape the broadcast will: a creator framing themselves against a 16:9 box
-   * and then going live into a 9:16 one has been shown the wrong thing. See
-   * cameraConstraintsFor.
+   * and then going live into a 9:16 one has been shown the wrong thing. Both
+   * go through the same ladder — see lib/live/cameraCapture.ts.
    */
   portrait?: boolean;
   /** Told whether a usable camera track is live, so the form can gate its CTA. */
@@ -82,6 +83,8 @@ export function CameraPreview({
   const selectId = useId();
 
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  /** What the camera actually gave — fits the preview, and names it below. */
+  const [camera, setCamera] = useState<CameraOpenResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(true);
   /** Bumped to re-run the effect after "ลองใหม่". */
@@ -113,16 +116,19 @@ export function CameraPreview({
       setError(null);
 
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          // Oriented, so the framing a creator sets up in is the framing they
-          // broadcast in — see cameraConstraintsFor.
-          video: cameraConstraintsFor(quality, {
-            portrait: portraitRef.current,
-            deviceId,
-            facingMode: deviceId ? null : 'user',
-          }),
+        // The SAME ladder the broadcast uses, so the framing a creator sets
+        // up in is the framing they go live in. A setup preview that opened
+        // its camera differently would show them one field of view and
+        // publish another — which is exactly the complaint this is fixing.
+        const opened = await openCamera({
+          quality,
+          portrait: portraitRef.current,
+          deviceId,
+          facingMode: deviceId ? null : 'user',
           audio: true,
         });
+        stream = opened.stream;
+        if (!cancelled) setCamera(opened);
       } catch (err) {
         if (cancelled) return;
         console.error('[CameraPreview] getUserMedia failed', err);
@@ -240,7 +246,12 @@ export function CameraPreview({
           muted
           aria-label="ภาพตัวอย่างจากกล้อง"
           className={[
-            'h-full w-full object-cover',
+            // `contain` when the camera would not give an upright frame:
+            // cover-cropping a landscape track into a portrait box is most of
+            // the 2-3x zoom a creator reported. See CreatorBroadcaster.
+            camera?.orientation === 'landscape' && portrait
+              ? 'h-full w-full object-contain'
+              : 'h-full w-full object-cover',
             // `false` because this element shows the raw camera: nothing has
             // flipped these frames yet, so the creator's preference is the
             // only thing deciding which way round they appear.

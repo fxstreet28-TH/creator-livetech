@@ -109,6 +109,26 @@ export interface FilteredStream {
    * around would be absurd.
    */
   setFlipped: (flipped: boolean) => void;
+  /**
+   * Digital zoom: draw a centred sub-rectangle of the camera across the whole
+   * canvas.
+   *
+   * 1 means the full frame — the field of view the browser gave, like the
+   * native camera app — and nothing is cropped at 1. This is the FALLBACK
+   * path: where the camera exposes a real zoom capability the caller drives
+   * that instead (see applyZoomConstraint) and leaves this at 1, because
+   * hardware zoom keeps the sensor's full resolution while this throws pixels
+   * away.
+   *
+   * The OUTPUT size never changes — the canvas stays the track's dimensions,
+   * so a 2x zoom publishes 720x1280 of a 360x640 crop rather than publishing a
+   * smaller frame. Softer, which is what digital zoom is; never a resolution
+   * change mid-broadcast, which would renegotiate.
+   *
+   * The creator's self-view IS this canvas, so preview and broadcast cannot
+   * show different crops.
+   */
+  setZoom: (zoom: number) => void;
   /** Stops the draw loop and the canvas track. Does NOT stop the source. */
   stop: () => void;
 }
@@ -145,6 +165,7 @@ export async function createFilteredStream(
 
   let currentFilter = initialFilter;
   let currentFlipped = initialFlipped;
+  let currentZoom = 1;
   let running = true;
   let rafId: number | null = null;
   let frameCallbackId: number | null = null;
@@ -194,7 +215,19 @@ export async function createFilteredStream(
       ctx.translate(canvas.width, 0);
       ctx.scale(-1, 1);
     }
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    /*
+      The source rectangle. At zoom 1 this is the whole frame and drawImage is
+      the 1:1 copy it always was; above 1 it is a centred sub-rect, scaled up
+      to fill the same canvas. Computed from the CANVAS dimensions, which are
+      the video's, so it stays correct through a resize, a camera swap and a
+      rotation without any extra bookkeeping.
+    */
+    const zoom = currentZoom > 1 ? currentZoom : 1;
+    const sw = canvas.width / zoom;
+    const sh = canvas.height / zoom;
+    const sx = (canvas.width - sw) / 2;
+    const sy = (canvas.height - sh) / 2;
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
     ctx.restore();
     schedule();
   };
@@ -225,6 +258,12 @@ export async function createFilteredStream(
     },
     setFlipped: (flipped) => {
       currentFlipped = flipped;
+    },
+    setZoom: (zoom) => {
+      // Floored at 1: there is no such thing as digital zoom OUT. Widening the
+      // field of view needs a different camera, which is the 0.5x ultra-wide
+      // device switch and not this.
+      currentZoom = Number.isFinite(zoom) && zoom > 1 ? zoom : 1;
     },
     setSource: async (next) => {
       const [nextTrack] = next.getVideoTracks();

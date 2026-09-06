@@ -33,7 +33,7 @@
  *    are in their own room and answering a question is the point.
  */
 
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
   Camera,
   Gift,
@@ -53,7 +53,11 @@ import type { FloatingReaction } from '@/lib/live/reactions';
 import type { LiveGiftEvent } from '@/lib/live/gifts';
 import type { CameraOrientation } from '@/lib/live/cameraOrientation';
 import type { FilterId } from '@/lib/live/cameraFilters';
-import { CreatorBroadcaster, type BroadcastControls } from '../CreatorBroadcaster';
+import {
+  CreatorBroadcaster,
+  ZOOM_STEPS,
+  type BroadcastControls,
+} from '../CreatorBroadcaster';
 import { CameraControlsMenu } from '../CameraControlsMenu';
 import { CameraFilterSelector } from '../CameraFilterSelector';
 import { LiveBadge } from '../LiveStatsBar';
@@ -88,6 +92,27 @@ export interface CreatorLiveMobileProps {
   onEndRequest: () => void;
   /** The confirm / summary dialog, owned by the page. */
   endDialog?: React.ReactNode;
+  /**
+   * Show the camera's real numbers on screen.
+   *
+   * `?debug=camera` on /creator/live, and always in the dev bench. It exists
+   * because "the picture looks zoomed" cannot be acted on and
+   * "720x1280 ar0.563 portrait (cam max 1920)" can — the last part being the
+   * tell that the browser handed back a crop of a wider sensor mode.
+   */
+  debugCamera?: boolean;
+  /** See CreatorBroadcaster.aspectRatioHint. The bench's A/B switch. */
+  aspectRatioHint?: boolean;
+  /**
+   * Ask the camera for an upright frame. True for a phone held upright, which
+   * is every case this layout ships for today.
+   *
+   * It is a prop rather than a constant for two reasons: /dev/creator-live
+   * needs to drive a LANDSCAPE source to exercise the `portraitRefused`
+   * branch, and the queued landscape-orientation work will set it from the
+   * device's own orientation rather than from a hardcoded true.
+   */
+  portrait?: boolean;
 }
 
 /** Which bottom sheet is open, if any. */
@@ -117,6 +142,9 @@ export function CreatorLiveMobile(props: CreatorLiveMobileProps) {
     onSendChat,
     onEndRequest,
     endDialog,
+    debugCamera = false,
+    aspectRatioHint,
+    portrait = true,
   } = props;
 
   const keyboardInset = useKeyboardInset();
@@ -135,6 +163,35 @@ export function CreatorLiveMobile(props: CreatorLiveMobileProps) {
   } = useMobileGiftGeometry();
 
   const closeSheet = useCallback(() => setSheet(null), []);
+
+  /**
+   * Pinch-to-zoom.
+   *
+   * The gesture is read on the ROOT rather than on the video, because the
+   * video sits in a fixed layer underneath every control and a listener there
+   * would miss a pinch that started over the chat. Two fingers only: one is a
+   * tap on a button, and `touches.length` is the whole discriminator.
+   *
+   * The starting distance and the starting zoom are captured on touchstart, so
+   * the gesture is a RATIO applied to where the creator already was — pinching
+   * from 2x behaves like pinching from 2x, not like starting again at 1x.
+   */
+  const pinchRef = useRef<{ distance: number; zoom: number } | null>(null);
+  const zoomHandlersFor = (c: BroadcastControls) => ({
+    onTouchStart: (event: React.TouchEvent) => {
+      if (event.touches.length !== 2) return;
+      pinchRef.current = { distance: touchDistance(event.touches), zoom: c.zoom };
+    },
+    onTouchMove: (event: React.TouchEvent) => {
+      const start = pinchRef.current;
+      if (!start || event.touches.length !== 2 || start.distance <= 0) return;
+      const ratio = touchDistance(event.touches) / start.distance;
+      c.setZoom(round1(start.zoom * ratio));
+    },
+    onTouchEnd: () => {
+      pinchRef.current = null;
+    },
+  });
 
   return (
     <div
@@ -159,7 +216,8 @@ export function CreatorLiveMobile(props: CreatorLiveMobileProps) {
         presentation="fullbleed"
         // The whole point of the phone path: ask the camera for a portrait
         // frame so the broadcast is portrait-shaped end to end.
-        portrait
+        portrait={portrait}
+        {...(aspectRatioHint === undefined ? {} : { aspectRatioHint })}
         overlay={
           <GiftOverlay
             latestGift={latestGift}
@@ -189,6 +247,35 @@ export function CreatorLiveMobile(props: CreatorLiveMobileProps) {
               onSoundToggle={onSoundToggle}
               orientationIsCustom={orientation}
             />
+
+            {/* The pinch surface. Transparent, inert to clicks, and BELOW
+                every control (z-1 against their z-20) so it can never swallow
+                a tap — it only ever sees the second finger. */}
+            <div className={styles.pinchLayer} aria-hidden {...zoomHandlersFor(c)} />
+
+            {debugCamera && (
+              <div className={styles.debugChip} role="status">
+                <span>{c.cameraReport}</span>
+                <span>
+                  zoom {c.zoom.toFixed(1)}× {c.hardwareZoom ? 'hw' : 'digital'} · max{' '}
+                  {c.maxZoom.toFixed(1)}×
+                </span>
+                {c.portraitRefused && (
+                  <span className={styles.debugWarn}>
+                    camera refused portrait — publishing 16:9, NOT cropping
+                  </span>
+                )}
+              </div>
+            )}
+
+            {sheet === 'camera' && (
+              <ZoomSlider
+                zoom={c.zoom}
+                maxZoom={c.maxZoom}
+                hardware={c.hardwareZoom}
+                onChange={c.setZoom}
+              />
+            )}
           </>
         )}
       />
@@ -360,6 +447,15 @@ function Rail({
         }
       />
 
+      {/* 1× → 2× → 3× → 1×. The label IS the state: a zoom a creator cannot
+          read off the screen is one they forget they left on. */}
+      <RailButton
+        onClick={() => controls.setZoom(nextZoomStep(controls.zoom, controls.maxZoom))}
+        label={`ซูม ${controls.zoom.toFixed(1)} เท่า`}
+        active={controls.zoom > 1}
+        icon={<span className={styles.zoomLabel}>{formatZoom(controls.zoom)}</span>}
+      />
+
       <RailButton
         onClick={() => onSheet(sheet === 'look' ? null : 'look')}
         active={sheet === 'look'}
@@ -386,6 +482,79 @@ function Rail({
           soundEnabled ? <Volume2 size={18} aria-hidden /> : <VolumeX size={18} aria-hidden />
         }
       />
+    </div>
+  );
+}
+
+/**
+ * The next rung, wrapping back to 1x.
+ *
+ * Rungs rather than a continuous step because a rail button is a thumb tap,
+ * not a dial — the slider and the pinch are there for anything in between. A
+ * rung past what this camera can do is skipped rather than clamped, so a
+ * device whose ceiling is 2x cycles 1 → 2 → 1 instead of appearing to stick.
+ */
+function nextZoomStep(current: number, maxZoom: number): number {
+  const usable = ZOOM_STEPS.filter((step) => step <= maxZoom + 0.001);
+  if (usable.length === 0) return 1;
+  const index = usable.findIndex((step) => step > current + 0.001);
+  return index === -1 ? usable[0] : usable[index];
+}
+
+/** "1×" / "2.5×" — trailing ".0" dropped, because 1× reads better than 1.0×. */
+function formatZoom(zoom: number): string {
+  const rounded = Math.round(zoom * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}×`;
+}
+
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function touchDistance(touches: React.TouchList): number {
+  const [a, b] = [touches[0], touches[1]];
+  return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+}
+
+/**
+ * The fine control, in the กล้อง sheet next to the mirror switches.
+ *
+ * A native range input: it is the one control here that wants a drag, and a
+ * hand-rolled one would lose the platform's own touch target and its
+ * accessibility for nothing.
+ */
+function ZoomSlider({
+  zoom,
+  maxZoom,
+  hardware,
+  onChange,
+}: {
+  zoom: number;
+  maxZoom: number;
+  hardware: boolean;
+  onChange: (next: number) => void;
+}) {
+  return (
+    <div className={styles.zoomSlider}>
+      <div className={styles.zoomSliderHead}>
+        <span>ซูม</span>
+        <span className="tabular-nums">{formatZoom(zoom)}</span>
+      </div>
+      <input
+        type="range"
+        min={1}
+        max={Math.max(1.1, maxZoom)}
+        step={0.1}
+        value={zoom}
+        onChange={(event) => onChange(Number(event.target.value))}
+        aria-label="ระดับการซูม"
+        className={styles.zoomRange}
+      />
+      <p className={styles.zoomNote}>
+        {hardware
+          ? 'ใช้การซูมของกล้องโดยตรง — ความคมชัดไม่ลดลง'
+          : 'ซูมแบบดิจิทัล — ยิ่งซูมมาก ภาพยิ่งไม่คมเท่าเดิม'}
+      </p>
     </div>
   );
 }

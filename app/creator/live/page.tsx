@@ -16,7 +16,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Loader2 } from 'lucide-react';
 import { AuthPending, useRequireAuth } from '@/lib/hooks/useRequireAuth';
@@ -156,6 +156,14 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
    * anything opens a device.
    */
   const mobile = useIsMobileViewport();
+  /**
+   * `?debug=camera` puts the camera's real numbers on the host screen.
+   *
+   * Not a dev-only route: the question it answers — "what did this specific
+   * iPhone actually hand back?" — can only be asked on that iPhone, signed in,
+   * on a real broadcast. It renders nothing without the parameter.
+   */
+  const debugCamera = useSearchParams().get('debug') === 'camera';
 
   const [quota, setQuota] = useState<LiveQuota | null>(null);
   const [quotaLoading, setQuotaLoading] = useState(true);
@@ -438,6 +446,7 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
         chatStatus={channel.status}
         onSendChat={channel.sendChat}
         onEndRequest={() => setEndOpen(true)}
+        debugCamera={debugCamera}
         endDialog={
           endOpen || summary ? (
             <EndLiveConfirm
