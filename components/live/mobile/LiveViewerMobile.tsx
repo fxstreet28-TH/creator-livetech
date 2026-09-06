@@ -51,7 +51,7 @@
  * the viewer asks.
  */
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Eye, Gift, Maximize, Sparkles, X } from 'lucide-react';
@@ -73,69 +73,10 @@ import { LiveChat } from '../LiveChat';
 import { LiveEndedCard } from '../LiveEndedCard';
 import { LiveKitLivePlayer } from '../LiveKitLivePlayer';
 import { GiftOverlay } from '../gifts/GiftOverlay';
-import { useTopFromViewportBottom, type GiftAnchor } from '../gifts/useStageScale';
 import { LiveShareButton } from './LiveShareButton';
-import { useKeyboardInset, useViewportSize } from './useMobileViewport';
+import { useKeyboardInset } from './useMobileViewport';
+import { useMobileGiftGeometry } from './useMobileGiftAnchor';
 import styles from './LiveViewerMobile.module.css';
-
-/**
- * Where the TRAY sits, measured up from the bottom of the SCREEN.
- *
- * The design's 238px from the bottom of a 375 × 812 iPhone: 192 here, plus the
- * 12px of overlay inset the tray adds as padding under itself, plus that
- * phone's 34px indicator. A clearance on top of the safe-area inset rather
- * than an absolute coordinate, so an Android phone with no home indicator gets
- * the same gap above the composer as an iPhone with one.
- *
- * THE STAGE HAS NO EQUIVALENT CONSTANT ANY MORE, and that is the fix. It used
- * to be a second fixed offset — `safe-bottom + 330px` — chosen to clear one
- * tray row whether or not a row existed. That is a reserved slot: with an
- * empty tray, which is most of a broadcast, every gift was drawn 330px up the
- * screen, over the middle of the frame and the creator's face. The stage is
- * now positioned against what is ACTUALLY on screen — see `giftAnchor`.
- */
-const GIFT_TRAY_BOTTOM = 'calc(var(--live-safe-bottom, 0px) + 192px)';
-
-/** The design's stage size: `min(52vw, 200px)`, as a number (see useStageScale). */
-const GIFT_STAGE_MAX_PX = 200;
-const GIFT_STAGE_VW = 0.52;
-/** Floor, so a squeezed stage is still a gift rather than a smudge. */
-const GIFT_STAGE_MIN_PX = 96;
-
-/** The stage's bottom edge clears the chat column's top by this much. */
-const GIFT_STAGE_OVER_CHAT_PX = 12;
-/** ...and the tray's top by this much, whenever a row is on screen. */
-const GIFT_STAGE_OVER_TRAY_PX = 16;
-
-/**
- * The stage's top may never be above this fraction of the viewport.
- *
- * The centre of the frame is the creator's face; the rail already states the
- * same rule for itself. Enforced by SHRINKING the stage rather than by moving
- * it down, because moving it down would put it back over the chat it was just
- * positioned above.
- */
-const GIFT_STAGE_TOP_LIMIT = 0.45;
-
-/**
- * Room reserved under the stage for the caption, in px.
- *
- * The caption is laid out by flow, not by this number — it exists only so the
- * ceiling above is applied to the whole block (stage + gap + caption) rather
- * than to the stage alone. Three lines of the phone caption (12px sender, 11px
- * stars, 11px message) and the 6px gap measure 65px on a 375px screen; 68
- * leaves a little over, and `maxHeightPx` below is what makes the rule hold
- * anyway when a message wraps further than that.
- */
-const GIFT_CAPTION_HEADROOM_PX = 68;
-
-/**
- * What the chat column's top is assumed to be for the one frame before it has
- * been measured: composer, gap, five lines and the page inset on an iPhone.
- * A gift cannot arrive before the first effect in practice; this is only so
- * the first render is not built on a zero.
- */
-const CHAT_TOP_FALLBACK_PX = 238;
 
 interface LiveViewerMobileProps {
   sessionId: string;
@@ -147,7 +88,6 @@ export function LiveViewerMobile({ sessionId, state }: LiveViewerMobileProps) {
   const router = useRouter();
 
   const keyboardInset = useKeyboardInset();
-  const { width: viewportWidth, height: viewportHeight } = useViewportSize();
 
   /**
    * How the video fills the screen. COVER by default, always.
@@ -161,17 +101,14 @@ export function LiveViewerMobile({ sessionId, state }: LiveViewerMobileProps) {
   const [fit, setFit] = useState<PlayerFit>('cover');
 
   /**
-   * The two measurements the gift stage is positioned against.
-   *
-   * `bottomStackNode` is the chat column and composer together; its top edge is
-   * "the chat column top" the stage has to sit above. `trayTop` is reported by
-   * GiftOverlay and is 0 whenever no tray row is rendered. Both are measured up
-   * from the bottom of the viewport — see useTopFromViewportBottom.
+   * Where the gift layers sit. The SAME geometry the creator's own phone
+   * screen uses — see useMobileGiftAnchor, which is where it lives now.
    */
-  const [bottomStackNode, setBottomStackNode] = useState<HTMLDivElement | null>(null);
-  const chatTop = useTopFromViewportBottom(bottomStackNode);
-  const [trayTop, setTrayTop] = useState(0);
-  const handleTrayTop = useCallback((px: number) => setTrayTop(px), []);
+  const {
+    anchor: giftAnchor,
+    setBottomStackNode,
+    onTrayTopChange: handleTrayTop,
+  } = useMobileGiftGeometry();
 
   /**
    * Whether the chat column is showing full history.
@@ -200,83 +137,6 @@ export function LiveViewerMobile({ sessionId, state }: LiveViewerMobileProps) {
 
   const ended = state.endedWhileWatching || watch.kind === 'ended' || watch.kind === 'cancelled';
   const watchable = watch.kind === 'hls' || watch.kind === 'livekit';
-
-  /**
-   * The gift geometry, handed to GiftOverlay outright.
-   *
-   * Stated rather than derived because this canvas is not a player in a grid:
-   * the overlay measures the viewport, and a fraction of the viewport says
-   * nothing about where the chat column and the composer are. See GiftAnchor.
-   *
-   * TWO RULES, AND NO RESERVED SLOT.
-   *
-   * With no tray row on screen the stage's bottom edge sits 12px above the
-   * chat column's top. With one it sits 16px above the TRAY's top instead,
-   * which is measured rather than assumed because a tray is one, two or three
-   * rows tall depending on what has just been sent. The old single constant
-   * held the stage at the taller of the two at all times, so the common case —
-   * an empty tray — put a gift across the middle of the broadcast.
-   *
-   * The stage then SHRINKS to fit under the 45% ceiling. Moving it down
-   * instead would put it back over the chat, and the ceiling is the rule that
-   * keeps the creator's face clear; on a 375 × 812 phone this leaves about
-   * 140px of stage with an empty tray and the floor with a full one.
-   */
-  const giftAnchor = useMemo<GiftAnchor>(() => {
-    const bottomPx =
-      trayTop > 0
-        ? trayTop + GIFT_STAGE_OVER_TRAY_PX
-        : (chatTop || CHAT_TOP_FALLBACK_PX) + GIFT_STAGE_OVER_CHAT_PX;
-
-    // The ceiling, expressed the same way everything else here is: as a
-    // distance UP from the bottom of the viewport — so `blockRoomPx` is how
-    // tall the whole block may be before its top crosses the 45% line.
-    const ceilingPx = (viewportHeight || 0) * (1 - GIFT_STAGE_TOP_LIMIT);
-    const blockRoomPx = ceilingPx - bottomPx;
-
-    const designPx = Math.min(
-      GIFT_STAGE_MAX_PX,
-      (viewportWidth || GIFT_STAGE_MAX_PX * 2) * GIFT_STAGE_VW,
-    );
-    const stagePx = Math.max(
-      GIFT_STAGE_MIN_PX,
-      viewportHeight > 0
-        ? Math.min(designPx, blockRoomPx - GIFT_CAPTION_HEADROOM_PX)
-        : designPx,
-    );
-
-    /*
-      THE ONE CASE WHERE THE TWO RULES CANNOT BOTH HOLD, stated rather than
-      hidden. A tray row is ~143px tall and the chat column's top is ~240px up
-      on a 375 × 812 phone, so "16px above the tray" puts the stage's bottom
-      edge at ~385px — and the 45% line is at ~447px. That leaves ~47px for a
-      stage and its caption, which is less than the floor, and a gift squeezed
-      into it would be a smudge nobody can identify.
-
-      So the ceiling is enforced only where it is satisfiable — which is the
-      common case, an empty tray — and with a row on screen the stage keeps its
-      floor and clears it, for the four and a half seconds that row lives.
-      Enforcing it there instead would trade a readable gift for a rule whose
-      whole purpose (keep the middle of the frame clear) is already served by
-      the stage being at the bottom of the screen.
-    */
-    const ceilingIsMeetable =
-      viewportHeight > 0 && blockRoomPx >= GIFT_STAGE_MIN_PX + GIFT_CAPTION_HEADROOM_PX;
-
-    return {
-      left: '14px',
-      bottom: `${Math.round(bottomPx)}px`,
-      stagePx,
-      // A video card is 1.5× as wide as it is tall; without this it would be
-      // drawn past the chat column it is supposed to sit above.
-      maxWidthPx: stagePx,
-      maxHeightPx: ceilingIsMeetable ? Math.floor(blockRoomPx) : undefined,
-      trayBottom: GIFT_TRAY_BOTTOM,
-      // The stage is ABOVE the tray here, not in its corner, so there is
-      // nothing for the tray to step aside from.
-      trayShift: false,
-    };
-  }, [chatTop, trayTop, viewportWidth, viewportHeight]);
 
   /**
    * What the player paints on top of itself: the rising emoji, and the gifts.

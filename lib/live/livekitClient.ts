@@ -71,6 +71,51 @@ export function resolutionFor(quality: BroadcastQuality): {
   return { width, height, frameRate: 30 };
 }
 
+/** Which camera a phone should open. Ignored by every device with only one. */
+export type CameraFacing = 'user' | 'environment';
+
+/**
+ * The getUserMedia constraints for a capture, oriented to the device.
+ *
+ * WHY THE ORIENTATION IS A PARAMETER AND NOT ALWAYS 16:9
+ *
+ * `resolutionFor` answers in LANDSCAPE, because that is what the quality rungs
+ * mean on a desktop. Handing that to a phone held upright asks a portrait
+ * camera for a landscape frame, and iOS Safari obliges — it hands back a
+ * genuine 1280x720 landscape track, which is then what the canvas publishes
+ * and what every viewer sees. A phone broadcast came out sideways-shaped, in
+ * a band, on the very phone-shaped screens the viewer layout was rebuilt for.
+ *
+ * So a portrait capture asks for the SAME pixel count the other way up: 720p
+ * becomes 720x1280 rather than 1280x720. `ideal`, never `exact` — a webcam
+ * that cannot do the asked-for mode should give its nearest, not fail.
+ *
+ * `deviceId` and `facingMode` are mutually exclusive on purpose: a device id
+ * names one specific camera, and adding a facing hint to it is either
+ * redundant or contradictory. Desktops pick by id (there is a picker); phones
+ * pick by facing (there is a flip button).
+ */
+export function cameraConstraintsFor(
+  quality: BroadcastQuality,
+  options: { portrait?: boolean; deviceId?: string | null; facingMode?: CameraFacing | null } = {},
+): MediaTrackConstraints {
+  const { width, height, frameRate } = resolutionFor(quality);
+  const longEdge = Math.max(width, height);
+  const shortEdge = Math.min(width, height);
+  const portrait = options.portrait === true;
+
+  return {
+    ...(options.deviceId
+      ? { deviceId: { exact: options.deviceId } }
+      : options.facingMode
+        ? { facingMode: { ideal: options.facingMode } }
+        : {}),
+    width: { ideal: portrait ? shortEdge : longEdge },
+    height: { ideal: portrait ? longEdge : shortEdge },
+    frameRate: { ideal: frameRate },
+  };
+}
+
 /**
  * A room configured for one-to-many broadcast.
  *

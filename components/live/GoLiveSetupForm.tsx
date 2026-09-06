@@ -126,6 +126,20 @@ interface GoLiveSetupFormProps {
   cameraReady?: boolean;
   /** Thai, renderable. The last go-live failure. */
   submitError?: string | null;
+  /**
+   * Where the go-live button sits.
+   *
+   * 'inline' is the desktop card: the button is the last thing in a column the
+   * page scrolls. 'sticky' is the phone form, where the fields are longer than
+   * the screen and a button at the end of them is a button the creator has to
+   * go looking for — so it rides the bottom of the viewport instead, with the
+   * submit error and the camera hint stacked above it.
+   *
+   * The two share `canSubmit`, the quota gate and every message. Only the box
+   * they are drawn in differs; a second copy of that logic is exactly how a
+   * phone ends up able to press a button the desktop would have refused.
+   */
+  submitPlacement?: 'inline' | 'sticky';
 }
 
 const INPUT_CLASS =
@@ -142,6 +156,7 @@ export function GoLiveSetupForm({
   submitting = false,
   cameraReady = false,
   submitError,
+  submitPlacement = 'inline',
 }: GoLiveSetupFormProps) {
   const titleId = useId();
   const titleErrorId = useId();
@@ -157,6 +172,7 @@ export function GoLiveSetupForm({
 
   const blocked = blockedReason != null;
   const canSubmit = !disabled && !submitting && !blocked && cameraReady;
+  const sticky = submitPlacement === 'sticky';
 
   return (
     <div className="flex flex-col gap-5">
@@ -309,29 +325,43 @@ export function GoLiveSetupForm({
 
       <QuotaNotice quota={quota} loading={quotaLoading} blockedReason={blockedReason} />
 
-      {submitError && (
-        <p
-          role="alert"
-          className="rounded-xl border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-sm leading-relaxed text-rose-100"
-        >
-          {submitError}
-        </p>
-      )}
-
-      <button
-        type="submit"
-        disabled={!canSubmit}
-        className="inline-flex min-h-[3.25rem] w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-rose-500 to-pink-500 px-5 py-4 text-base font-extrabold text-white transition hover:shadow-lg hover:shadow-rose-500/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:shadow-none"
+      <div
+        className={
+          sticky
+            ? // Rides the bottom of the phone viewport, clear of the home
+              // indicator, with the page's own ground behind it so the fields
+              // scrolling underneath do not read through it.
+              'sticky bottom-0 -mx-4 mt-1 flex flex-col gap-3 border-t border-white/10 bg-[#0a0a15]/95 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur-xl'
+            : // `contents` rather than a flex column: the three children stay
+              // DIRECT children of the form's own `gap-5` stack, so the desktop
+              // card renders exactly as it did before this wrapper existed.
+              'contents'
+        }
       >
-        <Radio size={18} aria-hidden />
-        {submitting ? 'กำลังเริ่มไลฟ์...' : '🔴 ไลฟ์สด'}
-      </button>
+        {submitError && (
+          <p
+            role="alert"
+            className="rounded-xl border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-sm leading-relaxed text-rose-100"
+          >
+            {submitError}
+          </p>
+        )}
 
-      {!cameraReady && !blocked && (
-        <p className="-mt-2 text-center text-xs text-white/40">
-          รอให้กล้องพร้อมก่อนจึงจะเริ่มไลฟ์ได้
-        </p>
-      )}
+        <button
+          type="submit"
+          disabled={!canSubmit}
+          className="inline-flex min-h-[3.25rem] w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-rose-500 to-pink-500 px-5 py-4 text-base font-extrabold text-white transition hover:shadow-lg hover:shadow-rose-500/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:shadow-none"
+        >
+          <Radio size={18} aria-hidden />
+          {submitting ? 'กำลังเริ่มไลฟ์...' : '🔴 ไลฟ์สด'}
+        </button>
+
+        {!cameraReady && !blocked && (
+          <p className={`text-center text-xs text-white/40 ${sticky ? '' : '-mt-2'}`}>
+            รอให้กล้องพร้อมก่อนจึงจะเริ่มไลฟ์ได้
+          </p>
+        )}
+      </div>
     </div>
   );
 }

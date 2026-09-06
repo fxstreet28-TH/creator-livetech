@@ -19,7 +19,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Camera, Mic, MicOff, RefreshCw } from 'lucide-react';
 import type { BroadcastQuality } from '@/lib/live/types';
-import { resolutionFor, thaiForMediaError } from '@/lib/live/livekitClient';
+import { cameraConstraintsFor, thaiForMediaError } from '@/lib/live/livekitClient';
 import { filterCssFor, type FilterId } from '@/lib/live/cameraFilters';
 import { shouldFlipPreview, type CameraOrientation } from '@/lib/live/cameraOrientation';
 import { CameraControlsMenu } from './CameraControlsMenu';
@@ -51,6 +51,15 @@ interface CameraPreviewProps {
    */
   orientation: CameraOrientation;
   onOrientationChange: (next: CameraOrientation) => void;
+  /**
+   * Open the camera in portrait, and show the preview full-bleed.
+   *
+   * The phone setup screen. It matters that the PREVIEW asks for the same
+   * shape the broadcast will: a creator framing themselves against a 16:9 box
+   * and then going live into a 9:16 one has been shown the wrong thing. See
+   * cameraConstraintsFor.
+   */
+  portrait?: boolean;
   /** Told whether a usable camera track is live, so the form can gate its CTA. */
   onReadyChange?: (ready: boolean) => void;
 }
@@ -66,6 +75,7 @@ export function CameraPreview({
   orientation,
   onOrientationChange,
   onReadyChange,
+  portrait = false,
 }: CameraPreviewProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -87,6 +97,13 @@ export function CameraPreview({
     readyRef.current = onReadyChange;
   }, [onReadyChange]);
 
+  // Same reasoning as readyRef: this must not restart the camera when the
+  // viewport crosses the breakpoint mid-setup.
+  const portraitRef = useRef(portrait);
+  useEffect(() => {
+    portraitRef.current = portrait;
+  }, [portrait]);
+
   useEffect(() => {
     let cancelled = false;
     let stream: MediaStream | null = null;
@@ -97,11 +114,13 @@ export function CameraPreview({
 
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
-            width: { ideal: resolutionFor(quality).width },
-            height: { ideal: resolutionFor(quality).height },
-          },
+          // Oriented, so the framing a creator sets up in is the framing they
+          // broadcast in — see cameraConstraintsFor.
+          video: cameraConstraintsFor(quality, {
+            portrait: portraitRef.current,
+            deviceId,
+            facingMode: deviceId ? null : 'user',
+          }),
           audio: true,
         });
       } catch (err) {
@@ -204,7 +223,14 @@ export function CameraPreview({
 
   return (
     <section aria-label="ตรวจสอบกล้องและไมโครโฟน" className="min-w-0">
-      <div className="relative aspect-video w-full overflow-hidden rounded-2xl border border-white/10 bg-black">
+      {/* 16:9 on a desktop, 9:16 on the phone setup screen — the shape the
+          broadcast will actually be, so a creator frames themselves in the box
+          their audience gets rather than in one that will be cropped away. */}
+      <div
+        className={`relative w-full overflow-hidden rounded-2xl border border-white/10 bg-black ${
+          portrait ? 'aspect-[9/16] max-h-[58dvh]' : 'aspect-video'
+        }`}
+      >
         <video
           ref={videoRef}
           autoPlay

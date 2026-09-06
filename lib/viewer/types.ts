@@ -73,6 +73,17 @@ export interface LiveSessionSummary {
   current_viewer_count: number;
   cover_image_url: string | null;
   access_level: AccessLevel;
+  /**
+   * True when this viewer cannot watch it — a subscribers-only or PPV live
+   * they have no entitlement for.
+   *
+   * The card is rendered either way and paints a lock: a live lasts an hour,
+   * and hiding a gated one means nobody can discover the creator in time to
+   * subscribe. Decided server-side by the same `can_watch_live_session` the
+   * watch page gates on, so the badge and the lock card cannot disagree.
+   * A public live is never locked, even for a signed-out visitor.
+   */
+  is_locked: boolean;
 }
 
 /** A creator's public profile, for /c/[handle]. */

@@ -42,8 +42,9 @@
  *    the creator has pressed "จบไลฟ์".
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
+import { useServerClockOffset } from './useServerNow';
 import { fetchCreatorSummary } from '@/lib/viewer/publicFeed';
 import type { CreatorSummary } from '@/lib/viewer/types';
 import { fetchLivePlayback, fetchLiveSession, lockLevelFromMessage } from '@/lib/live/api';
@@ -95,6 +96,18 @@ export function useLiveWatch(sessionId: string | null): LiveWatchResult {
   const [watch, setWatch] = useState<LiveWatchState>({ kind: 'pending' });
   const [loading, setLoading] = useState(true);
   const [attempt, setAttempt] = useState(0);
+  /**
+   * The device clock's error against the database's, in ms.
+   *
+   * Every staleness check below adds it. Without it a viewer whose clock runs
+   * fast is shown "ไลฟ์จบแล้ว" over a running broadcast, on every poll, with no
+   * way back — see useServerClockOffset.
+   */
+  const clockOffset = useServerClockOffset();
+  const clockOffsetRef = useRef(clockOffset);
+  useEffect(() => {
+    clockOffsetRef.current = clockOffset;
+  }, [clockOffset]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -149,7 +162,7 @@ export function useLiveWatch(sessionId: string | null): LiveWatchResult {
         Read from the same 90s the watchdog uses, so the screen and the row
         never disagree about what happened — only about when they noticed.
       */
-      if (row && isBroadcastStale(row.last_heartbeat_at)) {
+      if (row && isBroadcastStale(row.last_heartbeat_at, Date.now() + clockOffsetRef.current)) {
         setWatch({ kind: 'ended' });
         setLoading(false);
         return;
@@ -255,7 +268,11 @@ export function useLiveWatch(sessionId: string | null): LiveWatchResult {
       // The stale-heartbeat arm is the one that catches a broadcaster who
       // vanished rather than one who pressed "จบไลฟ์" — see the load path
       // above. It fires up to a minute before the watchdog writes the row.
-      if (row.status === 'ended' || row.ended_at !== null || isBroadcastStale(row.last_heartbeat_at)) {
+      if (
+        row.status === 'ended' ||
+        row.ended_at !== null ||
+        isBroadcastStale(row.last_heartbeat_at, Date.now() + clockOffsetRef.current)
+      ) {
         setSession(row);
         setWatch({ kind: 'ended' });
       } else if (row.status === 'cancelled') {

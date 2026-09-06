@@ -55,7 +55,6 @@ import type {
   PublicPost,
   SubscriptionPlanSummary,
 } from './types';
-import { isBroadcastStale } from '@/lib/live/constants';
 
 /** Page size for /discover and "โหลดเพิ่ม". */
 export const FEED_PAGE_SIZE = 30;
@@ -358,59 +357,48 @@ export async function fetchFollowedCreatorIds(supabase: SupabaseClient): Promise
 }
 
 /**
- * Sessions that are on air right now, most-watched first.
+ * Sessions that are on air right now, most-watched first — INCLUDING the ones
+ * this viewer cannot watch.
  *
- * `live_sessions_public_active_read` covers 'waiting' and 'live' for public
- * sessions, so this needs no new policy — but it also means a gated live never
- * appears here, exactly as a gated post never appears in the video feed.
+ * WHY THIS IS AN RPC AND NOT A TABLE READ ANY MORE
  *
- * Callers hide their section rather than render an empty one.
+ * It used to select from `live_sessions`, and so it inherited
+ * `live_sessions_public_active_read`: `access_level = 'public'` only. A
+ * subscribers-only broadcast therefore read back as NO ROW and /discover said
+ * "ยังไม่มีไลฟ์ตอนนี้" while it was on air — which is what happened to session
+ * c5b7bb75. That rule is right for a POST, which is still there to be found
+ * tomorrow, and wrong for a LIVE: a broadcast lasts an hour, and nobody can
+ * subscribe to watch one they cannot see exists.
  *
- * A STALE HEARTBEAT IS NOT ON AIR. That TODO — a session whose broadcaster
- * closed the tab without pressing "จบไลฟ์" stays 'waiting'/'live' forever and
- * keeps showing here — is what live-watchdog now closes, but the row is
- * written by a cron job that runs once a minute and calls an Edge Function
- * that can be down. So this strip does not wait for it: a session that stopped
- * saying it was on air more than 90 seconds ago is dropped from the list at
- * read time, the same 90 seconds the watchdog uses. The row remains the
- * durable answer; this is the same conclusion, reached sooner.
+ * `list_discoverable_live_sessions` is SECURITY DEFINER over a fixed list of
+ * safe columns, so a gated live can be listed as a LOCKED card without a
+ * policy change that would also have exposed `bunny_stream_key`. It carries
+ * `is_locked`, decided by the same `can_watch_live_session` the watch page
+ * gates on — so the badge and the lock card cannot disagree.
  *
- * Filtered in TypeScript rather than in the query because the honest predicate
- * — "null OR fresh" — is `.or('last_heartbeat_at.is.null,last_heartbeat_at.gt.X)`
- * against a timestamp that has to be computed per call anyway, and a `limit`
- * applied before that filter would silently return short pages. See
- * isBroadcastStale for why a NULL heartbeat counts as live.
+ * IT ALSO MAKES THE FRESHNESS CUT, on the database clock. The client-side
+ * version this replaces compared a heartbeat to `Date.now()`: a device running
+ * a couple of minutes fast would have judged every live session stale and
+ * shown an empty tab, which looks exactly like the bug above and is far harder
+ * to see. Nothing here decides freshness any more.
  */
 export async function fetchLiveSessions(
   supabase: SupabaseClient,
   limit = 8,
 ): Promise<{ sessions: LiveSessionSummary[]; error: string | null }> {
-  const { data, error } = await supabase
-    .from('live_sessions')
-    .select(
-      `id, creator_id, room_name, title, current_viewer_count, cover_image_url,
-       access_level, last_heartbeat_at,
-       creators ( id, handle, display_name, category )`,
-    )
-    // 'waiting' as well as 'live': live-create-session inserts the row as
-    // 'waiting' and the backend never promotes it — only the broadcaster does
-    // (markSessionLive in lib/live/api.ts), and that write is best-effort. A
-    // feed filtered on 'live' alone would hide a session that is genuinely on
-    // air whenever that one UPDATE is refused or has not landed yet.
-    .in('status', ['live', 'waiting'])
-    .order('current_viewer_count', { ascending: false })
-    // Over-fetched so the staleness filter below cannot hand back a short page
-    // while genuinely live sessions were left behind the limit.
-    .limit(limit * 3);
+  const { data, error } = await supabase.rpc('list_discoverable_live_sessions', {
+    p_limit: limit,
+  });
 
   if (error) {
-    console.error('[publicFeed] live_sessions read failed', error);
+    console.error('[publicFeed] list_discoverable_live_sessions failed', error);
     return { sessions: [], error: READ_ERROR };
   }
 
-  const rows = ((data ?? []) as unknown as Record<string, unknown>[])
-    .filter((row) => !isBroadcastStale(row.last_heartbeat_at as string | null))
-    .slice(0, limit);
+  const rows = (data ?? []) as unknown as Record<string, unknown>[];
+  // The RPC cannot embed `creators`, and it never could usefully: that table
+  // has no public SELECT policy, so the embed was empty for every signed-out
+  // visitor anyway and `creator_profiles` was always doing the real work.
   const profiles = await fetchProfiles(
     supabase,
     [...new Set(rows.map((row) => String(row.creator_id)))],
@@ -422,16 +410,13 @@ export async function fetchLiveSessions(
       return {
         id: String(row.id),
         creator_id: creatorId,
-        creator: resolveCreatorSummary(
-          creatorId,
-          firstOf(row.creators),
-          profiles.get(creatorId),
-        ),
+        creator: resolveCreatorSummary(creatorId, null, profiles.get(creatorId)),
         room_name: String(row.room_name),
         title: String(row.title),
         current_viewer_count: count(row.current_viewer_count),
         cover_image_url: text(row.cover_image_url),
         access_level: row.access_level as LiveSessionSummary['access_level'],
+        is_locked: row.is_locked === true,
       };
     }),
     error: null,

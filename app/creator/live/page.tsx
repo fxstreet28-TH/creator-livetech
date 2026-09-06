@@ -28,6 +28,8 @@ import { getBrowserSupabase } from '@/lib/supabase-browser';
 import { CREATOR_PPV_ENABLED } from '@/lib/features';
 import { createLiveSession, endLiveSession, fetchLiveQuota, thaiForQuotaRefusal } from '@/lib/live/api';
 import { useLiveHeartbeat } from '@/lib/hooks/useLiveHeartbeat';
+import { useIsMobileViewport } from '@/lib/hooks/useIsMobileViewport';
+import { CreatorLiveMobile } from '@/components/live/mobile/CreatorLiveMobile';
 import type {
   BroadcastQuality,
   EndLiveResponse,
@@ -147,6 +149,13 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
    * the value to both screens that show the camera.
    */
   const [orientation, setOrientation] = useCameraOrientation();
+
+  /**
+   * null for exactly one frame — see useIsMobileViewport. It decides both
+   * layouts AND the camera's orientation, so it has to be settled before
+   * anything opens a device.
+   */
+  const mobile = useIsMobileViewport();
 
   const [quota, setQuota] = useState<LiveQuota | null>(null);
   const [quotaLoading, setQuotaLoading] = useState(true);
@@ -393,6 +402,59 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
     setEnding(false);
   };
 
+  /**
+   * The frame before the media query has an answer — see useIsMobileViewport.
+   *
+   * The page's own ground rather than a spinner, and it matters more here than
+   * on the viewer page: guessing wrong would open the camera in the wrong
+   * orientation and then reopen it, which on iOS is a visible stall and a
+   * second permission prompt on some builds.
+   */
+  if (mobile === null) {
+    return <div className="h-dvh bg-[#0a0a15]" aria-hidden />;
+  }
+
+  if (broadcast && mobile) {
+    return (
+      <CreatorLiveMobile
+        liveSessionId={broadcast.liveSessionId}
+        wsUrl={broadcast.wsUrl}
+        token={broadcast.token}
+        quality={broadcast.quality}
+        delivery={broadcast.delivery}
+        micEnabled={micEnabled}
+        elapsedSeconds={elapsedSeconds}
+        filterId={filterId}
+        onFilterIdChange={setFilterId}
+        orientation={orientation}
+        onOrientationChange={setOrientation}
+        viewerCount={channel.viewerCount}
+        reactions={channel.reactions}
+        latestGift={channel.latestGift}
+        giftTotals={{ count: giftTotals.count, stars: giftTotals.stars }}
+        soundEnabled={giftSound.enabled}
+        onSoundToggle={giftSound.toggle}
+        chat={channel.chat}
+        chatStatus={channel.status}
+        onSendChat={channel.sendChat}
+        onEndRequest={() => setEndOpen(true)}
+        endDialog={
+          endOpen || summary ? (
+            <EndLiveConfirm
+              summary={summary}
+              giftSummary={giftTotals}
+              ending={ending}
+              error={endError}
+              onConfirm={() => void confirmEnd()}
+              onCancel={() => setEndOpen(false)}
+              onDone={() => router.push('/dashboard')}
+            />
+          ) : null
+        }
+      />
+    );
+  }
+
   if (broadcast || summary) {
     return (
       <BroadcastingLayout
@@ -435,6 +497,52 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
   const blockedReason =
     quota && !quota.canGolive ? thaiForQuotaRefusal(quota.reason) : null;
 
+  const setupForm = (
+    <GoLiveSetupForm
+      value={draft}
+      onChange={setDraft}
+      errors={showErrors ? errors : {}}
+      quota={quota}
+      quotaLoading={quotaLoading}
+      blockedReason={blockedReason}
+      submitting={submitting}
+      cameraReady={cameraReady}
+      submitError={submitError}
+      submitPlacement={mobile ? 'sticky' : 'inline'}
+    />
+  );
+
+  /*
+    THE PHONE SETUP SCREEN.
+
+    One column that scrolls, not a two-column grid squeezed into 375px: a
+    portrait preview the creator frames themselves in, the fields under it, and
+    "🔴 ไลฟ์สด" riding the bottom of the viewport so it is never the thing they
+    have to scroll to find. No page shell — its header, padding and max-width
+    are desktop furniture, and on a phone they cost a third of the screen.
+  */
+  if (mobile) {
+    return (
+      <form onSubmit={handleSubmit} noValidate className="min-h-dvh bg-[#0a0a15] px-4 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
+        <h1 className="mb-3 text-lg font-bold text-white">ไลฟ์สด</h1>
+        <CameraPreview
+          quality={draft.quality}
+          deviceId={deviceId}
+          onDeviceIdChange={setDeviceId}
+          micEnabled={micEnabled}
+          onMicEnabledChange={setMicEnabled}
+          filterId={filterId}
+          onFilterIdChange={setFilterId}
+          orientation={orientation}
+          onOrientationChange={setOrientation}
+          onReadyChange={setCameraReady}
+          portrait
+        />
+        <div className="mt-5">{setupForm}</div>
+      </form>
+    );
+  }
+
   return (
     <CreatorPageShell
       title="ไลฟ์สด"
@@ -470,17 +578,7 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
 
         <div className="min-w-0 lg:col-span-2">
           <div className="rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur-xl">
-            <GoLiveSetupForm
-              value={draft}
-              onChange={setDraft}
-              errors={showErrors ? errors : {}}
-              quota={quota}
-              quotaLoading={quotaLoading}
-              blockedReason={blockedReason}
-              submitting={submitting}
-              cameraReady={cameraReady}
-              submitError={submitError}
-            />
+            {setupForm}
           </div>
         </div>
       </form>
