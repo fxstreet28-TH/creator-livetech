@@ -83,8 +83,40 @@ export interface AuthedCreator {
  * the second case out before any of these functions is reached.
  */
 export async function getAuthedCreator(req: Request): Promise<AuthedCreator | null> {
-  const user = await getAuthedUser(req);
-  if (!user) return null;
+  return await getAuthedCreatorFromToken(req.headers.get('Authorization'), null);
+}
+
+/**
+ * The same check, for a caller whose token may not be in a header.
+ *
+ * `navigator.sendBeacon` — which is what the studio fires on `pagehide`, when
+ * a creator closes the tab mid-broadcast — sends a bare POST and cannot set
+ * an Authorization header at all. So live-end-session accepts the access token
+ * in the request BODY as well, and both envelopes end up here to be validated
+ * the same way: handed to GoTrue, which is the only thing that can say whether
+ * a token is real.
+ *
+ * The body form is not a weaker credential. It is the same JWT over the same
+ * TLS to the same origin; what it loses is only the header's habit of staying
+ * out of logs, which is why the header is still preferred wherever one can be
+ * set.
+ */
+export async function getAuthedCreatorFromToken(
+  authHeader: string | null,
+  bodyToken: string | null,
+): Promise<AuthedCreator | null> {
+  const header = authHeader?.startsWith('Bearer ')
+    ? authHeader
+    : bodyToken
+      ? `Bearer ${bodyToken}`
+      : null;
+  if (!header) return null;
+
+  const userClient = getUserClient(header);
+  const { data: { user: authUser }, error } = await userClient.auth.getUser();
+  if (error || !authUser) return null;
+  const user: AuthedUser = { id: authUser.id, email: authUser.email ?? null };
+
   const serviceClient = getServiceClient();
   const { data: creator } = await serviceClient
     .from('creators')

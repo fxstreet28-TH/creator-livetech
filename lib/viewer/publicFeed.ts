@@ -55,6 +55,7 @@ import type {
   PublicPost,
   SubscriptionPlanSummary,
 } from './types';
+import { isBroadcastStale } from '@/lib/live/constants';
 
 /** Page size for /discover and "โหลดเพิ่ม". */
 export const FEED_PAGE_SIZE = 30;
@@ -365,9 +366,20 @@ export async function fetchFollowedCreatorIds(supabase: SupabaseClient): Promise
  *
  * Callers hide their section rather than render an empty one.
  *
- * TODO(post-launch): a session whose broadcaster closed the tab without
- * pressing "จบไลฟ์" stays 'waiting'/'live' forever and keeps showing here.
- * Only live-end-session closes a row today; a reaper needs to exist.
+ * A STALE HEARTBEAT IS NOT ON AIR. That TODO — a session whose broadcaster
+ * closed the tab without pressing "จบไลฟ์" stays 'waiting'/'live' forever and
+ * keeps showing here — is what live-watchdog now closes, but the row is
+ * written by a cron job that runs once a minute and calls an Edge Function
+ * that can be down. So this strip does not wait for it: a session that stopped
+ * saying it was on air more than 90 seconds ago is dropped from the list at
+ * read time, the same 90 seconds the watchdog uses. The row remains the
+ * durable answer; this is the same conclusion, reached sooner.
+ *
+ * Filtered in TypeScript rather than in the query because the honest predicate
+ * — "null OR fresh" — is `.or('last_heartbeat_at.is.null,last_heartbeat_at.gt.X)`
+ * against a timestamp that has to be computed per call anyway, and a `limit`
+ * applied before that filter would silently return short pages. See
+ * isBroadcastStale for why a NULL heartbeat counts as live.
  */
 export async function fetchLiveSessions(
   supabase: SupabaseClient,
@@ -377,7 +389,8 @@ export async function fetchLiveSessions(
     .from('live_sessions')
     .select(
       `id, creator_id, room_name, title, current_viewer_count, cover_image_url,
-       access_level, creators ( id, handle, display_name, category )`,
+       access_level, last_heartbeat_at,
+       creators ( id, handle, display_name, category )`,
     )
     // 'waiting' as well as 'live': live-create-session inserts the row as
     // 'waiting' and the backend never promotes it — only the broadcaster does
@@ -386,14 +399,18 @@ export async function fetchLiveSessions(
     // air whenever that one UPDATE is refused or has not landed yet.
     .in('status', ['live', 'waiting'])
     .order('current_viewer_count', { ascending: false })
-    .limit(limit);
+    // Over-fetched so the staleness filter below cannot hand back a short page
+    // while genuinely live sessions were left behind the limit.
+    .limit(limit * 3);
 
   if (error) {
     console.error('[publicFeed] live_sessions read failed', error);
     return { sessions: [], error: READ_ERROR };
   }
 
-  const rows = (data ?? []) as unknown as Record<string, unknown>[];
+  const rows = ((data ?? []) as unknown as Record<string, unknown>[])
+    .filter((row) => !isBroadcastStale(row.last_heartbeat_at as string | null))
+    .slice(0, limit);
   const profiles = await fetchProfiles(
     supabase,
     [...new Set(rows.map((row) => String(row.creator_id)))],

@@ -291,6 +291,109 @@ export function endLiveSession(
 }
 
 /**
+ * Tell the backend the studio is still on air.
+ *
+ * Returns false when the session is no longer the caller's to beat for —
+ * either it has ended (the watchdog got there, or another tab pressed
+ * "จบไลฟ์") or the caller does not own it. The studio stops beating on false,
+ * which is what stops a tab restored from the background from resurrecting a
+ * session that was already closed.
+ *
+ * An RPC rather than an UPDATE for the same reason as persistViewerCounts:
+ * `live_sessions` is not writable by `authenticated`, and it must not become
+ * so — a heartbeat any signed-in stranger could write would keep any creator's
+ * session alive forever, which is precisely the bug the watchdog exists to
+ * fix.
+ */
+export async function touchLiveHeartbeat(
+  supabase: SupabaseClient,
+  sessionId: string,
+): Promise<boolean> {
+  const { data, error } = await supabase.rpc('touch_live_heartbeat', {
+    p_session_id: sessionId,
+  });
+
+  if (error) {
+    // Best-effort, like every other write on this path: one missed beat is
+    // three more before the grace period runs out, and a network blip must
+    // not take a working broadcast off air.
+    console.error('[live/api] touch_live_heartbeat failed', error);
+    return true;
+  }
+  return data !== null;
+}
+
+/**
+ * The last-gasp end request, fired while the page is being torn down.
+ *
+ * `pagehide` gives a page no time to await anything, so this cannot be
+ * `endLiveSession`: `supabase.functions.invoke` is a normal fetch and the
+ * browser cancels it the moment the document goes away.
+ *
+ * TWO TRANSPORTS, in order of preference:
+ *
+ *  1. `fetch(..., { keepalive: true })`, which survives the unload AND can
+ *     carry an Authorization header — so the token stays where tokens belong.
+ *  2. `navigator.sendBeacon`, for Firefox before 133 and anything else
+ *     without keepalive. It cannot set headers at all, so the access token
+ *     travels in the JSON body; live-end-session accepts it there for exactly
+ *     this caller (see getAuthedCreatorFromToken).
+ *
+ * BEST-EFFORT, AND NOT THE FIX. Unload handlers do not always run — a killed
+ * tab, a crashed browser, a laptop lid closing on a sleeping page — which is
+ * why this is the third line in the PR and the watchdog is the second. It
+ * exists to make the common case instant rather than 90 seconds late.
+ */
+export function endLiveSessionBeacon(
+  liveSessionId: string,
+  accessToken: string,
+  chatMessageCount = 0,
+): void {
+  const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!base || typeof window === 'undefined') return;
+
+  const url = `${base.replace(/\/+$/, '')}/functions/v1/live-end-session`;
+  const payload = {
+    live_session_id: liveSessionId,
+    chat_message_count: chatMessageCount,
+  };
+
+  try {
+    if (supportsKeepalive()) {
+      void fetch(url, {
+        method: 'POST',
+        keepalive: true,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+          apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '',
+        },
+        body: JSON.stringify(payload),
+      }).catch(() => undefined);
+      return;
+    }
+
+    navigator.sendBeacon?.(
+      url,
+      new Blob([JSON.stringify({ ...payload, access_token: accessToken })], {
+        type: 'application/json',
+      }),
+    );
+  } catch {
+    // Nothing to report to and nowhere to report it: the page is going.
+  }
+}
+
+/** Feature-detected rather than sniffed — see endLiveSessionBeacon. */
+function supportsKeepalive(): boolean {
+  try {
+    return 'keepalive' in new Request('https://example.invalid');
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The creator's live ceiling, read before the form is filled in rather than
  * discovered from a rejected go-live.
  *
@@ -338,7 +441,8 @@ export function thaiForQuotaRefusal(reason: string | null): string {
 const SESSION_COLUMNS =
   'id, creator_id, room_name, title, description, cover_image_url, access_level, ' +
   'ppv_price_stars, status, current_viewer_count, peak_viewer_count, ' +
-  'tip_stars_received, started_at, ended_at, broadcast_quality, latency_mode';
+  'tip_stars_received, started_at, ended_at, broadcast_quality, latency_mode, ' +
+  'last_heartbeat_at';
 
 function toSessionDetail(row: Record<string, unknown>): LiveSessionDetail {
   const quality = row.broadcast_quality;
@@ -362,6 +466,7 @@ function toSessionDetail(row: Record<string, unknown>): LiveSessionDetail {
     tip_stars_received: count(row.tip_stars_received),
     started_at: text(row.started_at),
     ended_at: text(row.ended_at),
+    last_heartbeat_at: text(row.last_heartbeat_at),
     broadcast_quality: isBroadcastQuality(quality) ? quality : null,
     latency_mode: isLatencyMode(row.latency_mode) ? row.latency_mode : null,
   };

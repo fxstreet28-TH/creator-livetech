@@ -221,6 +221,13 @@ export interface LiveSessionDetail {
   tip_stars_received: number;
   started_at: string | null;
   ended_at: string | null;
+  /**
+   * When the broadcasting studio last said it was on air, or null for a row no
+   * studio has ever reported for. See isBroadcastStale — a session whose
+   * status still says 'live' but whose heartbeat has gone quiet is over,
+   * whether or not the watchdog has written the row yet.
+   */
+  last_heartbeat_at?: string | null;
   broadcast_quality: BroadcastQuality | null;
   latency_mode: LatencyMode | null;
 }
