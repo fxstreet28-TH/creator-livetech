@@ -71,6 +71,7 @@ import {
   filterLabelFor,
   type FilteredStream,
   type FilterId,
+  type LookMode,
 } from '@/lib/live/cameraFilters';
 import {
   isDefaultOrientation,
@@ -163,6 +164,17 @@ interface CreatorBroadcasterProps {
    * row, unchanged.
    */
   controls?: (controls: BroadcastControls) => React.ReactNode;
+  /**
+   * Poll the draw loop for its frame rate, for the ?debug=camera chip.
+   *
+   * Off by default, and the flag exists for one honest reason: the fps number
+   * moves constantly, so reading it into state re-renders this component and
+   * everything it draws once a second, forever, for a readout nobody is
+   * looking at. `lookMode` is not behind this flag — it is set once when the
+   * pipeline opens and never changes again, so it costs nothing to always
+   * have.
+   */
+  reportStats?: boolean;
 }
 
 /** See CreatorBroadcasterProps.presentation. */
@@ -210,6 +222,21 @@ export interface BroadcastControls {
   cameraReport: string;
   /** Set when the camera refused an upright frame; the broadcast is 16:9. */
   portraitRefused: boolean;
+  /**
+   * Which look implementation the publish canvas is running: 'filter' where
+   * `ctx.filter` works, 'composite' where the look is rebuilt out of blend
+   * passes. Null before the pipeline opens.
+   *
+   * Worth surfacing because the two are meant to be indistinguishable in the
+   * picture — so when a look looks wrong, this is the first thing you need to
+   * know and the last thing you can see.
+   */
+  lookMode: LookMode | null;
+  /**
+   * Measured draw rate of the publish canvas. 0 unless `reportStats` is on —
+   * see the prop.
+   */
+  captureFps: number;
 }
 
 /**
@@ -258,6 +285,7 @@ export function CreatorBroadcaster({
   facingMode = 'user',
   onFacingModeChange,
   controls,
+  reportStats = false,
 }: CreatorBroadcasterProps) {
   const fullBleed = presentation === 'fullbleed';
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -325,6 +353,8 @@ export function CreatorBroadcaster({
   const [deliveryLive, setDeliveryLive] = useState(delivery !== 'llhls');
   const [deliveryError, setDeliveryError] = useState<string | null>(null);
   const [audioLevel, setAudioLevel] = useState(0);
+  const [lookMode, setLookMode] = useState<LookMode | null>(null);
+  const [captureFps, setCaptureFps] = useState(0);
   const [camOn, setCamOn] = useState(true);
   const [micOn, setMicOn] = useState(micEnabled);
   /** Bumped by the manual "ลองใหม่", which restarts the whole connect effect. */
@@ -456,6 +486,7 @@ export function CreatorBroadcaster({
             portraitRef.current ? PHONE_MAX_LONG_EDGE : undefined,
           );
           filteredRef.current = filtered;
+          setLookMode(filtered.getStats().lookMode);
         } catch (err) {
           if (cancelled) return;
           console.error('[CreatorBroadcaster] filter pipeline failed', err);
@@ -572,6 +603,21 @@ export function CreatorBroadcaster({
     const timer = setInterval(write, VIEWER_PERSIST_MS);
     return () => clearInterval(timer);
   }, [phase, liveSessionId, viewerCount]);
+
+  /**
+   * The publish canvas's own frame rate, while someone is watching the chip.
+   *
+   * One second, not 250ms like the level meter: a frame rate averaged over a
+   * second IS a once-a-second number, and sampling it four times as often
+   * would re-render four times as much to show the same value.
+   */
+  useEffect(() => {
+    if (!reportStats) return;
+    const timer = setInterval(() => {
+      setCaptureFps(filteredRef.current?.getStats().fps ?? 0);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [reportStats]);
 
   /** The bottom-left level meter, polled off the local participant. */
   useEffect(() => {
@@ -796,6 +842,8 @@ export function CreatorBroadcaster({
           hardwareZoom: zoomRange !== null,
           cameraReport: describeCamera(camera),
           portraitRefused: camera?.portraitRefused === true,
+          lookMode,
+          captureFps,
         })}
       </>
     );

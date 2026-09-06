@@ -52,7 +52,7 @@ import type { LiveChannelStatus } from '@/lib/live/realtime';
 import type { FloatingReaction } from '@/lib/live/reactions';
 import type { LiveGiftEvent } from '@/lib/live/gifts';
 import type { CameraOrientation } from '@/lib/live/cameraOrientation';
-import type { FilterId } from '@/lib/live/cameraFilters';
+import { filterLabelFor, type FilterId } from '@/lib/live/cameraFilters';
 import {
   CreatorBroadcaster,
   ULTRA_WIDE_STEP,
@@ -215,6 +215,10 @@ export function CreatorLiveMobile(props: CreatorLiveMobileProps) {
         // The whole point of the phone path: ask the camera for a portrait
         // frame so the broadcast is portrait-shaped end to end.
         portrait={portrait}
+        // Only while the chip is on screen — the fps readout re-renders this
+        // whole layout every second, which is a fine price for a diagnostic
+        // and an absurd one for a broadcast nobody is debugging.
+        reportStats={debugCamera}
         overlay={
           <GiftOverlay
             latestGift={latestGift}
@@ -256,6 +260,13 @@ export function CreatorLiveMobile(props: CreatorLiveMobileProps) {
                 <span>
                   zoom {c.zoom.toFixed(1)}× {c.hardwareZoom ? 'hw' : 'digital'} · max{' '}
                   {c.maxZoom.toFixed(1)}×
+                </span>
+                {/* The look implementation and what it costs. `composite` is
+                    the path older WebKit takes, where ctx.filter does nothing;
+                    the fps beside it is the evidence that the blend passes are
+                    as cheap as they are claimed to be. */}
+                <span>
+                  look {filterLabelFor(filterId)} · {c.lookMode ?? '—'} · {c.captureFps || '—'}fps
                 </span>
                 {c.portraitRefused && (
                   <span className={styles.debugWarn}>
