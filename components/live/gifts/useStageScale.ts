@@ -139,6 +139,23 @@ export interface GiftAnchor {
    * around them can be positioned against one number.
    */
   maxWidthPx?: number;
+  /**
+   * Ceiling on the whole anchored BLOCK's height — stage, gap and caption — in
+   * px. Anything past it is clipped.
+   *
+   * The phone layout's "the stage's top may never be above 45% of the
+   * viewport" rule, made structural. The stage size is already computed to
+   * land under that line, so this only ever binds on a caption longer than the
+   * headroom that computation reserved — a two-line message from a sender with
+   * a long name — and losing the last line of someone else's message is the
+   * right way to lose that argument, because the alternative is a gift over
+   * the creator's face.
+   *
+   * Omitted when the ceiling cannot be met at all: with a tray row on screen an
+   * 812px phone has ~47px between the tray and the 45% line, which is less than
+   * the smallest stage worth drawing. See LiveViewerMobile.
+   */
+  maxHeightPx?: number;
   /** CSS length for the tray's own bottom inset. Defaults to the overlay's inset. */
   trayBottom?: string;
   /**
@@ -165,6 +182,8 @@ export interface GiftLayout {
   bottom: string;
   /** See GiftAnchor.maxWidthPx. Absent means "as wide as the clip is". */
   maxWidthPx?: number;
+  /** See GiftAnchor.maxHeightPx. Absent means "as tall as it comes out". */
+  maxHeightPx?: number;
   /** See GiftAnchor.trayBottom. Absent means "the overlay's own inset". */
   trayBottom?: string;
   /** See GiftAnchor.trayShift. */
@@ -208,6 +227,7 @@ export function giftLayout(
       left: anchor.left,
       bottom: anchor.bottom,
       maxWidthPx: anchor.maxWidthPx,
+      maxHeightPx: anchor.maxHeightPx,
       trayBottom: anchor.trayBottom,
       trayShift: anchor.trayShift ?? true,
     };
@@ -258,6 +278,60 @@ export function useIsDesktop(): boolean {
   }, []);
 
   return desktop;
+}
+
+/**
+ * How far `node`'s TOP edge sits above the bottom of the viewport, in px.
+ *
+ * The one coordinate the phone watch layout positions gifts against, and it
+ * cannot be written in CSS: the chat column's height is its content's, and the
+ * gift tray's is however many rows are on screen. Both of those are what the
+ * fullscreen stage has to sit above (see LiveViewerMobile), and neither is a
+ * fraction of anything.
+ *
+ * Measured up from the BOTTOM rather than down from the top because everything
+ * in that layout is bottom-anchored — a value from the top would have to be
+ * re-subtracted from the viewport height at every use, including inside a CSS
+ * `bottom`.
+ *
+ * 0 while there is no element, which is what "no tray is rendered" reports as
+ * — DERIVED from the node rather than written back into state, so an unmounted
+ * tray reports "no tray" on the same render it disappears rather than after a
+ * second one. The keyboard moves these boxes without resizing them, so
+ * `visualViewport` is listened to alongside the element's own ResizeObserver.
+ */
+export function useTopFromViewportBottom(node: HTMLElement | null): number {
+  const [top, setTop] = useState(0);
+
+  useEffect(() => {
+    if (!node || typeof window === 'undefined') return;
+
+    const measure = () => {
+      const next = Math.round(window.innerHeight - node.getBoundingClientRect().top);
+      setTop((current) => (current === next ? current : next));
+    };
+
+    measure();
+    window.addEventListener('resize', measure);
+    window.addEventListener('orientationchange', measure);
+    const viewport = window.visualViewport;
+    viewport?.addEventListener('resize', measure);
+    viewport?.addEventListener('scroll', measure);
+
+    const observer =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(node);
+
+    return () => {
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('orientationchange', measure);
+      viewport?.removeEventListener('resize', measure);
+      viewport?.removeEventListener('scroll', measure);
+      observer?.disconnect();
+    };
+  }, [node]);
+
+  return node ? top : 0;
 }
 
 /**

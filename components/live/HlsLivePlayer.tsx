@@ -54,6 +54,21 @@ import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
  */
 export type PlayerPresentation = 'framed' | 'fullbleed';
 
+/**
+ * How a full-bleed video fills the screen. Nothing else reads it.
+ *
+ * 'cover' is the default and it is not conditional on the source's shape. A
+ * 9:16 phone is the canvas; a 16:9 desktop broadcast is CROPPED to fill it,
+ * sides cut, exactly the way TikTok and IG Live show a landscape stream. The
+ * previous rule here — letterbox a landscape source with `contain` — is what
+ * put black bars above and below the picture on every phone watching a creator
+ * who streams from a desktop, which is most of them.
+ *
+ * 'contain' is the viewer's own opt-in, from the ⛶ button the phone layout
+ * draws in its top bar (see LiveViewerMobile). Nothing chooses it for them.
+ */
+export type PlayerFit = 'cover' | 'contain';
+
 interface HlsLivePlayerProps {
   playbackUrl: string;
   latencyMode: LatencyMode;
@@ -63,6 +78,8 @@ interface HlsLivePlayerProps {
   /** Rendered over the video — the floating reactions and the reaction rail. */
   overlay?: React.ReactNode;
   presentation?: PlayerPresentation;
+  /** Full-bleed only. Defaults to 'cover' — see PlayerFit. */
+  fit?: PlayerFit;
 }
 
 export function HlsLivePlayer({
@@ -73,6 +90,7 @@ export function HlsLivePlayer({
   viewerCount,
   overlay,
   presentation = 'framed',
+  fit = 'cover',
 }: HlsLivePlayerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const handleRef = useRef<HlsHandle | null>(null);
@@ -81,18 +99,6 @@ export function HlsLivePlayer({
   const [phase, setPhase] = useState<HlsPhase>('loading');
   const [error, setError] = useState<string | null>(null);
   const [audioBlocked, setAudioBlocked] = useState(false);
-  /**
-   * True once the stream's own frames turn out to be wider than they are tall.
-   *
-   * Only consulted in full-bleed, where the video is `object-fit: cover` so a
-   * portrait broadcast fills a portrait phone the way TikTok's does. A
-   * LANDSCAPE source under `cover` on a 9:19.5 screen is cropped to about a
-   * third of its width, which for a creator broadcasting from a desktop is
-   * most of the shot — so a landscape source is letterboxed with `contain`
-   * instead. Read from the element rather than assumed, because nothing in the
-   * playback response says which way up the camera was.
-   */
-  const [landscapeSource, setLandscapeSource] = useState(false);
   /**
    * Whether the element is currently paused.
    *
@@ -199,13 +205,21 @@ export function HlsLivePlayer({
 
   // Square and borderless on a phone, where the player is edge-to-edge and a
   // rounded border would just be a hairline of page colour around the video.
-  // Rounded again from lg, where it sits inside the padded grid. Full-bleed
-  // fills whatever box the page gave it, which there is the viewport.
+  // Rounded again from lg, where it sits inside the padded grid.
+  //
+  // FULL-BLEED IS THE VIEWPORT, STATED OUTRIGHT. `fixed inset-0` with an
+  // explicit 100vw × 100dvh rather than `absolute inset-0`: an absolute box is
+  // only ever as big as whatever ancestor happens to be its containing block,
+  // so a wrapper that picked up a height from its content — or an
+  // `aspect-ratio` anywhere above it — silently became the video's box. There
+  // is no ratio, no max-height and no intrinsic sizing anywhere in this chain
+  // now; the element is the screen. z-0 keeps it under the page's chrome,
+  // which is z-20 (see LiveViewerMobile.module.css).
   return (
     <div
       className={
         fullBleed
-          ? 'absolute inset-0 overflow-hidden bg-black'
+          ? 'fixed inset-0 z-0 h-[100dvh] w-screen overflow-hidden bg-black'
           : 'relative min-h-0 flex-1 overflow-hidden bg-black lg:rounded-2xl lg:border lg:border-white/10'
       }
     >
@@ -222,21 +236,20 @@ export function HlsLivePlayer({
         // "tap to play" button below replaces the one thing it was load-bearing
         // for.
         controls={!fullBleed}
-        // Only meaningful in full-bleed; `cover` on the framed 16:9 box would
-        // crop a portrait broadcast to a letterbox slot, which is the opposite
-        // of what that layout wants.
-        onLoadedMetadata={(event) => {
-          const video = event.currentTarget;
-          if (video.videoWidth > 0 && video.videoHeight > 0) {
-            setLandscapeSource(video.videoWidth > video.videoHeight);
-          }
-        }}
         onPlay={() => setPaused(false)}
         onPause={() => setPaused(true)}
         aria-label={`ไลฟ์: ${title}`}
+        // `cover` unconditionally in full-bleed unless the viewer asked for
+        // `contain` — the source's own aspect ratio is not consulted. The
+        // framed layout stays `contain`, where letterboxing inside a 16:9 box
+        // is correct.
         className={`absolute inset-0 h-full w-full ${
-          fullBleed && !landscapeSource ? 'object-cover' : 'object-contain'
+          fullBleed && fit === 'cover' ? 'object-cover' : 'object-contain'
         }`}
+        // Faces sit in the upper third of a broadcast, so a 16:9 frame cropped
+        // to 9:19.5 should keep the top of the shot rather than the middle of
+        // it. Only meaningful while cropping.
+        style={fullBleed && fit === 'cover' ? { objectPosition: '50% 30%' } : undefined}
       />
 
       {/* The page's own top bar carries the same three numbers in full-bleed,

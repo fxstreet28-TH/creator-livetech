@@ -36,29 +36,29 @@ import {
   thaiForConnectError,
   type RemoteTrack,
 } from '@/lib/live/livekitClient';
-import type { PlayerPresentation } from './HlsLivePlayer';
+import type { PlayerFit, PlayerPresentation } from './HlsLivePlayer';
 import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
 
 export type ViewerPhase = 'connecting' | 'watching' | 'reconnecting' | 'ended' | 'failed';
 
 /**
- * `cover` in full-bleed, and only for a portrait source.
+ * `cover` in full-bleed, unconditionally — the source's shape is not consulted.
  *
- * Same rule as HlsLivePlayer: filling a portrait phone is the point of that
- * layout, but a landscape broadcast cropped to 9:19.5 loses two thirds of the
- * frame — a creator streaming from a desktop would be a strip of their
- * background — so a landscape source is letterboxed instead. Written onto the
- * element rather than rendered as a prop because the element is the SDK's:
- * tracks are attached with `track.attach()`, which owns srcObject, autoplay
- * and the muted flag.
+ * Same rule as HlsLivePlayer, and the same reason it changed: this used to
+ * letterbox a LANDSCAPE track, which is exactly the 16:9-in-a-black-band the
+ * phone layout exists to get rid of. A desktop broadcast is cropped to fill the
+ * phone, sides cut. `contain` is reachable only when the viewer asks for it
+ * through the page's ⛶ button.
+ *
+ * Written onto the element rather than rendered as a prop because the element
+ * is the SDK's: tracks are attached with `track.attach()`, which owns
+ * srcObject, autoplay and the muted flag.
  */
-function applyVideoFit(video: HTMLVideoElement, fullBleed: boolean) {
-  const cover =
-    fullBleed &&
-    video.videoWidth > 0 &&
-    video.videoHeight > 0 &&
-    video.videoHeight >= video.videoWidth;
+function applyVideoFit(video: HTMLVideoElement, fullBleed: boolean, fit: PlayerFit) {
+  const cover = fullBleed && fit === 'cover';
   video.className = `absolute inset-0 h-full w-full ${cover ? 'object-cover' : 'object-contain'}`;
+  // Faces sit in the upper third of a shot — see HlsLivePlayer.
+  video.style.objectPosition = cover ? '50% 30%' : '';
 }
 
 interface LiveKitLivePlayerProps {
@@ -75,6 +75,8 @@ interface LiveKitLivePlayerProps {
   onEnded: () => void;
   /** See HlsLivePlayer — the two players stay interchangeable, dress included. */
   presentation?: PlayerPresentation;
+  /** Full-bleed only. Defaults to 'cover' — see PlayerFit. */
+  fit?: PlayerFit;
 }
 
 export function LiveKitLivePlayer({
@@ -86,6 +88,7 @@ export function LiveKitLivePlayer({
   overlay,
   onEnded,
   presentation = 'framed',
+  fit = 'cover',
 }: LiveKitLivePlayerProps) {
   const fullBleed = presentation === 'fullbleed';
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -99,6 +102,8 @@ export function LiveKitLivePlayer({
    * change an `object-fit`.
    */
   const fullBleedRef = useRef(fullBleed);
+  /** Same reason as fullBleedRef: an object-fit must not rejoin the room. */
+  const fitRef = useRef(fit);
 
   const [phase, setPhase] = useState<ViewerPhase>('connecting');
   const [error, setError] = useState<string | null>(null);
@@ -126,12 +131,10 @@ export function LiveKitLivePlayer({
       const element = track.attach();
       if (track.kind === Track.Kind.Video) {
         const video = element as HTMLVideoElement;
-        const refit = () => applyVideoFit(video, fullBleedRef.current);
-        refit();
-        // The source's dimensions are not known when the element is created,
-        // and a creator who rotates their phone mid-broadcast changes them.
-        video.addEventListener('loadedmetadata', refit);
-        video.addEventListener('resize', refit);
+        // Applied once. The dimension listeners that used to be here are gone
+        // with the rule that needed them: the fit no longer depends on how the
+        // creator is holding their camera.
+        applyVideoFit(video, fullBleedRef.current, fitRef.current);
         video.playsInline = true;
       } else {
         // The audio element is present but has nothing to show. Hiding it
@@ -217,9 +220,10 @@ export function LiveKitLivePlayer({
    */
   useEffect(() => {
     fullBleedRef.current = fullBleed;
+    fitRef.current = fit;
     const video = containerRef.current?.querySelector('video');
-    if (video) applyVideoFit(video, fullBleed);
-  }, [fullBleed]);
+    if (video) applyVideoFit(video, fullBleed, fit);
+  }, [fullBleed, fit]);
 
   const enableAudio = useCallback(async () => {
     try {
@@ -230,15 +234,15 @@ export function LiveKitLivePlayer({
     }
   }, []);
 
-  // Square and borderless on a phone, where the player is edge-to-edge and a
-  // rounded border would just be a hairline of page colour around the video.
-  // Rounded again from lg, where it sits inside the padded grid. Full-bleed
-  // fills whatever box the page gave it, which there is the viewport.
+  // Square and borderless on a phone; rounded again from lg, where it sits
+  // inside the padded grid. Full-bleed states the viewport outright — `fixed
+  // inset-0` at 100vw x 100dvh, no ratio and no intrinsic sizing anywhere in
+  // the chain. Same box as HlsLivePlayer's; see its note.
   return (
     <div
       className={
         fullBleed
-          ? 'absolute inset-0 overflow-hidden bg-black'
+          ? 'fixed inset-0 z-0 h-[100dvh] w-screen overflow-hidden bg-black'
           : 'relative min-h-0 flex-1 overflow-hidden bg-black lg:rounded-2xl lg:border lg:border-white/10'
       }
     >
