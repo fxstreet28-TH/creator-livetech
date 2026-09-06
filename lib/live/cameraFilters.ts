@@ -8,10 +8,17 @@
  * Two things use these strings, and the difference matters:
  *
  *  - The SETUP PREVIEW puts the string straight on the <video> element's
- *    `filter` style. The compositor does all of it and it costs nothing.
- *  - The BROADCAST draws each camera frame onto a canvas with the same string
- *    as `ctx.filter`, and publishes THAT canvas as the video track. See
- *    createFilteredStream below.
+ *    `filter` style. The compositor does all of it and it costs nothing, and
+ *    a CSS filter on an element is supported everywhere — this path has never
+ *    been the problem.
+ *  - The BROADCAST draws each camera frame onto a canvas and publishes THAT
+ *    canvas as the video track. See createFilteredStream below.
+ *
+ * The broadcast path has TWO implementations of every look, because
+ * `ctx.filter` — a canvas property, not the CSS one — does not exist on older
+ * WebKit. Where it exists the string above is used directly; where it does not,
+ * the same look is rebuilt out of composite blends further down this file. The
+ * creator chooses a look, not an implementation, and never learns which ran.
  *
  * The second one is why viewers now see the look. Until this migration the
  * filter was a preview-only effect — a CSS filter styles the element painting
@@ -59,6 +66,252 @@ export function filterLabelFor(id: FilterId | null | undefined): string {
 
 /** Shown wherever the presets are, so a creator knows what the audience gets. */
 export const BROADCAST_NOTICE = 'ผู้ชมจะเห็นฟิลเตอร์นี้ด้วย';
+
+/**
+ * ==================================================================
+ * THE SAME LOOKS, FOR A CANVAS THAT CANNOT FILTER.
+ * ==================================================================
+ *
+ * `ctx.filter` is not universal. WebKit shipped it in Safari 18; on every
+ * iPhone below that the property is simply absent, and assigning to an absent
+ * property in non-strict JS is a silent no-op — which is exactly what a
+ * creator reported: the look chips worked on desktop and did nothing at all on
+ * a phone, in the preview AND in what the audience received.
+ *
+ * It was invisible for so long because nothing failed. No exception, no
+ * warning, no fallback: the canvas just kept drawing the raw camera while the
+ * UI said อบอุ่น.
+ *
+ * So each look has a SECOND recipe, built from globalCompositeOperation
+ * blends, which every browser this app supports has had for a decade. The
+ * frame is drawn once and then painted over two or three times with flat
+ * colours; there is no per-pixel JavaScript anywhere in here. `getImageData`
+ * would be the obvious way to write a colour grade and it is precisely the
+ * wrong one — it stalls the GPU pipeline to read pixels back into JS, on every
+ * frame, on the device that has the least headroom.
+ *
+ * These are APPROXIMATIONS, tuned by measurement rather than by eye (see the
+ * side-by-side bench at /dev/camera-looks). A soft-light wash is not a
+ * hue-rotate. What they have to be is recognisably the same look, in the same
+ * direction, at roughly the same strength — a warm that warms, a ขาวดำ with no
+ * colour left in it.
+ */
+
+/** One paint over the finished frame. */
+type LookPass =
+  /** A flat colour across the whole frame. */
+  | { kind: 'solid'; composite: GlobalCompositeOperation; color: string }
+  /** A radial falloff, dark at the edges. */
+  | { kind: 'vignette'; composite: GlobalCompositeOperation; edge: string; mid: string }
+  /**
+   * The frame blended with ITSELF.
+   *
+   * The one thing a flat fill cannot do is contrast: `overlay` against a
+   * uniform colour lightens or darkens everything, where contrast has to push
+   * the dark parts down and the light parts up at the same time. Blending the
+   * frame over itself does exactly that, because each pixel's own value is
+   * what decides which way it moves — it is the classic darkroom trick, and it
+   * is one more GPU draw rather than a pixel loop.
+   *
+   * This is what makes สดใส and ขาวดำ land: they are `saturate`/`grayscale`
+   * PLUS a contrast term, and without this the fallback reproduced the colour
+   * change and none of the punch.
+   */
+  | { kind: 'self'; composite: GlobalCompositeOperation; alpha: number };
+
+/**
+ * `saturation` is a non-separable blend: it takes the SATURATION of what is
+ * being painted and keeps the hue and luminosity underneath. Painting a grey —
+ * which has no saturation — therefore drains colour out of the frame, and the
+ * alpha decides how much. That is the whole trick behind ขาวดำ and วินเทจ.
+ */
+const NEUTRAL_GREY = '#808080';
+
+const LOOK_PASSES: Record<FilterId, LookPass[]> = {
+  // The camera, untouched. Not an empty effect — no effect.
+  none: [],
+  warm: [
+    { kind: 'solid', composite: 'soft-light', color: 'rgba(255, 150, 60, 0.16)' },
+    // Soft-light alone reads as a wash rather than a grade; the overlay pass
+    // puts the contrast back into the midtones the way sepia+saturate does.
+    { kind: 'solid', composite: 'overlay', color: 'rgba(255, 150, 60, 0.12)' },
+    // …and both of those DARKEN, because the tint's blue channel is well below
+    // mid grey. The CSS version ends in brightness(1.05). This is that.
+    { kind: 'solid', composite: 'soft-light', color: 'rgba(255, 255, 255, 0.18)' },
+  ],
+  cool: [
+    // Kept at full strength deliberately, and it is the one recipe where the
+    // measured distance to the CSS version is NOT the thing being minimised.
+    // `เย็น` is mostly hue-rotate(15deg), and a flat wash cannot rotate a hue
+    // at all — so the two choices were to match the DIRECTION weakly or the
+    // STRENGTH honestly. Tuning for distance drove the tint to 0.04, which is
+    // a look a creator cannot see they have applied: the original bug, in a
+    // new costume. At 0.16 the fallback moves the picture about as far as the
+    // CSS version does (4.9 against 4.3 on skin and neutrals), just along a
+    // slightly different axis.
+    { kind: 'solid', composite: 'soft-light', color: 'rgba(70, 140, 255, 0.16)' },
+    { kind: 'solid', composite: 'overlay', color: 'rgba(70, 140, 255, 0.06)' },
+  ],
+  vintage: [
+    // Order matters and this order is the recipe: drain the colour first, then
+    // tint what is left, then darken the edges. Tinting before draining would
+    // put the sepia through the desaturation and leave grey.
+    // 0.45 measures a mean saturation of 39.2 against the CSS version's 39.3 —
+    // which is where this started, and the bench is what confirmed it rather
+    // than assumed it.
+    { kind: 'solid', composite: 'saturation', color: 'rgba(128, 128, 128, 0.45)' },
+    { kind: 'solid', composite: 'multiply', color: 'rgba(255, 220, 170, 0.25)' },
+    { kind: 'solid', composite: 'soft-light', color: 'rgba(255, 255, 255, 0.08)' },
+    // The vignette has NO counterpart in the CSS version, and it is kept
+    // anyway — it is what the look was asked for. It is also most of the
+    // residual distance between the two columns on the bench, so the number
+    // there is not a defect to chase to zero.
+    { kind: 'vignette', composite: 'source-over', edge: 'rgba(0, 0, 0, 0.35)', mid: 'rgba(0, 0, 0, 0.06)' },
+  ],
+  vivid: [
+    // สดใส is a SATURATION look, and the first version of this recipe was the
+    // one that proved the bench was worth building: white overlay plus a warm
+    // soft-light measured a mean saturation of 61.8 where the CSS version
+    // measured 92.2 — below the raw camera's own 63.7. A vivid that made the
+    // picture very slightly duller.
+    { kind: 'solid', composite: 'saturation', color: 'rgba(255, 0, 0, 0.8)' },
+    { kind: 'self', composite: 'overlay', alpha: 0.45 },
+    { kind: 'solid', composite: 'overlay', color: 'rgba(255, 255, 255, 0.06)' },
+    { kind: 'solid', composite: 'soft-light', color: 'rgba(255, 230, 200, 0.02)' },
+  ],
+  bw: [
+    // Full alpha: ขาวดำ means no colour, not less colour.
+    { kind: 'solid', composite: 'saturation', color: NEUTRAL_GREY },
+    // grayscale(1) contrast(1.1) — the contrast half, which a white overlay
+    // could only fake by making the whole frame lighter.
+    { kind: 'self', composite: 'overlay', alpha: 0.2 },
+  ],
+};
+
+/**
+ * Does this browser's 2D context actually apply `ctx.filter`?
+ *
+ * Two questions, because either one alone gives a wrong answer:
+ *
+ *  - IS THE PROPERTY THERE? `'filter' in CanvasRenderingContext2D.prototype`
+ *    is false on the WebKit versions that never implemented it, and the
+ *    assignment those browsers ignore is the actual bug.
+ *  - DOES IT KEEP WHAT IT IS GIVEN? Checked by reading it back, and checked
+ *    for "not none" rather than for equality — browsers normalise the string
+ *    (`grayscale(1)` may come back as `grayscale(100%)`), and an equality test
+ *    would call a perfectly good desktop browser broken and switch it onto the
+ *    approximate path for nothing.
+ *
+ * Cached: the answer cannot change within a page, and this allocates a canvas.
+ */
+let canvasFilterSupport: boolean | null = null;
+
+export function supportsCanvasFilter(): boolean {
+  if (canvasFilterSupport !== null) return canvasFilterSupport;
+  if (typeof document === 'undefined' || typeof CanvasRenderingContext2D === 'undefined') {
+    // SSR. Nothing is drawing here; the real answer is decided in the browser.
+    return false;
+  }
+  if (!('filter' in CanvasRenderingContext2D.prototype)) {
+    canvasFilterSupport = false;
+    return false;
+  }
+  try {
+    const probe = document.createElement('canvas').getContext('2d');
+    if (!probe) {
+      canvasFilterSupport = false;
+      return false;
+    }
+    probe.filter = 'grayscale(1)';
+    canvasFilterSupport = probe.filter !== 'none' && probe.filter !== '';
+  } catch {
+    canvasFilterSupport = false;
+  }
+  return canvasFilterSupport;
+}
+
+/** Which of the two paths a stream is using. Surfaced in the debug chip. */
+export type LookMode = 'filter' | 'composite';
+
+/**
+ * A vignette is a gradient, and a gradient is an allocation — so it is built
+ * once per canvas SIZE and kept, not rebuilt on every frame. The size is the
+ * cache key because the canvas follows the camera and a front/back flip can
+ * change it mid-broadcast.
+ */
+interface VignetteCache {
+  width: number;
+  height: number;
+  gradient: CanvasGradient;
+}
+
+function vignetteFor(
+  ctx: CanvasRenderingContext2D,
+  pass: Extract<LookPass, { kind: 'vignette' }>,
+  cache: VignetteCache | null,
+): VignetteCache {
+  const { width, height } = ctx.canvas;
+  if (cache && cache.width === width && cache.height === height) return cache;
+
+  const cx = width / 2;
+  const cy = height / 2;
+  // The outer radius reaches the CORNERS, so the darkening is even all the way
+  // round instead of stopping short on the long axis of a portrait frame.
+  const outer = Math.hypot(cx, cy);
+  const gradient = ctx.createRadialGradient(cx, cy, outer * 0.45, cx, cy, outer);
+  gradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
+  gradient.addColorStop(0.6, pass.mid);
+  gradient.addColorStop(1, pass.edge);
+  return { width, height, gradient };
+}
+
+/**
+ * Paint a look over a frame that is already on the canvas.
+ *
+ * Exported so the comparison bench can drive this path directly on a browser
+ * whose `ctx.filter` works — otherwise the fallback could only ever be looked
+ * at on the phones that need it, which is not a place you can iterate.
+ *
+ * Returns the vignette cache to hand back next frame. The context is left as
+ * it was found: composite back to source-over, alpha back to 1.
+ */
+export function applyLookPasses(
+  ctx: CanvasRenderingContext2D,
+  id: FilterId,
+  cache: VignetteCache | null = null,
+): VignetteCache | null {
+  const passes = LOOK_PASSES[id] ?? [];
+  if (passes.length === 0) return cache;
+
+  const { width, height } = ctx.canvas;
+  let nextCache = cache;
+
+  ctx.save();
+  for (const pass of passes) {
+    ctx.globalCompositeOperation = pass.composite;
+
+    if (pass.kind === 'self') {
+      // Drawing a canvas onto itself is legal and the browser handles the
+      // overlap; globalAlpha is what makes it a partial contrast push rather
+      // than a doubling.
+      ctx.globalAlpha = pass.alpha;
+      ctx.drawImage(ctx.canvas, 0, 0);
+      ctx.globalAlpha = 1;
+      continue;
+    }
+
+    if (pass.kind === 'vignette') {
+      nextCache = vignetteFor(ctx, pass, nextCache);
+      ctx.fillStyle = nextCache.gradient;
+    } else {
+      ctx.fillStyle = pass.color;
+    }
+    ctx.fillRect(0, 0, width, height);
+  }
+  ctx.restore();
+
+  return nextCache;
+}
 
 /**
  * A camera stream with the look burned into its frames.
@@ -129,6 +382,20 @@ export interface FilteredStream {
    * show different crops.
    */
   setZoom: (zoom: number) => void;
+  /**
+   * What the pipeline is actually doing, for the ?debug=camera chip.
+   *
+   * `lookMode` says which of the two look implementations this stream picked,
+   * which is the one thing you cannot see by looking at the picture — a look
+   * that renders correctly through composite passes and a look that renders
+   * correctly through ctx.filter are, when it works, indistinguishable.
+   *
+   * `fps` is the DRAW rate measured over the last full second, not the rate
+   * the canvas was asked to capture at. The composite passes are what makes
+   * that worth showing: they are cheap, but "cheap" is a claim, and this is
+   * the number that settles it on the phone in the creator's hand.
+   */
+  getStats: () => { fps: number; lookMode: LookMode };
   /** Stops the draw loop and the canvas track. Does NOT stop the source. */
   stop: () => void;
 }
@@ -185,6 +452,29 @@ export async function createFilteredStream(
   let rafId: number | null = null;
   let frameCallbackId: number | null = null;
 
+  /*
+    WHICH LOOK IMPLEMENTATION THIS STREAM USES, decided ONCE.
+
+    Not per frame, and not per look change: the answer is a property of the
+    browser, it cannot change while the page is open, and re-deciding it inside
+    the draw loop would put a branch and a property read on the hot path for a
+    constant.
+
+    Desktop lands on 'filter' and is bit-for-bit unchanged by any of this.
+  */
+  const lookMode: LookMode = supportsCanvasFilter() ? 'filter' : 'composite';
+  let vignette: VignetteCache | null = null;
+
+  // The measured draw rate — see getStats. A counter and a window, because a
+  // per-frame delta reads as noise on a phone and what anyone actually wants
+  // to know is whether this is holding 30 or dropping to 12.
+  const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  let framesThisWindow = 0;
+  let windowStartedAt = now();
+  let measuredFps = 0;
+
+  console.info(`[camera] look mode: ${lookMode}`);
+
   const draw = () => {
     if (!running) return;
 
@@ -219,6 +509,9 @@ export async function createFilteredStream(
       if (canvas.width !== nextWidth || canvas.height !== nextHeight) {
         canvas.width = nextWidth;
         canvas.height = nextHeight;
+        // The vignette gradient is built for one canvas size. applyLookPasses
+        // checks this too; dropping it here means the check never has to fail.
+        vignette = null;
       }
     }
 
@@ -227,7 +520,10 @@ export async function createFilteredStream(
     // flip it back. Set per frame rather than once, so a look or a flip
     // changed mid-broadcast takes effect on the very next frame.
     ctx.save();
-    ctx.filter = filterCssFor(currentFilter);
+    // Only where it does something. On the composite path this assignment
+    // would be the silent no-op that caused the bug, and writing it anyway
+    // "just in case" is how it stayed hidden.
+    if (lookMode === 'filter') ctx.filter = filterCssFor(currentFilter);
     if (currentFlipped) {
       // Move the origin to the right edge, then draw leftwards. Scaling
       // without the translate would put the picture off-canvas.
@@ -250,6 +546,33 @@ export async function createFilteredStream(
     const sy = (video.videoHeight - sh) / 2;
     ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
     ctx.restore();
+
+    /*
+      THE LOOK, ON THE BROWSERS THAT CANNOT FILTER — and note WHERE it is.
+
+      After the restore, so it runs in plain canvas coordinates: the passes
+      cover the whole frame, and painting them through the mirror transform
+      would flip a vignette that is symmetrical anyway while making the code
+      lie about what it depends on.
+
+      After the draw, every frame, which is what makes requirement 4 fall out
+      for free rather than needing handling: the zoom crop, the front/back
+      flip and a camera that resized mid-broadcast have all already happened by
+      the time these run, so a look survives all three without knowing they
+      exist.
+    */
+    if (lookMode === 'composite') {
+      vignette = applyLookPasses(ctx, currentFilter, vignette);
+    }
+
+    framesThisWindow += 1;
+    const at = now();
+    if (at - windowStartedAt >= 1000) {
+      measuredFps = Math.round((framesThisWindow * 1000) / (at - windowStartedAt));
+      framesThisWindow = 0;
+      windowStartedAt = at;
+    }
+
     schedule();
   };
 
@@ -280,6 +603,7 @@ export async function createFilteredStream(
     setFlipped: (flipped) => {
       currentFlipped = flipped;
     },
+    getStats: () => ({ fps: measuredFps, lookMode }),
     setZoom: (zoom) => {
       // Floored at 1: there is no such thing as digital zoom OUT. Widening the
       // field of view needs a different camera, which is the 0.5x ultra-wide
