@@ -278,6 +278,7 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
               sessionId={sessionId}
               recoveryEnabled={!state.endedWhileWatching}
               playbackUrl={watch.playbackUrl}
+              source={watch.source}
               latencyMode={watch.latencyMode}
               title={title}
               elapsedSeconds={elapsedSeconds}

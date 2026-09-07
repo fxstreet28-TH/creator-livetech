@@ -65,6 +65,7 @@ import {
   type CameraFacing,
   type Room,
 } from '@/lib/live/livekitClient';
+import { publishWhip, thaiForWhipError, type WhipSession } from '@/lib/live/whipClient';
 import type { BroadcastQuality, LiveDelivery } from '@/lib/live/types';
 import {
   createFilteredStream,
@@ -91,8 +92,21 @@ interface CreatorBroadcasterProps {
   wsUrl: string;
   /** SECURITY: a LiveKit room credential. Never log it or put it in a URL. */
   token: string;
+  /**
+   * SECURITY: the WHIP publish capability, on an origin session only.
+   *
+   * Anyone holding this URL can publish into the creator's broadcast — MediaMTX
+   * grants a path to whoever reaches it first — so it gets the same treatment
+   * as `token` above: never logged, never in a URL, never persisted.
+   * Empty string on the other two pipelines.
+   */
+  whipUrl: string;
   quality: BroadcastQuality;
-  /** 'llhls' when a Bunny stream exists; 'livekit' when its create fell back. */
+  /**
+   * 'llhls' when a Bunny stream exists; 'livekit' when its create fell back;
+   * 'origin' when the creator publishes WHIP to our own MediaMTX. The third
+   * takes an entirely different publish path — no room, no token, no egress.
+   */
   delivery: LiveDelivery;
   videoDeviceId?: string;
   micEnabled: boolean;
@@ -267,6 +281,7 @@ export function CreatorBroadcaster({
   liveSessionId,
   wsUrl,
   token,
+  whipUrl,
   quality,
   delivery,
   videoDeviceId,
@@ -292,6 +307,13 @@ export function CreatorBroadcaster({
   const lookButtonRef = useRef<HTMLButtonElement | null>(null);
   const cameraButtonRef = useRef<HTMLButtonElement | null>(null);
   const roomRef = useRef<Room | null>(null);
+  /**
+   * The WHIP session, on an origin broadcast. Null on the other two pipelines,
+   * exactly as roomRef is null on this one — the two are alternatives, never
+   * both, and every consumer below branches on `delivery` rather than on which
+   * ref happens to be populated.
+   */
+  const whipRef = useRef<WhipSession | null>(null);
   const filteredRef = useRef<FilteredStream | null>(null);
   /**
    * The orientation the connect effect should start the canvas with.
@@ -390,7 +412,25 @@ export function CreatorBroadcaster({
     let egressTimer: ReturnType<typeof setTimeout> | null = null;
     let camera: MediaStream | null = null;
     let filtered: FilteredStream | null = null;
-    const room = createRoom(quality);
+    let whip: WhipSession | null = null;
+    /**
+     * Aborts a WHIP negotiation that is still in flight when the effect tears
+     * down. Without it, a creator who backs out during the ~1s of ICE gathering
+     * and the POST leaves a peer connection that completes into a MediaMTX path
+     * nothing will ever close — and the next attempt on that path gets a 409.
+     */
+    const whipAbort = new AbortController();
+
+    /**
+     * The LiveKit room is not constructed at all on an origin broadcast.
+     *
+     * `createRoom` is cheap, but a constructed Room registers device listeners
+     * and is what `roomRef` being non-null means everywhere else in this file.
+     * Leaving it null on the origin path is what makes the audio meter and the
+     * track toggles below branch correctly rather than silently operating on a
+     * room that has nothing published to it.
+     */
+    const room = delivery === 'origin' ? null : createRoom(quality);
     roomRef.current = room;
 
     const onDisconnected = () => {
@@ -506,19 +546,58 @@ export function CreatorBroadcaster({
         void videoRef.current.play().catch(() => {});
       }
 
+      /**
+       * The one place the three pipelines actually diverge.
+       *
+       * Everything above — the camera, the filter canvas, the self-view, the
+       * iOS framing fix — is shared, because what is being published is
+       * identical in all three cases: the canvas. Only the transport differs,
+       * and it differs completely: a LiveKit room with a token, or one HTTP
+       * POST carrying an SDP offer.
+       */
       try {
-        await connectAsPublisher(room, {
-          wsUrl,
-          token,
-          quality,
-          stream: filtered.stream,
-          micEnabled,
-          delivery,
-        });
+        if (delivery === 'origin') {
+          whip = await publishWhip({
+            endpoint: whipUrl,
+            stream: filtered.stream,
+            quality,
+            micEnabled,
+            maxFramerate: resolutionFor(quality).frameRate,
+            signal: whipAbort.signal,
+          });
+          whipRef.current = whip;
+
+          /**
+           * WHIP has no reconnect of its own — there is no SDK holding a
+           * signalling socket, so nothing retries unless this does. The peer
+           * connection's own state is the only signal that the broadcast has
+           * dropped, and it is routed into the SAME ladder the LiveKit path
+           * uses so both pipelines fail over identically.
+           *
+           * 'disconnected' is deliberately NOT treated as fatal: it is the
+           * state a phone passes through on a cell handover and it recovers on
+           * its own within seconds. Tearing the session down there would turn
+           * every lift ride into a dropped broadcast.
+           */
+          whip.pc.addEventListener('connectionstatechange', () => {
+            if (cancelled) return;
+            const state = whip?.pc.connectionState;
+            if (state === 'failed' || state === 'closed') onDisconnected();
+          });
+        } else {
+          await connectAsPublisher(room!, {
+            wsUrl,
+            token,
+            quality,
+            stream: filtered.stream,
+            micEnabled,
+            delivery,
+          });
+        }
       } catch (err) {
         if (cancelled) return;
         console.error('[CreatorBroadcaster] connect failed', err);
-        setError(thaiForConnectError(err));
+        setError(delivery === 'origin' ? thaiForWhipError(err) : thaiForConnectError(err));
         setPhaseAndReport('failed');
         return;
       }
@@ -544,9 +623,11 @@ export function CreatorBroadcaster({
     const onReconnecting = () => setPhaseAndReport('reconnecting');
     const onReconnected = () => setPhaseAndReport('live');
 
-    room.on(RoomEvent.Reconnecting, onReconnecting);
-    room.on(RoomEvent.Reconnected, onReconnected);
-    room.on(RoomEvent.Disconnected, onDisconnected);
+    // No room on the origin path, so no room events: its equivalent is the peer
+    // connection's `connectionstatechange`, wired inside connect() above.
+    room?.on(RoomEvent.Reconnecting, onReconnecting);
+    room?.on(RoomEvent.Reconnected, onReconnected);
+    room?.on(RoomEvent.Disconnected, onDisconnected);
 
     void connect();
 
@@ -558,12 +639,18 @@ export function CreatorBroadcaster({
       // removeAllListeners(): the Room is an EventEmitter the SDK also hands
       // to its own internals, and tearing down every listener on it is a
       // bigger hammer than unsubscribing what this component subscribed.
-      room.off(RoomEvent.Reconnecting, onReconnecting);
-      room.off(RoomEvent.Reconnected, onReconnected);
-      room.off(RoomEvent.Disconnected, onDisconnected);
+      room?.off(RoomEvent.Reconnecting, onReconnecting);
+      room?.off(RoomEvent.Reconnected, onReconnected);
+      room?.off(RoomEvent.Disconnected, onDisconnected);
       roomRef.current = null;
+      whipRef.current = null;
       filteredRef.current = null;
-      void leaveRoom(room);
+      if (room) void leaveRoom(room);
+      // Aborts a negotiation still in flight; closes one that completed. Both
+      // are needed — see whipAbort above for the session this would otherwise
+      // strand on the origin box.
+      whipAbort.abort();
+      void whip?.close();
       // Order matters: the filter stops its draw loop and its canvas track,
       // then the camera itself is released. Stopping the camera first leaves
       // the loop drawing a dead <video>.
@@ -579,7 +666,7 @@ export function CreatorBroadcaster({
     // micEnabled and filterId are the STARTING values only — both are changed
     // afterwards through the controls below, not through a reconnect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveSessionId, wsUrl, token, quality, videoDeviceId, delivery, attempt]);
+  }, [liveSessionId, wsUrl, token, whipUrl, quality, videoDeviceId, delivery, attempt]);
 
   /**
    * Write the audience size back to the row.
@@ -619,14 +706,77 @@ export function CreatorBroadcaster({
     return () => clearInterval(timer);
   }, [reportStats]);
 
-  /** The bottom-left level meter, polled off the local participant. */
+  /**
+   * The bottom-left level meter.
+   *
+   * Two implementations, because the number has two possible sources. On the
+   * LiveKit path the SDK already computes it and it is a property read. On the
+   * origin path there is no SDK, so it is measured here off the published
+   * stream with an AnalyserNode — the alternative was leaving the meter pinned
+   * at zero, which does not read as "no source of data", it reads as "your
+   * microphone is dead" on the one screen a creator checks before speaking.
+   */
   useEffect(() => {
     if (phase !== 'live') return;
+
+    if (delivery !== 'origin') {
+      const timer = setInterval(() => {
+        setAudioLevel(roomRef.current?.localParticipant.audioLevel ?? 0);
+      }, 250);
+      return () => clearInterval(timer);
+    }
+
+    const stream = filteredRef.current?.stream;
+    const audioTrack = stream?.getAudioTracks()[0];
+    if (!audioTrack) return;
+
+    // Safari still only has the prefixed constructor on some versions this
+    // product targets, and a missing AudioContext must cost the meter, not the
+    // broadcast.
+    const AudioCtor =
+      window.AudioContext ??
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtor) return;
+
+    let context: AudioContext;
+    try {
+      context = new AudioCtor();
+    } catch (err) {
+      console.warn('[CreatorBroadcaster] no AudioContext for the level meter', err);
+      return;
+    }
+
+    const analyser = context.createAnalyser();
+    // Small window, no smoothing of our own: the meter is redrawn four times a
+    // second and an averaged-over-seconds level looks laggy against speech.
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.3;
+    const source = context.createMediaStreamSource(new MediaStream([audioTrack]));
+    source.connect(analyser);
+    // NOT connected to context.destination: routing the creator's own mic to
+    // their speakers is a feedback loop, and the analyser taps the signal
+    // without needing an output.
+
+    const samples = new Uint8Array(analyser.frequencyBinCount);
     const timer = setInterval(() => {
-      setAudioLevel(roomRef.current?.localParticipant.audioLevel ?? 0);
+      analyser.getByteTimeDomainData(samples);
+      // RMS around the 128 midpoint, scaled to roughly the 0-1 range LiveKit's
+      // audioLevel reports so the same bar renders the same way on both paths.
+      let sum = 0;
+      for (const sample of samples) {
+        const centred = (sample - 128) / 128;
+        sum += centred * centred;
+      }
+      setAudioLevel(Math.min(1, Math.sqrt(sum / samples.length) * 3));
     }, 250);
-    return () => clearInterval(timer);
-  }, [phase]);
+
+    return () => {
+      clearInterval(timer);
+      source.disconnect();
+      analyser.disconnect();
+      void context.close().catch(() => {});
+    };
+  }, [phase, delivery]);
 
   /**
    * Camera and mic are toggled by MUTING the publication, not by unpublishing.
@@ -637,6 +787,28 @@ export function CreatorBroadcaster({
    * black or silence, which is what "camera off" should look like anyway.
    */
   const toggleTrack = async (source: Track.Source, next: boolean) => {
+    /**
+     * On the origin path there is no publication to mute — WHIP publishes raw
+     * MediaStreamTracks with no SDK wrapping them — so the equivalent is
+     * `track.enabled`, which is what LiveKit's own mute() sets underneath.
+     *
+     * The property matters more than the parity: a disabled track keeps sending
+     * (black frames, silent audio) rather than stopping, so the encoder and the
+     * RTP stream stay up and MediaMTX never sees the publisher go away. Stopping
+     * the track instead would end the broadcast, which is emphatically not what
+     * "camera off" means.
+     */
+    if (delivery === 'origin') {
+      const stream = filteredRef.current?.stream;
+      if (!stream) return;
+      const tracks =
+        source === Track.Source.Microphone ? stream.getAudioTracks() : stream.getVideoTracks();
+      tracks.forEach((track) => {
+        track.enabled = next;
+      });
+      return;
+    }
+
     const publication = localPublication(roomRef.current, source);
     if (!publication) return;
     try {

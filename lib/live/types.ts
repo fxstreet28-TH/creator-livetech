@@ -65,13 +65,21 @@ export type LatencyMode = 'ultra_low' | 'low_latency' | 'standard';
 /**
  * Which pipeline is carrying a session's video.
  *
- * 'llhls' is the destination architecture. 'livekit' is a session with no
- * Bunny stream — one created before this migration, or one whose Bunny create
- * failed and fell back — and it exists so those sessions keep playing rather
- * than showing an error for something that is not the viewer's problem.
+ * 'llhls' is the Bunny Live architecture. 'origin' is the self-hosted one added
+ * 2026-09-07: the creator publishes WHIP into our own MediaMTX on origin-sg-1,
+ * which produces LL-HLS that a Bunny pull zone caches — no LiveKit and no Bunny
+ * Live in the path. 'livekit' is a session with no HLS playlist at all — one
+ * created before this migration, or one whose Bunny create failed and fell back
+ * — and it exists so those sessions keep playing rather than showing an error
+ * for something that is not the viewer's problem.
  * TODO(phase 2B): remove with the rest of the LiveKit viewer path.
+ *
+ * Which one a session gets is decided per-create by the `live_delivery_mode`
+ * vault secret, never by the client — the client is TOLD, on the create and
+ * playback responses, and both are discriminated unions on this field because
+ * the three pipelines need genuinely different things.
  */
-export type LiveDelivery = 'llhls' | 'livekit';
+export type LiveDelivery = 'llhls' | 'livekit' | 'origin';
 
 /** The subset of access levels the go-live form can set. */
 export type LiveVisibility = Extract<AccessLevel, 'public' | 'subscribers' | 'ppv'>;
@@ -89,31 +97,62 @@ export interface CreateLiveRequest {
   recording_enabled?: boolean;
 }
 
-/** 200 from live-create-session, mode=create. */
-export interface CreateLiveResponse {
+/** The fields every create answer carries, whichever pipeline it granted. */
+interface CreateLiveResponseBase {
   live_session_id: string;
   room_name: string;
-  ws_url: string;
-  /**
-   * LiveKit JWT, 4h TTL, canPublish: true.
-   *
-   * SECURITY: this is a credential for the room. Never log it, never put it in
-   * a URL, never persist it — same contract as UploadRequestResponse
-   * .upload_headers in lib/creator/types.ts. A broadcast that outlives the
-   * token needs a fresh one from a fresh call, not a stored copy.
-   *
-   * The Bunny stream key is deliberately NOT part of this response: under this
-   * architecture the browser never speaks RTMP, so it has no use for a publish
-   * credential and is not given one.
-   */
-  access_token: string;
   /** What the backend actually granted — the tier cap, not necessarily the ask. */
   broadcast_quality: BroadcastQuality;
   max_viewers: number;
   hours_remaining_today: number;
-  delivery: LiveDelivery;
   latency_mode: LatencyMode;
 }
+
+/**
+ * 200 from live-create-session, mode=create.
+ *
+ * A discriminated union rather than one shape with optional fields, for the
+ * same reason LivePlaybackResponse is: a LiveKit publisher needs a room and a
+ * token, a WHIP publisher needs a URL, and neither has any use for the other's.
+ * Optional fields would let the broadcaster read `access_token` on an origin
+ * session and get `undefined` — which does not fail, it connects to nothing.
+ */
+export type CreateLiveResponse =
+  | (CreateLiveResponseBase & {
+      delivery: 'llhls' | 'livekit';
+      ws_url: string;
+      /**
+       * LiveKit JWT, 4h TTL, canPublish: true.
+       *
+       * SECURITY: this is a credential for the room. Never log it, never put it
+       * in a URL, never persist it — same contract as UploadRequestResponse
+       * .upload_headers in lib/creator/types.ts. A broadcast that outlives the
+       * token needs a fresh one from a fresh call, not a stored copy.
+       *
+       * The Bunny stream key is deliberately NOT part of this response: under
+       * this architecture the browser never speaks RTMP, so it has no use for a
+       * publish credential and is not given one.
+       */
+      access_token: string;
+    })
+  | (CreateLiveResponseBase & {
+      delivery: 'origin';
+      /**
+       * Where the creator publishes, from `live_sessions.whip_publish_url`.
+       *
+       * SECURITY: THIS IS THE PUBLISH CAPABILITY, and it deserves the same care
+       * as the LiveKit token above. MediaMTX grants the path to whoever reaches
+       * it first, so anyone holding this URL can broadcast into this creator's
+       * session. It carries eight characters of crypto-random precisely so it
+       * cannot be derived from the session id, which every viewer can see —
+       * putting it in a log line or a query string would undo that.
+       */
+      whip_url: string;
+      /** Where the broadcast will appear. Informational for the studio. */
+      hls_url: string;
+      /** The MediaMTX path segment, for correlating a row with server logs. */
+      origin_room_id: string;
+    });
 
 /** 200 from live-create-session, mode=start_egress. */
 export interface StartEgressResponse {
@@ -142,6 +181,32 @@ export type LivePlaybackResponse =
       creator_user_id: string | null;
       expires_at: string;
       /** False while the pull zone has no token key — the login gate is then the only guard. */
+      signed: boolean;
+    }
+  | {
+      /**
+       * Self-hosted MediaMTX behind the Bunny pull zone.
+       *
+       * Structurally identical to 'llhls' and kept as its own arm rather than
+       * folded into it: the player is the same hls.js, but WHERE the playlist
+       * comes from decides who to wake at 3am when it stops, and a viewer
+       * diagnostic that cannot tell a Bunny Live outage from an origin-sg-1
+       * outage is a diagnostic that cannot point at either.
+       */
+      delivery: 'origin';
+      session_id: string;
+      /** An LL-HLS playlist served by MediaMTX and cached by the pull zone. */
+      playback_url: string;
+      thumbnail_url: string | null;
+      latency_mode: LatencyMode;
+      creator_user_id: string | null;
+      expires_at: string;
+      /**
+       * Always false today: the pull zone in front of origin-sg-1 has no token
+       * authentication, so the login gate and the entitlement check are the
+       * only guards on this URL.
+       * TODO(post-launch): enable token auth on aurum-live-origin.
+       */
       signed: boolean;
     }
   | {

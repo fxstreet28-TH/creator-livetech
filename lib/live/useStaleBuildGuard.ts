@@ -28,13 +28,15 @@
 
 import { useCallback, useEffect, useRef } from 'react';
 import { RUNNING_BUILD_ID, type VersionResponse } from './buildId';
-import { logViewerDiagnostic, type DeliveryPath } from './viewerDiagnostics';
+import { logViewerDiagnostic, type DeliveryPath, type HlsSource } from './viewerDiagnostics';
 
 const POLL_MS = 60_000;
 
 export interface UseStaleBuildGuardOptions {
   sessionId: string;
   delivery: DeliveryPath;
+  /** Which server produced the playlist, on the 'hls' path. Recorded, not branched on. */
+  source?: HlsSource;
   /**
    * Flips true when the player has failed to start. Triggers one extra check
    * outside the poll — a failure is the moment the answer matters most, and
@@ -47,6 +49,7 @@ export interface UseStaleBuildGuardOptions {
 export function useStaleBuildGuard({
   sessionId,
   delivery,
+  source,
   connectFailed,
   enabled = true,
 }: UseStaleBuildGuardOptions): void {
@@ -76,6 +79,7 @@ export function useStaleBuildGuard({
           logViewerDiagnostic({
             sessionId,
             delivery,
+            source,
             step: 'stale_build',
             outcome: 'skipped',
             detail: { running: RUNNING_BUILD_ID, server: serverBuild },
@@ -91,6 +95,7 @@ export function useStaleBuildGuard({
       logViewerDiagnostic({
         sessionId,
         delivery,
+        source,
         step: 'stale_build',
         outcome: 'detected',
         detail: { running: RUNNING_BUILD_ID, server: serverBuild },
@@ -105,7 +110,7 @@ export function useStaleBuildGuard({
     } finally {
       checkingRef.current = false;
     }
-  }, [sessionId, delivery]);
+  }, [sessionId, delivery, source]);
 
   useEffect(() => {
     if (!enabled) return;

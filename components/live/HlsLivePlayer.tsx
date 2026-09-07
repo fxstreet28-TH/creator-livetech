@@ -40,6 +40,7 @@ import {
   useRecoveryLadder,
   type PlaybackHealth,
 } from "@/lib/live/useRecoveryLadder";
+import type { HlsSource } from "@/lib/live/viewerDiagnostics";
 import { useStaleBuildGuard } from "@/lib/live/useStaleBuildGuard";
 import { useVideoFrameWatchdog } from "@/lib/live/useVideoFrameWatchdog";
 import { useWakeRecheck } from "@/lib/live/useWakeRecheck";
@@ -82,6 +83,11 @@ interface HlsLivePlayerProps {
   /** For the diagnostics rows the recovery ladder writes. */
   sessionId: string;
   playbackUrl: string;
+  /**
+   * Which server produced this playlist. Recorded on every recovery-ladder row;
+   * the player itself does not branch on it — a playlist is a playlist.
+   */
+  source: HlsSource;
   latencyMode: LatencyMode;
   title: string;
   elapsedSeconds: number;
@@ -104,6 +110,7 @@ interface HlsLivePlayerProps {
 export function HlsLivePlayer({
   sessionId,
   playbackUrl,
+  source,
   latencyMode,
   title,
   elapsedSeconds,
@@ -225,6 +232,7 @@ export function HlsLivePlayer({
           : "unhealthy";
 
   const ladder = useRecoveryLadder({
+    source,
     sessionId,
     delivery: "hls",
     health,
@@ -312,6 +320,7 @@ export function HlsLivePlayer({
   useStaleBuildGuard({
     sessionId,
     delivery: "hls",
+    source,
     // A first escalation IS a connect failure, and it is the moment the answer
     // matters — a stale bundle is the one cause the ladder itself cannot fix.
     connectFailed: phase === "error" || ladder.step !== "normal",

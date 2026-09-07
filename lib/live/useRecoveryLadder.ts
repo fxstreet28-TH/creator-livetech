@@ -46,7 +46,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { logViewerDiagnostic, type DeliveryPath } from './viewerDiagnostics';
+import { logViewerDiagnostic, type DeliveryPath, type HlsSource } from './viewerDiagnostics';
 
 export type RecoveryStep = 'normal' | 'relay' | 'rebuild' | 'reload' | 'failed';
 
@@ -160,6 +160,14 @@ function hardReloadOnce(sessionId: string): boolean {
 export interface UseRecoveryLadderOptions {
   sessionId: string;
   delivery: DeliveryPath;
+  /**
+   * Which server produced the playlist, on the 'hls' path.
+   *
+   * Attached to every row this ladder writes so a recovery story can be
+   * attributed to Bunny Live or to origin-sg-1. Undefined on 'livekit', which
+   * has no playlist and no such distinction.
+   */
+  source?: HlsSource;
   health: PlaybackHealth;
   /** Off while there is nothing to play — an ended or locked broadcast. */
   enabled?: boolean;
@@ -168,6 +176,7 @@ export interface UseRecoveryLadderOptions {
 export function useRecoveryLadder({
   sessionId,
   delivery,
+  source,
   health,
   enabled = true,
 }: UseRecoveryLadderOptions): RecoveryLadder {
@@ -224,19 +233,21 @@ export function useRecoveryLadder({
     logViewerDiagnostic({
       sessionId,
       delivery,
+      source,
       step: 'normal',
       outcome: 'entered',
       attempt: attemptRef.current + 1,
       detail: { trigger: 'viewer_tapped_retry' },
     });
     reset('button');
-  }, [sessionId, delivery, reset]);
+  }, [sessionId, delivery, source, reset]);
 
   const restartNow = useCallback(
     (reason: 'wake' | 'watchdog', detail?: Record<string, unknown>) => {
       logViewerDiagnostic({
         sessionId,
         delivery,
+        source,
         step: reason,
         outcome: 'detected',
         attempt: attemptRef.current,
@@ -254,7 +265,7 @@ export function useRecoveryLadder({
       attemptRef.current += 1;
       setAttemptKey((n) => n + 1);
     },
-    [sessionId, delivery],
+    [sessionId, delivery, source],
   );
 
   useEffect(() => {
@@ -270,6 +281,7 @@ export function useRecoveryLadder({
           logViewerDiagnostic({
             sessionId,
             delivery,
+            source,
             step: stepRef.current,
             outcome: 'recovered',
             attempt: attemptRef.current,
@@ -307,6 +319,7 @@ export function useRecoveryLadder({
       logViewerDiagnostic({
         sessionId,
         delivery,
+        source,
         step: stepRef.current,
         outcome: 'timed_out',
         attempt: attemptRef.current,
@@ -318,6 +331,7 @@ export function useRecoveryLadder({
         logViewerDiagnostic({
           sessionId,
           delivery,
+          source,
           step: 'reload',
           outcome: reloading ? 'entered' : 'skipped',
           attempt: attemptRef.current,
@@ -333,6 +347,7 @@ export function useRecoveryLadder({
         logViewerDiagnostic({
           sessionId,
           delivery,
+          source,
           step: 'failed',
           outcome: 'gave_up',
           attempt: attemptRef.current,
@@ -353,6 +368,7 @@ export function useRecoveryLadder({
       logViewerDiagnostic({
         sessionId,
         delivery,
+        source,
         step: target,
         outcome: 'entered',
         attempt: attemptRef.current,
@@ -362,7 +378,7 @@ export function useRecoveryLadder({
 
     const timer = setInterval(tick, TICK_MS);
     return () => clearInterval(timer);
-  }, [enabled, sessionId, delivery, reset]);
+  }, [enabled, sessionId, delivery, source, reset]);
 
   const boundary = nextBoundary(step);
   const secondsToNextStep =

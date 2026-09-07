@@ -181,6 +181,7 @@ export function LiveViewerMobile({ sessionId, state }: LiveViewerMobileProps) {
             sessionId={sessionId}
             recoveryEnabled={!ended}
             playbackUrl={watch.playbackUrl}
+            source={watch.source}
             latencyMode={watch.latencyMode}
             title={title}
             elapsedSeconds={state.elapsedSeconds}

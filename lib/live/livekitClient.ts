@@ -45,7 +45,7 @@ import {
   type RemoteTrack,
 } from 'livekit-client';
 import type { BroadcastQuality } from './types';
-import { qualityOption } from './constants';
+import { publishBitrateFor, qualityOption } from './constants';
 
 export { ConnectionState, DisconnectReason, Room, RoomEvent, Track };
 export type { RemoteTrack };
@@ -169,7 +169,7 @@ export async function connectAsPublisher(
       source: Track.Source.Camera,
       videoEncoding: {
         maxFramerate: resolutionFor(options.quality).frameRate,
-        maxBitrate: bitrateFor(options.quality),
+        maxBitrate: publishBitrateFor(options.quality),
       },
       /**
        * On only when real viewers subscribe to this room.
@@ -194,27 +194,6 @@ export async function connectAsPublisher(
   }
 
   return { video, audio };
-}
-
-/**
- * Target bitrate per quality rung.
- *
- * This is the number the cost model is built on: BUNNY_LIVE_THB_PER_VIEWER_MINUTE
- * in the Edge Functions assumes 3 Mbps at 720p, and letting the encoder pick
- * its own ceiling would make the projected bill fiction. Bunny transcodes down
- * from whatever arrives, so this caps the ingest, not what a viewer receives.
- */
-function bitrateFor(quality: BroadcastQuality): number {
-  switch (quality) {
-    case '1080p':
-      return 4_500_000;
-    case '720p':
-      return 3_000_000;
-    case '480p':
-      return 1_500_000;
-    default:
-      return 800_000;
-  }
 }
 
 /** Connect as a viewer. The token carries canPublish: false, so nothing is captured. */

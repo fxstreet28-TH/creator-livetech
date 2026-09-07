@@ -29,6 +29,7 @@ import {
   estimateLiveCost,
   stopEgress,
 } from './live.ts';
+import type { LiveDeliveryMode } from './live.ts';
 
 /** The `live_sessions` row, as this module reads it. */
 export interface LiveSessionRow {
@@ -42,6 +43,8 @@ export interface LiveSessionRow {
   recording_enabled: boolean | null;
   bunny_stream_id: string | null;
   livekit_egress_id: string | null;
+  /** Set only on a session carried by our own MediaMTX. See estimateLiveCost. */
+  origin_room_id?: string | null;
   metadata: unknown;
   [key: string]: unknown;
 }
@@ -194,7 +197,16 @@ export async function closeLiveSession(
       ? storedChatCount
       : Math.max(storedChatCount, clampChatCount(options.reportedChatCount));
 
-  const cost = estimateLiveCost(durationMinutes, peakViewers);
+  /**
+   * Which pipeline carried this, read from the row rather than from the vault.
+   *
+   * `live_delivery_mode` says what the NEXT session will get, not what this one
+   * got — and a session that was on air while the mode was flipped would
+   * otherwise be priced as the pipeline it was never on. `origin_room_id` is
+   * set at create and never changes, so it is the honest record.
+   */
+  const delivery: LiveDeliveryMode = session.origin_room_id ? 'origin' : 'llhls';
+  const cost = estimateLiveCost(durationMinutes, peakViewers, delivery);
   const nowIso = new Date().toISOString();
 
   const { error: updateErr } = await supabase

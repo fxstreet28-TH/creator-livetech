@@ -64,10 +64,30 @@ import type { LatencyMode, LiveSessionDetail } from '@/lib/live/types';
 export type LiveWatchState =
   | { kind: 'pending' }
   | {
+      /**
+       * An LL-HLS playlist, whoever produced it.
+       *
+       * ONE STATE FOR BOTH HLS PIPELINES, deliberately. Bunny Live and our own
+       * MediaMTX hand the browser the same thing — a playlist over HTTPS — so
+       * they get the same player, the same retry ladder, the same frame
+       * watchdog and the same wake/bfcache recheck. Splitting them here would
+       * mean a second copy of the self-healing viewer that has to be kept in
+       * step with the first, and the day they drifted would be the day one of
+       * them stopped recovering.
+       */
       kind: 'hls';
       playbackUrl: string;
       latencyMode: LatencyMode;
       creatorUserId: string | null;
+      /**
+       * WHICH origin served the playlist — reported, never branched on.
+       *
+       * The player does not care. The diagnostics do: "HLS playback failed"
+       * with no source cannot tell a Bunny Live outage from an origin-sg-1
+       * outage, and those have different owners and different fixes. This is
+       * the field that makes a viewer report actionable.
+       */
+      source: 'llhls' | 'origin';
     }
   | {
       kind: 'livekit';
@@ -178,12 +198,13 @@ export function useLiveWatch(sessionId: string | null): LiveWatchResult {
 
       if (data) {
         setWatch(
-          data.delivery === 'llhls'
+          data.delivery === 'llhls' || data.delivery === 'origin'
             ? {
                 kind: 'hls',
                 playbackUrl: data.playback_url,
                 latencyMode: data.latency_mode,
                 creatorUserId: data.creator_user_id,
+                source: data.delivery,
               }
             : {
                 kind: 'livekit',

@@ -47,7 +47,7 @@ import {
   VolumeX,
 } from 'lucide-react';
 import { formatCount, formatDuration } from '@/lib/creator/format';
-import type { LiveChatEntry } from '@/lib/live/types';
+import type { LiveChatEntry, LiveDelivery } from '@/lib/live/types';
 import type { LiveChannelStatus } from '@/lib/live/realtime';
 import type { FloatingReaction } from '@/lib/live/reactions';
 import type { LiveGiftEvent } from '@/lib/live/gifts';
@@ -72,8 +72,10 @@ export interface CreatorLiveMobileProps {
   liveSessionId: string;
   wsUrl: string;
   token: string;
+  /** SECURITY: the WHIP publish capability on an origin session. See CreatorBroadcaster. */
+  whipUrl: string;
   quality: string;
-  delivery: 'llhls' | 'livekit';
+  delivery: LiveDelivery;
   micEnabled: boolean;
   elapsedSeconds: number;
   filterId: FilterId;
@@ -122,6 +124,7 @@ export function CreatorLiveMobile(props: CreatorLiveMobileProps) {
     liveSessionId,
     wsUrl,
     token,
+    whipUrl,
     quality,
     delivery,
     micEnabled,
@@ -201,6 +204,7 @@ export function CreatorLiveMobile(props: CreatorLiveMobileProps) {
         liveSessionId={liveSessionId}
         wsUrl={wsUrl}
         token={token}
+        whipUrl={whipUrl}
         quality={quality as never}
         delivery={delivery}
         micEnabled={micEnabled}
