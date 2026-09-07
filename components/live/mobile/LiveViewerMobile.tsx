@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * /live/[sessionId] on a phone — the full-bleed "Design C" layout.
@@ -51,32 +51,32 @@
  * the viewer asks.
  */
 
-import { useCallback, useState } from 'react';
-import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import { Eye, Gift, Maximize, Sparkles, X } from 'lucide-react';
-import { formatCount, formatDuration } from '@/lib/creator/format';
-import { allTiersFree } from '@/lib/live/gifts';
-import type { LiveViewerState } from '@/lib/hooks/useLiveViewer';
+import { useCallback, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { Eye, Gift, Maximize, Sparkles, X } from "lucide-react";
+import { formatCount, formatDuration } from "@/lib/creator/format";
+import { allTiersFree } from "@/lib/live/gifts";
+import type { LiveViewerState } from "@/lib/hooks/useLiveViewer";
 import {
   CreatorAvatar,
   creatorDisplayName,
   creatorHandleLabel,
   creatorProfileHref,
-} from '@/components/viewer/creatorDisplay';
-import { FOLLOW_NOTICE } from '@/components/viewer/CreatorInlineCard';
-import { EmojiReactionButton } from '../EmojiReactionButton';
-import { FloatingReactionsLayer } from '../FloatingReactionsLayer';
-import { HlsLivePlayer, type PlayerFit } from '../HlsLivePlayer';
-import { LiveBadge } from '../LiveStatsBar';
-import { LiveChat } from '../LiveChat';
-import { LiveEndedCard } from '../LiveEndedCard';
-import { LiveKitLivePlayer } from '../LiveKitLivePlayer';
-import { GiftOverlay } from '../gifts/GiftOverlay';
-import { LiveShareButton } from './LiveShareButton';
-import { useKeyboardInset } from './useMobileViewport';
-import { useMobileGiftGeometry } from './useMobileGiftAnchor';
-import styles from './LiveViewerMobile.module.css';
+} from "@/components/viewer/creatorDisplay";
+import { FOLLOW_NOTICE } from "@/components/viewer/CreatorInlineCard";
+import { EmojiReactionButton } from "../EmojiReactionButton";
+import { FloatingReactionsLayer } from "../FloatingReactionsLayer";
+import { HlsLivePlayer, type PlayerFit } from "../HlsLivePlayer";
+import { LiveBadge } from "../LiveStatsBar";
+import { LiveChat } from "../LiveChat";
+import { LiveEndedCard } from "../LiveEndedCard";
+import { LiveKitLivePlayer } from "../LiveKitLivePlayer";
+import { GiftOverlay } from "../gifts/GiftOverlay";
+import { LiveShareButton } from "./LiveShareButton";
+import { useKeyboardInset } from "./useMobileViewport";
+import { useMobileGiftGeometry } from "./useMobileGiftAnchor";
+import styles from "./LiveViewerMobile.module.css";
 
 interface LiveViewerMobileProps {
   sessionId: string;
@@ -98,7 +98,7 @@ export function LiveViewerMobile({ sessionId, state }: LiveViewerMobileProps) {
    * is reachable only through the ⛶ button in the top bar, and it is not
    * remembered: it is a look-at-the-whole-frame gesture, not a preference.
    */
-  const [fit, setFit] = useState<PlayerFit>('cover');
+  const [fit, setFit] = useState<PlayerFit>("cover");
 
   /**
    * Where the gift layers sit. The SAME geometry the creator's own phone
@@ -128,15 +128,18 @@ export function LiveViewerMobile({ sessionId, state }: LiveViewerMobileProps) {
    * pop is not there.
    */
   const close = useCallback(() => {
-    if (typeof window !== 'undefined' && window.history.length > 1) {
+    if (typeof window !== "undefined" && window.history.length > 1) {
       router.back();
       return;
     }
-    router.push('/discover?tab=live');
+    router.push("/discover?tab=live");
   }, [router]);
 
-  const ended = state.endedWhileWatching || watch.kind === 'ended' || watch.kind === 'cancelled';
-  const watchable = watch.kind === 'hls' || watch.kind === 'livekit';
+  const ended =
+    state.endedWhileWatching ||
+    watch.kind === "ended" ||
+    watch.kind === "cancelled";
+  const watchable = watch.kind === "hls" || watch.kind === "livekit";
 
   /**
    * What the player paints on top of itself: the rising emoji, and the gifts.
@@ -169,12 +172,14 @@ export function LiveViewerMobile({ sessionId, state }: LiveViewerMobileProps) {
       // reports as zero; nothing in the app styles against it.
       data-live-mobile-root
       className={styles.root}
-      style={{ '--live-keyboard': `${keyboardInset}px` } as React.CSSProperties}
+      style={{ "--live-keyboard": `${keyboardInset}px` } as React.CSSProperties}
     >
       {/* ------------------------------------------------------------ video */}
       {watchable &&
-        (watch.kind === 'hls' ? (
+        (watch.kind === "hls" ? (
           <HlsLivePlayer
+            sessionId={sessionId}
+            recoveryEnabled={!ended}
             playbackUrl={watch.playbackUrl}
             latencyMode={watch.latencyMode}
             title={title}
@@ -186,6 +191,8 @@ export function LiveViewerMobile({ sessionId, state }: LiveViewerMobileProps) {
           />
         ) : (
           <LiveKitLivePlayer
+            sessionId={sessionId}
+            recoveryEnabled={!ended}
             wsUrl={watch.wsUrl}
             token={watch.token}
             title={title}
@@ -257,13 +264,19 @@ export function LiveViewerMobile({ sessionId, state }: LiveViewerMobileProps) {
             {watchable && !ended && (
               <button
                 type="button"
-                onClick={() => setFit((current) => (current === 'cover' ? 'contain' : 'cover'))}
-                aria-pressed={fit === 'contain'}
-                aria-label={fit === 'contain' ? 'ครอบเต็มจอ' : 'แสดงภาพเต็มเฟรม'}
+                onClick={() =>
+                  setFit((current) =>
+                    current === "cover" ? "contain" : "cover",
+                  )
+                }
+                aria-pressed={fit === "contain"}
+                aria-label={
+                  fit === "contain" ? "ครอบเต็มจอ" : "แสดงภาพเต็มเฟรม"
+                }
                 className={`inline-flex h-[30px] w-[30px] items-center justify-center rounded-full backdrop-blur-md transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 ${
-                  fit === 'contain'
-                    ? 'bg-white/85 text-black'
-                    : 'bg-black/45 text-white hover:bg-black/65'
+                  fit === "contain"
+                    ? "bg-white/85 text-black"
+                    : "bg-black/45 text-white hover:bg-black/65"
                 }`}
               >
                 <Maximize size={15} aria-hidden />
@@ -395,14 +408,19 @@ function CreatorLink({
   name: string;
   children: React.ReactNode;
 }) {
-  const className = 'flex min-w-0 items-center gap-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 rounded-full';
+  const className =
+    "flex min-w-0 items-center gap-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 rounded-full";
 
   if (!profileHref) {
     return <span className={className}>{children}</span>;
   }
 
   return (
-    <Link href={profileHref} aria-label={`ดูโปรไฟล์ ${name}`} className={className}>
+    <Link
+      href={profileHref}
+      aria-label={`ดูโปรไฟล์ ${name}`}
+      className={className}
+    >
       {children}
     </Link>
   );

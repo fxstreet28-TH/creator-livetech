@@ -84,11 +84,29 @@ export type CameraFacing = 'user' | 'environment';
  * kill switch in `check_creator_can_golive` is what turns that bill into a
  * refusal to go live at all.
  */
-export function createRoom(quality?: BroadcastQuality): Room {
+export interface CreateRoomOptions {
+  /**
+   * Force every media path through a TURN server.
+   *
+   * The second rung of the viewer's recovery ladder. A direct or
+   * server-reflexive candidate is cheaper and usually works, but on a
+   * carrier-grade NAT, a corporate firewall, or one of the mobile networks
+   * that quietly drops UDP, it never completes — and the viewer sees a
+   * connection that hangs rather than one that fails, which is worse. Relay is
+   * the route that works when nothing else does; it is not the default because
+   * it costs bandwidth and adds a hop for the majority who do not need it.
+   */
+  iceTransportPolicy?: RTCIceTransportPolicy;
+}
+
+export function createRoom(quality?: BroadcastQuality, options?: CreateRoomOptions): Room {
   return new Room({
     adaptiveStream: true,
     dynacast: true,
     ...(quality ? { videoCaptureDefaults: { resolution: resolutionFor(quality) } } : {}),
+    ...(options?.iceTransportPolicy
+      ? { rtcConfig: { iceTransportPolicy: options.iceTransportPolicy } }
+      : {}),
   });
 }
 

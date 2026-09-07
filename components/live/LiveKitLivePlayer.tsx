@@ -26,7 +26,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Loader2, Volume2, WifiOff } from 'lucide-react';
+import { Volume2 } from 'lucide-react';
 import {
   RoomEvent,
   Track,
@@ -36,7 +36,13 @@ import {
   thaiForConnectError,
   type RemoteTrack,
 } from '@/lib/live/livekitClient';
+import { useRecoveryLadder, type PlaybackHealth } from '@/lib/live/useRecoveryLadder';
+import { logViewerDiagnostic } from '@/lib/live/viewerDiagnostics';
+import { useStaleBuildGuard } from '@/lib/live/useStaleBuildGuard';
+import { useVideoFrameWatchdog } from '@/lib/live/useVideoFrameWatchdog';
+import { useWakeRecheck } from '@/lib/live/useWakeRecheck';
 import type { PlayerFit, PlayerPresentation } from './HlsLivePlayer';
+import { LiveRecoveryOverlay } from './LiveRecoveryOverlay';
 import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
 
 export type ViewerPhase = 'connecting' | 'watching' | 'reconnecting' | 'ended' | 'failed';
@@ -62,6 +68,8 @@ function applyVideoFit(video: HTMLVideoElement, fullBleed: boolean, fit: PlayerF
 }
 
 interface LiveKitLivePlayerProps {
+  /** For the diagnostics rows the recovery ladder writes. */
+  sessionId: string;
   wsUrl: string;
   /** SECURITY: a LiveKit room credential. Never log it or put it in a URL. */
   token: string;
@@ -77,9 +85,12 @@ interface LiveKitLivePlayerProps {
   presentation?: PlayerPresentation;
   /** Full-bleed only. Defaults to 'cover' — see PlayerFit. */
   fit?: PlayerFit;
+  /** Off once the broadcast is over — see HlsLivePlayer's copy of this note. */
+  recoveryEnabled?: boolean;
 }
 
 export function LiveKitLivePlayer({
+  sessionId,
   wsUrl,
   token,
   title,
@@ -89,6 +100,7 @@ export function LiveKitLivePlayer({
   onEnded,
   presentation = 'framed',
   fit = 'cover',
+  recoveryEnabled = true,
 }: LiveKitLivePlayerProps) {
   const fullBleed = presentation === 'fullbleed';
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -106,17 +118,63 @@ export function LiveKitLivePlayer({
   const fitRef = useRef(fit);
 
   const [phase, setPhase] = useState<ViewerPhase>('connecting');
-  const [error, setError] = useState<string | null>(null);
   const [audioBlocked, setAudioBlocked] = useState(false);
+  /**
+   * Connected to the room, but nobody is publishing yet.
+   *
+   * The LiveKit equivalent of a missing HLS manifest, and it matters for
+   * exactly the same reason: a viewer who arrives before the creator is not
+   * looking at a broken device, and the recovery ladder must sit still through
+   * it rather than escalate to reloading their page.
+   */
+  const [awaitingPublisher, setAwaitingPublisher] = useState(false);
+  /** True between the watchdog spotting a frozen picture and frames resuming. */
+  const [stalled, setStalled] = useState(false);
 
   const onEndedRef = useRef(onEnded);
   useEffect(() => {
     onEndedRef.current = onEnded;
   }, [onEnded]);
 
+  /**
+   * An ended broadcast is not a fault to recover from.
+   *
+   * A viewer token is minted for one room and a room with no publisher has
+   * nothing to reconnect to, so the ladder is switched off the moment the
+   * broadcast is over — otherwise it would climb all the way to reloading the
+   * page of someone reading the "ไลฟ์จบแล้ว" card.
+   */
+  const laddering = recoveryEnabled && phase !== 'ended';
+
+  const health: PlaybackHealth = awaitingPublisher
+    ? 'paused'
+    : phase === 'watching' && !stalled
+      ? 'healthy'
+      : 'unhealthy';
+
+  const ladder = useRecoveryLadder({
+    sessionId,
+    delivery: 'livekit',
+    health,
+    enabled: laddering,
+  });
+
+  /**
+   * From the 'relay' rung on, every candidate goes through a TURN server.
+   *
+   * This is the literal version of what the HLS path can only approximate: the
+   * failure being escalated against is a network that will not carry a direct
+   * peer connection, and relay is the route that works when nothing else does.
+   */
+  const iceTransportPolicy: RTCIceTransportPolicy | undefined =
+    ladder.step === 'normal' ? undefined : 'relay';
+
   useEffect(() => {
     let cancelled = false;
-    const room = createRoom();
+    // A NEW Room on every rung, which means a new RTCPeerConnection: the SDK
+    // builds one per Room and there is no way to reset the old one in place.
+    // That is exactly what the ladder's later rungs are asking for.
+    const room = createRoom(undefined, { iceTransportPolicy });
     roomRef.current = room;
     // Captured now: by cleanup time the ref may already point elsewhere, and
     // the elements to tear down are the ones this effect appended.
@@ -142,6 +200,8 @@ export function LiveKitLivePlayer({
         element.className = 'hidden';
       }
       container.appendChild(element);
+      setAwaitingPublisher(false);
+      setStalled(false);
       setPhase('watching');
     };
 
@@ -168,7 +228,23 @@ export function LiveKitLivePlayer({
       } catch (err) {
         if (cancelled) return;
         console.error('[LiveKitLivePlayer] connect failed', err);
-        setError(thaiForConnectError(err));
+        /*
+          The specific reason goes to the diagnostics table, not to the screen.
+
+          `thaiForConnectError` produces something accurate and useless to a
+          viewer — a token that will not mint, a signalling timeout — and the
+          recovery card deliberately says one plain thing with one button on
+          it. Losing the detail entirely would be the wrong trade, so it is
+          recorded where somebody who can act on it will look.
+        */
+        logViewerDiagnostic({
+          sessionId,
+          delivery: 'livekit',
+          step: 'normal',
+          outcome: 'detected',
+          detail: { connect_error: thaiForConnectError(err) },
+        });
+        setAwaitingPublisher(false);
         setPhase('failed');
         return;
       }
@@ -177,8 +253,13 @@ export function LiveKitLivePlayer({
       setAudioBlocked(!room.canPlaybackAudio);
       // A viewer who arrives before the broadcaster has published anything
       // sits on 'connecting' until TrackSubscribed fires, which is honest:
-      // there is nothing to watch yet.
-      if (room.remoteParticipants.size > 0) setPhase('watching');
+      // there is nothing to watch yet. It is also NOT a fault — see
+      // awaitingPublisher.
+      if (room.remoteParticipants.size > 0) {
+        setPhase('watching');
+      } else {
+        setAwaitingPublisher(true);
+      }
     }
 
     const onReconnecting = () => setPhase('reconnecting');
@@ -208,7 +289,10 @@ export function LiveKitLivePlayer({
       container?.replaceChildren();
       void leaveRoom(room);
     };
-  }, [wsUrl, token]);
+    // attemptKey is what makes the ladder's rungs happen: each escalation
+    // leaves the room, drops every element this effect appended, and builds
+    // the whole thing again.
+  }, [sessionId, wsUrl, token, iceTransportPolicy, ladder.attemptKey]);
 
   /**
    * Keep the ref — and any element already on screen — in step with the prop.
@@ -224,6 +308,52 @@ export function LiveKitLivePlayer({
     const video = containerRef.current?.querySelector('video');
     if (video) applyVideoFit(video, fullBleed, fit);
   }, [fullBleed, fit]);
+
+  const handleStall = useCallback(
+    (detail: Record<string, unknown>) => {
+      setStalled(true);
+      ladder.restartNow('watchdog', detail);
+    },
+    [ladder],
+  );
+
+  /**
+   * The SDK owns the element, so it is looked up rather than held in a ref: it
+   * is created on track subscribe and replaced whenever the ladder rebuilds
+   * the room.
+   */
+  const getVideo = useCallback(
+    () => containerRef.current?.querySelector('video') ?? null,
+    [],
+  );
+
+  useVideoFrameWatchdog({
+    getVideo,
+    active: laddering && phase === 'watching',
+    onStall: handleStall,
+  });
+
+  useWakeRecheck({
+    enabled: laddering,
+    // "Connected" is precisely the claim that survives a Safari suspension, so
+    // the room's own state is not enough: there has to be an element with
+    // frames in it.
+    isHealthy: useCallback(() => {
+      const video = getVideo();
+      return phase === 'watching' && !stalled && !!video && !video.paused && video.readyState >= 2;
+    }, [phase, stalled, getVideo]),
+    onWake: useCallback(
+      (detail: Record<string, unknown>) => ladder.restartNow('wake', detail),
+      [ladder],
+    ),
+  });
+
+  useStaleBuildGuard({
+    sessionId,
+    delivery: 'livekit',
+    connectFailed: phase === 'failed' || ladder.step !== 'normal',
+    enabled: laddering,
+  });
 
   const enableAudio = useCallback(async () => {
     try {
@@ -284,45 +414,33 @@ export function LiveKitLivePlayer({
         </button>
       )}
 
-      {phase !== 'watching' && <ViewerOverlay phase={phase} error={error} />}
+      {phase === 'ended' ? (
+        <ViewerOverlay />
+      ) : phase !== 'watching' || stalled || ladder.exhausted ? (
+        <LiveRecoveryOverlay
+          step={ladder.step}
+          secondsToNextStep={ladder.secondsToNextStep}
+          exhausted={ladder.exhausted}
+          onRetry={ladder.retryNow}
+          message={
+            awaitingPublisher ? 'กำลังรอสัญญาณจาก Creator...' : 'กำลังเชื่อมต่อวิดีโอ...'
+          }
+        />
+      ) : null}
     </div>
   );
 }
 
-function ViewerOverlay({ phase, error }: { phase: ViewerPhase; error: string | null }) {
-  if (phase === 'ended') {
-    // The page paints its own "ไลฟ์จบแล้ว" panel with a link to the creator;
-    // this only keeps the video area from showing a frozen last frame.
-    return <div className="pointer-events-none absolute inset-0 z-20 bg-black/80" aria-hidden />;
-  }
-
-  if (phase === 'failed') {
-    return (
-      <div
-        role="alert"
-        // Inert, for the same reason HlsLivePlayer's is: nothing here is
-        // pressable, and it covers every control on the screen.
-        className="pointer-events-none absolute inset-0 z-20 grid place-items-center bg-black/85 px-6 text-center"
-      >
-        <div>
-          <WifiOff size={30} className="mx-auto text-rose-300" aria-hidden />
-          <p className="mt-3 text-base font-semibold text-white">เข้าชมไลฟ์ไม่สำเร็จ</p>
-          <p className="mx-auto mt-1 max-w-sm text-sm leading-relaxed text-white/55">
-            {error ?? 'การเชื่อมต่อขาดหาย'}
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center bg-black/70 px-6 text-center">
-      <div>
-        <Loader2 size={28} className="mx-auto animate-spin text-cyan-300" aria-hidden />
-        <p className="mt-3 text-sm text-white/80" role="status">
-          {phase === 'reconnecting' ? 'กำลังเชื่อมต่อใหม่...' : 'กำลังเชื่อมต่อ...'}
-        </p>
-      </div>
-    </div>
-  );
+/**
+ * The dark cover over a finished broadcast.
+ *
+ * Everything this used to draw — the connecting spinner and the failure panel
+ * — is now LiveRecoveryOverlay's, because both of those states are ones the
+ * ladder is actively working on and the viewer needs the countdown rather than
+ * a static message. 'ended' is the one state with nothing to recover: the page
+ * paints its own "ไลฟ์จบแล้ว" panel over the top, and this only keeps a frozen
+ * last frame from showing through.
+ */
+function ViewerOverlay() {
+  return <div className="pointer-events-none absolute inset-0 z-20 bg-black/80" aria-hidden />;
 }

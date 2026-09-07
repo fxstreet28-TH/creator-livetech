@@ -30,6 +30,30 @@ import type { LatencyMode } from './types';
 export type HlsPhase = 'loading' | 'waiting' | 'playing' | 'error';
 
 /**
+ * WHY a phase is not 'playing'. The distinction the self-healing ladder is
+ * built on.
+ *
+ * 'manifest_missing' is the CREATOR not being on air yet — the row says live
+ * from the moment the egress starts, and Bunny needs a few seconds of RTMP
+ * before it writes a playlist. It is the single most common reason this screen
+ * shows no picture and it is not a fault on the viewer's device. Everything
+ * else here is, or may be, and is worth escalating through.
+ *
+ * Getting this wrong in either direction is expensive: treat a missing
+ * manifest as a device fault and every viewer who arrives thirty seconds early
+ * gets their page reloaded for nothing; treat a wedged decoder as a missing
+ * manifest and the viewer sits on a spinner for two minutes while the ladder
+ * that would have fixed it never runs.
+ */
+export type HlsFailureReason =
+  | 'manifest_missing'
+  | 'cdn_refused'
+  | 'network'
+  | 'media'
+  | 'unsupported'
+  | 'unknown';
+
+/**
  * hls.js tuning per latency mode.
  *
  * `liveSyncDurationCount` is how many target-durations back from the live edge
@@ -86,11 +110,25 @@ export interface HlsAttachOptions {
   video: HTMLVideoElement;
   playbackUrl: string;
   latencyMode: LatencyMode;
-  onPhaseChange: (phase: HlsPhase) => void;
+  /** `reason` is only meaningful when the phase is not 'playing'. */
+  onPhaseChange: (phase: HlsPhase, reason?: HlsFailureReason) => void;
   /** Thai, renderable. Only called with phase 'error'. */
   onError: (message: string) => void;
   /** Fired when the browser refused to start audio without a gesture. */
   onAudioBlocked: (blocked: boolean) => void;
+  /**
+   * The browser refused to play AT ALL, even muted — iOS Low Power Mode is the
+   * usual cause.
+   *
+   * Reported separately from onAudioBlocked, which fires either way, because
+   * the two mean opposite things to the recovery ladder. A refused autoplay is
+   * a WORKING stream the browser is deliberately not advancing; it needs a
+   * tap, not a reconnect, and certainly not a page reload. Without this signal
+   * the native path — which only reaches 'playing' when the element actually
+   * plays — would be indistinguishable from a dead connection, and every iOS
+   * viewer in Low Power Mode would have their page reloaded on a timer.
+   */
+  onAutoplayRefused?: (refused: boolean) => void;
 }
 
 export interface HlsHandle {
@@ -110,16 +148,22 @@ export interface HlsHandle {
  * page is broken"; the UI then offers one tap to turn sound on. Starting
  * unmuted and hoping would show a stopped video to most of this audience.
  */
-async function startMuted(video: HTMLVideoElement, onAudioBlocked: (b: boolean) => void) {
+async function startMuted(
+  video: HTMLVideoElement,
+  onAudioBlocked: (b: boolean) => void,
+  onAutoplayRefused?: (refused: boolean) => void,
+) {
   video.muted = true;
   video.playsInline = true;
   try {
     await video.play();
     onAudioBlocked(true);
+    onAutoplayRefused?.(false);
   } catch {
     // Even muted autoplay can be refused (Low Power Mode on iOS, for one).
     // The player renders its own controls, so the viewer still has a way in.
     onAudioBlocked(true);
+    onAutoplayRefused?.(true);
   }
 }
 
@@ -131,7 +175,15 @@ async function startMuted(video: HTMLVideoElement, onAudioBlocked: (b: boolean) 
  * pulling segments — and billing bandwidth — after the component is gone.
  */
 export function attachHlsStream(options: HlsAttachOptions): HlsHandle {
-  const { video, playbackUrl, latencyMode, onPhaseChange, onError, onAudioBlocked } = options;
+  const {
+    video,
+    playbackUrl,
+    latencyMode,
+    onPhaseChange,
+    onError,
+    onAudioBlocked,
+    onAutoplayRefused,
+  } = options;
 
   let destroyed = false;
   let manifestRetries = 0;
@@ -145,18 +197,42 @@ export function attachHlsStream(options: HlsAttachOptions): HlsHandle {
   // cannot.
   if (!Hls.isSupported()) {
     if (!hasNativeHls(video)) {
-      onPhaseChange('error');
+      onPhaseChange('error', 'unsupported');
       onError('เบราว์เซอร์นี้ไม่รองรับการเล่นไลฟ์ กรุณาลองเบราว์เซอร์อื่น');
       return { unmute: async () => false, seekToLive: () => {}, destroy: () => {} };
     }
 
+    /**
+     * Safari reports one number for everything, so this is the best signal
+     * available on the path most of this audience is on.
+     *
+     * SRC_NOT_SUPPORTED is what a 404 playlist looks like here — the source
+     * could not be loaded or parsed — and it is the "creator is not on air"
+     * case. DECODE is the opposite and the interesting one: bytes arrived and
+     * the decoder would not take them, which is the wedged media stack a
+     * device reboot cures and the ladder now tries to cure instead.
+     */
+    const nativeReason = (): HlsFailureReason => {
+      switch (video.error?.code) {
+        case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
+          return 'manifest_missing';
+        case MediaError.MEDIA_ERR_NETWORK:
+          return 'network';
+        case MediaError.MEDIA_ERR_DECODE:
+          return 'media';
+        default:
+          return 'unknown';
+      }
+    };
+
     const onNativeError = () => {
       if (destroyed) return;
+      const reason = nativeReason();
       // Safari does not distinguish "not started yet" from "gone", so the
       // manifest is retried on the same budget hls.js gets.
       if (manifestRetries < MANIFEST_RETRY_LIMIT) {
         manifestRetries += 1;
-        onPhaseChange('waiting');
+        onPhaseChange('waiting', reason);
         retryTimer = setTimeout(() => {
           if (destroyed) return;
           video.src = playbackUrl;
@@ -164,7 +240,7 @@ export function attachHlsStream(options: HlsAttachOptions): HlsHandle {
         }, MANIFEST_RETRY_DELAY_MS);
         return;
       }
-      onPhaseChange('error');
+      onPhaseChange('error', reason);
       onError('เชื่อมต่อไลฟ์ไม่สำเร็จ กรุณาลองใหม่');
     };
 
@@ -176,7 +252,7 @@ export function attachHlsStream(options: HlsAttachOptions): HlsHandle {
     video.addEventListener('error', onNativeError);
     video.addEventListener('playing', onPlaying);
     video.src = playbackUrl;
-    void startMuted(video, onAudioBlocked);
+    void startMuted(video, onAudioBlocked, onAutoplayRefused);
 
     return {
       unmute: async () => {
@@ -184,6 +260,7 @@ export function attachHlsStream(options: HlsAttachOptions): HlsHandle {
         try {
           await video.play();
           onAudioBlocked(false);
+          onAutoplayRefused?.(false);
           return true;
         } catch {
           video.muted = true;
@@ -217,7 +294,7 @@ export function attachHlsStream(options: HlsAttachOptions): HlsHandle {
   hls.on(Hls.Events.MANIFEST_PARSED, () => {
     if (destroyed) return;
     manifestRetries = 0;
-    void startMuted(video, onAudioBlocked);
+    void startMuted(video, onAudioBlocked, onAutoplayRefused);
   });
   hls.on(Hls.Events.FRAG_BUFFERED, () => {
     if (!destroyed) onPhaseChange('playing');
@@ -254,14 +331,14 @@ export function attachHlsStream(options: HlsAttachOptions): HlsHandle {
     const httpStatus = data.response?.code;
     if (isManifestMissing && httpStatus === 403) {
       console.error('[live/hls] CDN refused the playlist (403)', data.response);
-      onPhaseChange('error');
+      onPhaseChange('error', 'cdn_refused');
       onError('ไม่มีสิทธิ์เข้าถึงสตรีม กรุณาโหลดหน้านี้ใหม่');
       return;
     }
 
     if (isManifestMissing && manifestRetries < MANIFEST_RETRY_LIMIT) {
       manifestRetries += 1;
-      onPhaseChange('waiting');
+      onPhaseChange('waiting', 'manifest_missing');
       retryTimer = setTimeout(load, MANIFEST_RETRY_DELAY_MS);
       return;
     }
@@ -276,7 +353,7 @@ export function attachHlsStream(options: HlsAttachOptions): HlsHandle {
      */
     if (isManifestMissing) {
       console.error('[live/hls] no playlist after the full retry budget', data.details, data.response);
-      onPhaseChange('error');
+      onPhaseChange('error', 'manifest_missing');
       onError('ไลฟ์นี้ยังไม่ส่งสัญญาณ กรุณาลองใหม่อีกครั้งภายหลัง');
       return;
     }
@@ -286,14 +363,14 @@ export function attachHlsStream(options: HlsAttachOptions): HlsHandle {
         // startLoad() resumes from the live edge rather than replaying, which
         // is what a viewer of a live stream wants after a dropout.
         hls.startLoad();
-        onPhaseChange('waiting');
+        onPhaseChange('waiting', 'network');
         return;
       case Hls.ErrorTypes.MEDIA_ERROR:
         hls.recoverMediaError();
-        onPhaseChange('waiting');
+        onPhaseChange('waiting', 'media');
         return;
       default:
-        onPhaseChange('error');
+        onPhaseChange('error', 'unknown');
         onError('การเล่นไลฟ์ขัดข้อง กรุณาโหลดหน้านี้ใหม่');
     }
   });
@@ -306,6 +383,7 @@ export function attachHlsStream(options: HlsAttachOptions): HlsHandle {
       try {
         await video.play();
         onAudioBlocked(false);
+        onAutoplayRefused?.(false);
         return true;
       } catch {
         video.muted = true;
