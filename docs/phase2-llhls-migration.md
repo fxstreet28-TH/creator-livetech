@@ -170,6 +170,21 @@ only in production.
 
 ## 5a. BLOCKER: Bunny accepts the RTMP feed but never produces a playlist
 
+> **Re-tested 2026-09-07 — still broken, and now isolated to Bunny.** See
+> `phase2-llhls-retest-2026-09-07.md`. The failure reproduces with a LiveKit
+> *web* egress: no room, no publisher, no camera, no filter canvas, no product
+> code — just a standard H.264/AAC RTMP push. Six minutes of it, sender
+> reporting `ACTIVE` with zero retries; Bunny populated `width`/`height`/
+> `framerate` within seconds and then held `status: 1`, `startedAt: null`,
+> playlist `404`.
+>
+> Two claims below are **wrong** and are corrected in that document: the pull
+> zone does not "return 403 to this infrastructure for every path" (that was
+> the agent sandbox's egress proxy, plus Bunny's block on requests with no
+> `Referer` — with a referrer the same paths return 200/404 normally, and no
+> viewer was ever affected), and `bunny_stream_token_key` **does** now exist in
+> the vault. A live guid also no longer resolves at `/videos/{guid}`.
+
 Found 2026-09-01 after three live tests where the viewer sat on
 "กำลังรอสัญญาณจาก Creator..." for the whole broadcast while chat worked fine.
 
