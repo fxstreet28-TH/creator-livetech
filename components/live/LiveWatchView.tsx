@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * The body of /live/[sessionId]: the player, the chat, the creator, and the
@@ -29,30 +29,30 @@
  * entitlement cannot be read from `live_sessions` alone.
  */
 
-import Link from 'next/link';
-import { AlertTriangle, Gift } from 'lucide-react';
-import { AnimatePresence } from 'framer-motion';
-import { useIsMobileViewport } from '@/lib/hooks/useIsMobileViewport';
-import { useLiveViewer } from '@/lib/hooks/useLiveViewer';
-import { CreatorInlineCard } from '@/components/viewer/CreatorInlineCard';
-import { ViewerPageShell } from '@/components/viewer/ViewerPageShell';
-import { FeedbackToast } from '@/components/feedback/FeedbackToast';
-import { GiftDrawer } from './gifts/GiftDrawer';
-import { GiftOverlay } from './gifts/GiftOverlay';
+import Link from "next/link";
+import { AlertTriangle, Gift } from "lucide-react";
+import { AnimatePresence } from "framer-motion";
+import { useIsMobileViewport } from "@/lib/hooks/useIsMobileViewport";
+import { useLiveViewer } from "@/lib/hooks/useLiveViewer";
+import { CreatorInlineCard } from "@/components/viewer/CreatorInlineCard";
+import { ViewerPageShell } from "@/components/viewer/ViewerPageShell";
+import { FeedbackToast } from "@/components/feedback/FeedbackToast";
+import { GiftDrawer } from "./gifts/GiftDrawer";
+import { GiftOverlay } from "./gifts/GiftOverlay";
 import {
   creatorDisplayName,
   creatorHandleLabel,
   creatorProfileHref,
-} from '@/components/viewer/creatorDisplay';
-import type { CreatorSummary } from '@/lib/viewer/types';
-import { EmojiReactionButton } from './EmojiReactionButton';
-import { FloatingReactionsLayer } from './FloatingReactionsLayer';
-import { HlsLivePlayer } from './HlsLivePlayer';
-import { LiveAccessLockCard } from './LiveAccessLockCard';
-import { LiveChat } from './LiveChat';
-import { LiveEndedCard } from './LiveEndedCard';
-import { LiveKitLivePlayer } from './LiveKitLivePlayer';
-import { LiveViewerMobile } from './mobile/LiveViewerMobile';
+} from "@/components/viewer/creatorDisplay";
+import type { CreatorSummary } from "@/lib/viewer/types";
+import { EmojiReactionButton } from "./EmojiReactionButton";
+import { FloatingReactionsLayer } from "./FloatingReactionsLayer";
+import { HlsLivePlayer } from "./HlsLivePlayer";
+import { LiveAccessLockCard } from "./LiveAccessLockCard";
+import { LiveChat } from "./LiveChat";
+import { LiveEndedCard } from "./LiveEndedCard";
+import { LiveKitLivePlayer } from "./LiveKitLivePlayer";
+import { LiveViewerMobile } from "./mobile/LiveViewerMobile";
 
 export function LiveWatchView({ sessionId }: { sessionId: string }) {
   /**
@@ -62,7 +62,16 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
    */
   const mobile = useIsMobileViewport();
   const state = useLiveViewer(sessionId, { preloadGiftTiers: mobile === true });
-  const { session, creator, watch, loading, refresh, title, elapsedSeconds, channel } = state;
+  const {
+    session,
+    creator,
+    watch,
+    loading,
+    refresh,
+    title,
+    elapsedSeconds,
+    channel,
+  } = state;
 
   const giftDrawer = (
     <GiftDrawer
@@ -82,7 +91,11 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
   const toaster = (
     <AnimatePresence>
       {state.toast && (
-        <FeedbackToast key={state.toast.key} toast={state.toast} onDismiss={state.dismissToast} />
+        <FeedbackToast
+          key={state.toast.key}
+          toast={state.toast}
+          onDismiss={state.dismissToast}
+        />
       )}
     </AnimatePresence>
   );
@@ -99,13 +112,19 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
 
   if (loading) {
     return (
-      <ViewerPageShell title="กำลังโหลด..." width="detail" backHref="/discover?tab=live" backLabel="กลับไปที่ไลฟ์" bare>
+      <ViewerPageShell
+        title="กำลังโหลด..."
+        width="detail"
+        backHref="/discover?tab=live"
+        backLabel="กลับไปที่ไลฟ์"
+        bare
+      >
         <div className="h-96 animate-pulse rounded-2xl border border-white/10 bg-white/5" />
       </ViewerPageShell>
     );
   }
 
-  if (watch.kind === 'not_found') {
+  if (watch.kind === "not_found") {
     return (
       <StatePanel
         heading="ไม่พบไลฟ์นี้"
@@ -115,7 +134,7 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
     );
   }
 
-  if (watch.kind === 'ended' || watch.kind === 'cancelled') {
+  if (watch.kind === "ended" || watch.kind === "cancelled") {
     /*
       On a phone the layout STAYS and the video is what is replaced — top bar,
       creator, the way out, all where they were a second ago. On the desktop
@@ -133,25 +152,31 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
 
     return (
       <StatePanel
-        heading={watch.kind === 'ended' ? 'ไลฟ์นี้จบแล้ว' : 'ไลฟ์ถูกยกเลิก'}
+        heading={watch.kind === "ended" ? "ไลฟ์นี้จบแล้ว" : "ไลฟ์ถูกยกเลิก"}
         body={
-          watch.kind === 'ended'
+          watch.kind === "ended"
             ? // Bunny can now record a live to a VOD, but only when the creator
               // asked for it before going on air — it cannot be turned on
               // retroactively — so most finished sessions still have nothing to
               // offer, and promising a replay would be wrong more often than
               // right.
-              'ไม่มีการบันทึกไลฟ์นี้ — ติดตาม Creator ไว้เพื่อไม่พลาดไลฟ์ครั้งถัดไป'
-            : 'Creator ยกเลิกไลฟ์นี้ก่อนเริ่มถ่ายทอด'
+              "ไม่มีการบันทึกไลฟ์นี้ — ติดตาม Creator ไว้เพื่อไม่พลาดไลฟ์ครั้งถัดไป"
+            : "Creator ยกเลิกไลฟ์นี้ก่อนเริ่มถ่ายทอด"
         }
         creator={creator}
       />
     );
   }
 
-  if (watch.kind === 'locked') {
+  if (watch.kind === "locked") {
     return (
-      <ViewerPageShell title={title} width="detail" backHref="/discover?tab=live" backLabel="กลับไปที่ไลฟ์" bare>
+      <ViewerPageShell
+        title={title}
+        width="detail"
+        backHref="/discover?tab=live"
+        backLabel="กลับไปที่ไลฟ์"
+        bare
+      >
         <LiveAccessLockCard
           type={watch.level}
           title={session?.title ?? null}
@@ -163,13 +188,24 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
     );
   }
 
-  if (watch.kind === 'error' || watch.kind === 'pending') {
+  if (watch.kind === "error" || watch.kind === "pending") {
     return (
-      <ViewerPageShell title="เข้าชมไลฟ์ไม่สำเร็จ" width="detail" backHref="/discover?tab=live" backLabel="กลับไปที่ไลฟ์">
+      <ViewerPageShell
+        title="เข้าชมไลฟ์ไม่สำเร็จ"
+        width="detail"
+        backHref="/discover?tab=live"
+        backLabel="กลับไปที่ไลฟ์"
+      >
         <section className="rounded-2xl border border-rose-400/25 bg-rose-500/10 p-8 text-center">
-          <AlertTriangle size={30} className="mx-auto text-rose-300" aria-hidden />
+          <AlertTriangle
+            size={30}
+            className="mx-auto text-rose-300"
+            aria-hidden
+          />
           <p className="mt-3 text-base font-semibold text-white">
-            {watch.kind === 'error' ? watch.message : 'เข้าชมไลฟ์ไม่สำเร็จ กรุณาลองใหม่'}
+            {watch.kind === "error"
+              ? watch.message
+              : "เข้าชมไลฟ์ไม่สำเร็จ กรุณาลองใหม่"}
           </p>
           <button
             type="button"
@@ -237,8 +273,10 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
             viewport height instead, so the ratio is released and the player
             fills the column. */}
         <div className="relative flex aspect-video max-h-[55dvh] min-h-0 w-full flex-col lg:aspect-auto lg:max-h-none">
-          {watch.kind === 'hls' ? (
+          {watch.kind === "hls" ? (
             <HlsLivePlayer
+              sessionId={sessionId}
+              recoveryEnabled={!state.endedWhileWatching}
               playbackUrl={watch.playbackUrl}
               latencyMode={watch.latencyMode}
               title={title}
@@ -248,6 +286,8 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
             />
           ) : (
             <LiveKitLivePlayer
+              sessionId={sessionId}
+              recoveryEnabled={!state.endedWhileWatching}
               wsUrl={watch.wsUrl}
               token={watch.token}
               title={title}
@@ -329,10 +369,17 @@ function StatePanel({
   const label = creatorHandleLabel(creator) ?? creatorDisplayName(creator);
 
   return (
-    <ViewerPageShell title={heading} width="detail" backHref="/discover?tab=live" backLabel="กลับไปที่ไลฟ์">
+    <ViewerPageShell
+      title={heading}
+      width="detail"
+      backHref="/discover?tab=live"
+      backLabel="กลับไปที่ไลฟ์"
+    >
       <div className="rounded-2xl border border-white/10 bg-white/5 p-10 text-center backdrop-blur-xl">
         <p className="text-base font-semibold text-white">{heading}</p>
-        <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-white/55">{body}</p>
+        <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-white/55">
+          {body}
+        </p>
         <div className="mt-5 flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
           {profileHref && (
             <Link

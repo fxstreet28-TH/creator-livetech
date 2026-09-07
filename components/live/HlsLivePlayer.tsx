@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * The viewer's player: a Bunny LL-HLS stream in a plain <video>.
@@ -27,16 +27,25 @@
  * this component knows nothing about either.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Loader2, Play, Volume2, WifiOff } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Loader2, Play, Volume2, WifiOff } from "lucide-react";
 import {
   MANIFEST_RETRY_BUDGET_MS,
   attachHlsStream,
+  type HlsFailureReason,
   type HlsHandle,
   type HlsPhase,
-} from '@/lib/live/hlsPlayer';
-import type { LatencyMode } from '@/lib/live/types';
-import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
+} from "@/lib/live/hlsPlayer";
+import {
+  useRecoveryLadder,
+  type PlaybackHealth,
+} from "@/lib/live/useRecoveryLadder";
+import { useStaleBuildGuard } from "@/lib/live/useStaleBuildGuard";
+import { useVideoFrameWatchdog } from "@/lib/live/useVideoFrameWatchdog";
+import { useWakeRecheck } from "@/lib/live/useWakeRecheck";
+import type { LatencyMode } from "@/lib/live/types";
+import { LiveRecoveryOverlay } from "./LiveRecoveryOverlay";
+import { DurationPill, LiveBadge, ViewerCountPill } from "./LiveStatsBar";
 
 /**
  * How the player is dressed, not what it plays.
@@ -52,7 +61,7 @@ import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
  * the same three numbers, laid out for a thumb) and stops drawing controls
  * (they would sit exactly where the input row is). See LiveViewerMobile.
  */
-export type PlayerPresentation = 'framed' | 'fullbleed';
+export type PlayerPresentation = "framed" | "fullbleed";
 
 /**
  * How a full-bleed video fills the screen. Nothing else reads it.
@@ -67,9 +76,11 @@ export type PlayerPresentation = 'framed' | 'fullbleed';
  * 'contain' is the viewer's own opt-in, from the ⛶ button the phone layout
  * draws in its top bar (see LiveViewerMobile). Nothing chooses it for them.
  */
-export type PlayerFit = 'cover' | 'contain';
+export type PlayerFit = "cover" | "contain";
 
 interface HlsLivePlayerProps {
+  /** For the diagnostics rows the recovery ladder writes. */
+  sessionId: string;
   playbackUrl: string;
   latencyMode: LatencyMode;
   title: string;
@@ -80,23 +91,33 @@ interface HlsLivePlayerProps {
   presentation?: PlayerPresentation;
   /** Full-bleed only. Defaults to 'cover' — see PlayerFit. */
   fit?: PlayerFit;
+  /**
+   * Off once the broadcast is over.
+   *
+   * A finished live has nothing to reconnect TO, and a ladder left running
+   * against one would escalate all the way to reloading the page of a viewer
+   * who is reading the "ไลฟ์จบแล้ว" card.
+   */
+  recoveryEnabled?: boolean;
 }
 
 export function HlsLivePlayer({
+  sessionId,
   playbackUrl,
   latencyMode,
   title,
   elapsedSeconds,
   viewerCount,
   overlay,
-  presentation = 'framed',
-  fit = 'cover',
+  presentation = "framed",
+  fit = "cover",
+  recoveryEnabled = true,
 }: HlsLivePlayerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const handleRef = useRef<HlsHandle | null>(null);
-  const fullBleed = presentation === 'fullbleed';
+  const fullBleed = presentation === "fullbleed";
 
-  const [phase, setPhase] = useState<HlsPhase>('loading');
+  const [phase, setPhase] = useState<HlsPhase>("loading");
   const [error, setError] = useState<string | null>(null);
   const [audioBlocked, setAudioBlocked] = useState(false);
   /**
@@ -125,22 +146,101 @@ export function HlsLivePlayer({
   const [waitingSeconds, setWaitingSeconds] = useState(0);
 
   /**
+   * WHY there is no picture, which is a different question from whether there
+   * is one — see HlsFailureReason.
+   *
+   * A missing manifest means the creator has not started pushing frames, and
+   * the recovery ladder must sit still through it: escalating would reload the
+   * page of every viewer who arrived early, and the reload would fix nothing
+   * because nothing here is broken.
+   */
+  const [failureReason, setFailureReason] = useState<HlsFailureReason | null>(
+    null,
+  );
+
+  /** True between the watchdog spotting a frozen picture and frames resuming. */
+  const [stalled, setStalled] = useState(false);
+  /**
+   * The browser refused to play even muted — iOS Low Power Mode, mainly.
+   *
+   * NOT a fault, and the distinction is load-bearing. The stream is fine and
+   * the browser is deliberately not advancing it; what that needs is a tap. On
+   * the native Safari path the phase never reaches 'playing' in this state, so
+   * without this flag the ladder would read a healthy stream as a dead one and
+   * reload the page of every iOS viewer in Low Power Mode, on a timer, forever.
+   */
+  const [autoplayRefused, setAutoplayRefused] = useState(false);
+
+  /**
    * Phase changes come from the player, which is the external system this
    * component is synchronising with — so the wait clock is started and cleared
    * here, in its callback, rather than in an effect watching `phase`.
    */
-  const handlePhaseChange = useCallback((next: HlsPhase) => {
-    if (next === 'waiting') {
-      // Only on entering the wait: a stream that stalls, recovers and stalls
-      // again should count from the start of the CURRENT wait, and the retry
-      // loop reports 'waiting' repeatedly while one wait is still running.
-      waitStartedAtRef.current ??= Date.now();
-    } else {
-      waitStartedAtRef.current = null;
-      setWaitingSeconds(0);
-    }
-    setPhase(next);
-  }, []);
+  const handlePhaseChange = useCallback(
+    (next: HlsPhase, reason?: HlsFailureReason) => {
+      setFailureReason(next === "playing" ? null : (reason ?? null));
+      if (next === "playing") setStalled(false);
+      if (next === "waiting") {
+        // Only on entering the wait: a stream that stalls, recovers and stalls
+        // again should count from the start of the CURRENT wait, and the retry
+        // loop reports 'waiting' repeatedly while one wait is still running.
+        waitStartedAtRef.current ??= Date.now();
+      } else {
+        waitStartedAtRef.current = null;
+        setWaitingSeconds(0);
+      }
+      setPhase(next);
+    },
+    [],
+  );
+
+  /**
+   * A browser that cannot play HLS at all.
+   *
+   * The one failure no amount of retrying touches, so the ladder is switched
+   * off for it and the original message — which names the actual remedy,
+   * trying a different browser — is shown instead of a card offering to try
+   * again.
+   */
+  const unrecoverable = failureReason === "unsupported";
+
+  /**
+   * What the ladder is told about us.
+   *
+   * 'paused' for a missing manifest is the whole of the early-viewer
+   * protection: the creator has not started pushing frames, nothing on this
+   * device is broken, and escalating would reload the page of everyone who
+   * arrived a few seconds early. Every other reason — a refused playlist, a
+   * network fault, a decoder that will not take the bytes, or simply never
+   * reaching 'playing' — is this device's problem to fix.
+   */
+  const health: PlaybackHealth =
+    failureReason === "manifest_missing"
+      ? "paused"
+      : // A browser that will not autoplay is not a broken one — see the flag.
+        autoplayRefused
+        ? "healthy"
+        : phase === "playing" && !stalled
+          ? "healthy"
+          : "unhealthy";
+
+  const ladder = useRecoveryLadder({
+    sessionId,
+    delivery: "hls",
+    health,
+    enabled: recoveryEnabled && !unrecoverable,
+  });
+
+  /**
+   * The HLS analogue of the ladder's 'relay' rung.
+   *
+   * There is no ICE here to route around, but there is the same trade: the
+   * conservative profile buffers four segments back instead of chasing the
+   * live edge, which is what survives a connection that cannot hold it. A
+   * viewer two seconds further behind is a viewer who is watching.
+   */
+  const effectiveLatencyMode: LatencyMode =
+    ladder.step === "normal" ? latencyMode : "standard";
 
   useEffect(() => {
     const video = videoRef.current;
@@ -151,10 +251,11 @@ export function HlsLivePlayer({
     const handle = attachHlsStream({
       video,
       playbackUrl,
-      latencyMode,
+      latencyMode: effectiveLatencyMode,
       onPhaseChange: handlePhaseChange,
       onError: setError,
       onAudioBlocked: setAudioBlocked,
+      onAutoplayRefused: setAutoplayRefused,
     });
     handleRef.current = handle;
 
@@ -165,7 +266,57 @@ export function HlsLivePlayer({
       // bandwidth after the component has gone.
       handle.destroy();
     };
-  }, [playbackUrl, latencyMode, handlePhaseChange]);
+    // attemptKey is what makes every rung of the ladder actually happen: each
+    // escalation throws this player away and builds a new one.
+  }, [playbackUrl, effectiveLatencyMode, handlePhaseChange, ladder.attemptKey]);
+
+  /**
+   * The picture froze while everything claimed to be fine.
+   *
+   * Marking it stalled is what turns `health` unhealthy and starts the clock;
+   * restartNow re-attaches immediately rather than waiting for the first rung,
+   * because a frozen picture is not a connect that might still be in progress.
+   */
+  const handleStall = useCallback(
+    (detail: Record<string, unknown>) => {
+      setStalled(true);
+      ladder.restartNow("watchdog", detail);
+    },
+    [ladder],
+  );
+
+  useVideoFrameWatchdog({
+    getVideo: useCallback(() => videoRef.current, []),
+    active: recoveryEnabled && phase === "playing",
+    onStall: handleStall,
+  });
+
+  useWakeRecheck({
+    enabled: recoveryEnabled,
+    isHealthy: useCallback(() => {
+      const video = videoRef.current;
+      return (
+        phase === "playing" &&
+        !stalled &&
+        !!video &&
+        !video.paused &&
+        video.readyState >= 2
+      );
+    }, [phase, stalled]),
+    onWake: useCallback(
+      (detail: Record<string, unknown>) => ladder.restartNow("wake", detail),
+      [ladder],
+    ),
+  });
+
+  useStaleBuildGuard({
+    sessionId,
+    delivery: "hls",
+    // A first escalation IS a connect failure, and it is the moment the answer
+    // matters — a stale bundle is the one cause the ladder itself cannot fix.
+    connectFailed: phase === "error" || ladder.step !== "normal",
+    enabled: recoveryEnabled,
+  });
 
   /**
    * Recomputed from the start time on every tick rather than incremented.
@@ -175,10 +326,11 @@ export function HlsLivePlayer({
    * waiting for a creator to appear.
    */
   useEffect(() => {
-    if (phase !== 'waiting') return;
+    if (phase !== "waiting") return;
     const timer = setInterval(() => {
       const startedAt = waitStartedAtRef.current;
-      if (startedAt !== null) setWaitingSeconds(Math.floor((Date.now() - startedAt) / 1000));
+      if (startedAt !== null)
+        setWaitingSeconds(Math.floor((Date.now() - startedAt) / 1000));
     }, 1000);
     return () => clearInterval(timer);
   }, [phase]);
@@ -193,10 +345,11 @@ export function HlsLivePlayer({
    */
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === 'visible') handleRef.current?.seekToLive();
+      if (document.visibilityState === "visible")
+        handleRef.current?.seekToLive();
     };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => document.removeEventListener('visibilitychange', onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
 
   const enableAudio = useCallback(async () => {
@@ -219,11 +372,20 @@ export function HlsLivePlayer({
     <div
       className={
         fullBleed
-          ? 'fixed inset-0 z-0 h-[100dvh] w-screen overflow-hidden bg-black'
-          : 'relative min-h-0 flex-1 overflow-hidden bg-black lg:rounded-2xl lg:border lg:border-white/10'
+          ? "fixed inset-0 z-0 h-[100dvh] w-screen overflow-hidden bg-black"
+          : "relative min-h-0 flex-1 overflow-hidden bg-black lg:rounded-2xl lg:border lg:border-white/10"
       }
     >
       <video
+        /*
+          Replaced outright on the 'rebuild' rung — a NEW element, not a
+          re-attached one. That is the point of that rung: a decoder wedged
+          inside this element cannot be argued with, only discarded, and this
+          is the cheapest way to say so in React. Keyed off rebuildKey rather
+          than attemptKey so the earlier, cheaper rungs keep whatever the
+          browser has already buffered.
+        */
+        key={ladder.rebuildKey}
         ref={videoRef}
         playsInline
         // Controls are on because this is a <video> the viewer owns — unlike
@@ -244,12 +406,16 @@ export function HlsLivePlayer({
         // framed layout stays `contain`, where letterboxing inside a 16:9 box
         // is correct.
         className={`absolute inset-0 h-full w-full ${
-          fullBleed && fit === 'cover' ? 'object-cover' : 'object-contain'
+          fullBleed && fit === "cover" ? "object-cover" : "object-contain"
         }`}
         // Faces sit in the upper third of a broadcast, so a 16:9 frame cropped
         // to 9:19.5 should keep the top of the shot rather than the middle of
         // it. Only meaningful while cropping.
-        style={fullBleed && fit === 'cover' ? { objectPosition: '50% 30%' } : undefined}
+        style={
+          fullBleed && fit === "cover"
+            ? { objectPosition: "50% 30%" }
+            : undefined
+        }
       />
 
       {/* The page's own top bar carries the same three numbers in full-bleed,
@@ -257,7 +423,7 @@ export function HlsLivePlayer({
       {!fullBleed && (
         <>
           <div className="pointer-events-none absolute left-3 top-3 z-10 flex max-w-[70%] items-center gap-2">
-            <LiveBadge pulse={phase === 'playing'} />
+            <LiveBadge pulse={phase === "playing"} />
             <span className="truncate rounded-full bg-black/55 px-2.5 py-1 text-[11px] text-white backdrop-blur-sm">
               {title}
             </span>
@@ -272,7 +438,7 @@ export function HlsLivePlayer({
 
       {overlay}
 
-      {audioBlocked && phase === 'playing' && (
+      {audioBlocked && phase === "playing" && (
         <button
           type="button"
           onClick={() => void enableAudio()}
@@ -281,7 +447,7 @@ export function HlsLivePlayer({
           // difference between a silent stream and a working one. In full-bleed
           // it clears the chat column and the input row instead.
           className={`absolute left-1/2 z-20 inline-flex min-h-11 -translate-x-1/2 items-center gap-2 rounded-full bg-white/15 px-4 py-2 text-sm font-semibold text-white backdrop-blur-md transition hover:bg-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400 ${
-            fullBleed ? 'top-[38%]' : 'bottom-20'
+            fullBleed ? "top-[38%]" : "bottom-20"
           }`}
         >
           <Volume2 size={16} aria-hidden />
@@ -295,10 +461,17 @@ export function HlsLivePlayer({
         controls; full-bleed has none, so a paused video would otherwise be a
         black screen with no affordance on it at all.
       */}
-      {fullBleed && paused && phase === 'playing' && (
+      {fullBleed && (autoplayRefused || (paused && phase === "playing")) && (
         <button
           type="button"
-          onClick={() => void videoRef.current?.play().catch(() => undefined)}
+          onClick={() => {
+            const video = videoRef.current;
+            if (!video) return;
+            void video
+              .play()
+              .then(() => setAutoplayRefused(false))
+              .catch(() => undefined);
+          }}
           className="absolute left-1/2 top-1/2 z-20 inline-flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white/15 text-white backdrop-blur-md transition hover:bg-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
         >
           <Play size={26} aria-hidden />
@@ -306,9 +479,40 @@ export function HlsLivePlayer({
         </button>
       )}
 
-      {phase !== 'playing' && (
-        <PlayerOverlay phase={phase} error={error} waitingSeconds={waitingSeconds} />
-      )}
+      {unrecoverable ? (
+        <PlayerOverlay
+          phase="error"
+          error={error}
+          waitingSeconds={waitingSeconds}
+        />
+      ) : phase !== "playing" || stalled || ladder.exhausted ? (
+        <LiveRecoveryOverlay
+          step={ladder.step}
+          secondsToNextStep={ladder.secondsToNextStep}
+          exhausted={ladder.exhausted}
+          onRetry={ladder.retryNow}
+          /*
+            The creator-is-not-here copy survives unchanged, because that state
+            is not a failure and must not start reading like one. Everything
+            else says the same neutral thing whichever rung is running: which
+            rung it is cannot be acted on by a viewer, and naming it would make
+            a working recovery look like an escalating fault.
+          */
+          message={
+            failureReason === "manifest_missing"
+              ? "กำลังรอสัญญาณจาก Creator..."
+              : "กำลังเชื่อมต่อวิดีโอ..."
+          }
+          detail={
+            failureReason === "manifest_missing" ? (
+              <p className="mt-1 text-xs tabular-nums text-white/40">
+                {formatWait(waitingSeconds)} / รอสูงสุด{" "}
+                {formatWait(MANIFEST_RETRY_BUDGET_MS / 1000)}
+              </p>
+            ) : null
+          }
+        />
+      ) : null}
     </div>
   );
 }
@@ -316,7 +520,7 @@ export function HlsLivePlayer({
 /** m:ss, for the wait counter. */
 function formatWait(seconds: number): string {
   const whole = Math.max(0, Math.floor(seconds));
-  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
 }
 
 /**
@@ -336,7 +540,7 @@ function PlayerOverlay({
   error: string | null;
   waitingSeconds: number;
 }) {
-  if (phase === 'error') {
+  if (phase === "error") {
     return (
       <div
         role="alert"
@@ -347,9 +551,11 @@ function PlayerOverlay({
       >
         <div>
           <WifiOff size={30} className="mx-auto text-rose-300" aria-hidden />
-          <p className="mt-3 text-base font-semibold text-white">เข้าชมไลฟ์ไม่สำเร็จ</p>
+          <p className="mt-3 text-base font-semibold text-white">
+            เข้าชมไลฟ์ไม่สำเร็จ
+          </p>
           <p className="mx-auto mt-1 max-w-sm text-sm leading-relaxed text-white/55">
-            {error ?? 'การเชื่อมต่อขาดหาย'}
+            {error ?? "การเชื่อมต่อขาดหาย"}
           </p>
         </div>
       </div>
@@ -359,13 +565,20 @@ function PlayerOverlay({
   return (
     <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center bg-black/70 px-6 text-center">
       <div>
-        <Loader2 size={28} className="mx-auto animate-spin text-cyan-300" aria-hidden />
+        <Loader2
+          size={28}
+          className="mx-auto animate-spin text-cyan-300"
+          aria-hidden
+        />
         <p className="mt-3 text-sm text-white/80" role="status">
-          {phase === 'waiting' ? 'กำลังรอสัญญาณจาก Creator...' : 'กำลังโหลดไลฟ์...'}
+          {phase === "waiting"
+            ? "กำลังรอสัญญาณจาก Creator..."
+            : "กำลังโหลดไลฟ์..."}
         </p>
-        {phase === 'waiting' && (
+        {phase === "waiting" && (
           <p className="mt-1 text-xs tabular-nums text-white/40">
-            {formatWait(waitingSeconds)} / รอสูงสุด {formatWait(MANIFEST_RETRY_BUDGET_MS / 1000)}
+            {formatWait(waitingSeconds)} / รอสูงสุด{" "}
+            {formatWait(MANIFEST_RETRY_BUDGET_MS / 1000)}
           </p>
         )}
       </div>
