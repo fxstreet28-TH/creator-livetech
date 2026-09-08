@@ -144,6 +144,24 @@ export async function publishWhip(options: WhipPublishOptions): Promise<WhipSess
       ],
     });
 
+    /**
+     * H.264 first in the offer. Without this the origin path delivers audio.
+     *
+     * MediaMTX muxes WHIP straight into HLS, and HLS carries H.264/H.265 only.
+     * Chrome offers VP8 ahead of H.264, MediaMTX accepts what it is offered,
+     * and then drops the track it cannot mux — which in the origin-sg-1 logs
+     * reads as:
+     *
+     *   [WebRTC] [session ...] is publishing ..., 2 tracks (Opus, VP8)
+     *   [HLS] [muxer ...] skipping track 2 (VP8)
+     *   [HLS] [muxer ...] is converting into HLS, 1 track (Opus)
+     *
+     * A broadcast that publishes successfully and delivers a black screen with
+     * sound. iPhone publishers never hit it — Safari offers H.264 first — which
+     * is exactly why it survived the first round of origin testing.
+     */
+    preferH264(videoTransceiver);
+
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
@@ -242,6 +260,59 @@ async function postOffer(
   }
 
   return { answerSdp, resourceUrl };
+}
+
+/**
+ * Reorder the video transceiver's codecs so H.264 is offered first.
+ *
+ * REORDERS, NEVER FILTERS. It would be tempting to hand back only the H.264
+ * entries, but the capability list also carries `rtx` (retransmission), `red`
+ * and `ulpfec`, and dropping those from the offer costs the loss recovery this
+ * publisher needs most on a phone.
+ *
+ * Packetization-mode 1 is put ahead of the rest of the H.264 entries: mode 0
+ * carries one NAL unit per packet and cannot fragment a keyframe across the
+ * MTU, which is the wrong shape for a 720p broadcast, and FU-A — the
+ * fragmentation mode 1 enables — is what MediaMTX's depacketizer expects.
+ *
+ * Every step is optional somewhere. `setCodecPreferences` did not exist on
+ * Safari before 15.4, `getCapabilities` can return null, and the call itself
+ * throws if the browser dislikes the list. None of that is worth failing a
+ * go-live over: the fallback is the browser's own order, which is what shipped
+ * before this function existed.
+ */
+function preferH264(transceiver: RTCRtpTransceiver): void {
+  if (typeof RTCRtpTransceiver === 'undefined') return;
+  if (!('setCodecPreferences' in RTCRtpTransceiver.prototype)) return;
+
+  // Sender capabilities, not receiver: this transceiver is `sendonly`, so the
+  // question is what this browser can ENCODE. The receiver set is a superset
+  // and can name codecs the encoder has no support for.
+  const codecs =
+    RTCRtpSender.getCapabilities?.('video')?.codecs ??
+    RTCRtpReceiver.getCapabilities?.('video')?.codecs;
+  if (!codecs || codecs.length === 0) return;
+
+  const isH264 = (codec: RTCRtpCodec) => codec.mimeType.toLowerCase() === 'video/h264';
+  if (!codecs.some(isH264)) {
+    console.warn('[whipClient] no H.264 encoder on this browser; HLS output will be audio-only');
+    return;
+  }
+
+  const fragmentable = (codec: RTCRtpCodec) =>
+    codec.sdpFmtpLine?.includes('packetization-mode=1') ?? false;
+
+  const ordered = [
+    ...codecs.filter((codec) => isH264(codec) && fragmentable(codec)),
+    ...codecs.filter((codec) => isH264(codec) && !fragmentable(codec)),
+    ...codecs.filter((codec) => !isH264(codec)),
+  ];
+
+  try {
+    transceiver.setCodecPreferences(ordered);
+  } catch (err) {
+    console.warn('[whipClient] setCodecPreferences failed; using the default order', err);
+  }
 }
 
 /**
