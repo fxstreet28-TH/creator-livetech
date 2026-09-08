@@ -15,10 +15,12 @@
  * `public/dev/live-sample/` is a 1280 x 720 clip packaged as a short VOD HLS
  * playlist, so the player mounted here is the production one — HlsLivePlayer,
  * lib/live/hlsPlayer.ts, hls.js — attached to a real 16:9 source. That is the
- * only way to check the thing this layout is actually judged on: whether a
- * landscape broadcast fills a portrait phone edge to edge, or sits in a band
- * with black above and below it. The clip's own edges are colour-coded so a
- * letterbox cannot hide in a screenshot; see the README beside it.
+ * only way to check the thing this layout is actually judged on: what a phone
+ * does with a source that is not the shape of its screen. A landscape one is
+ * LETTERBOXED, whole frame visible with bars above and below it, and the clip's
+ * own edges are colour-coded so a screenshot can prove both of them are on
+ * screen — see the README beside it. Tapping ⛶ is the other half of the check:
+ * the same clip cropped edge to edge, which is the viewer's opt-in.
  *
  * "video: none" switches back to the unreachable URL, which is how to see the
  * player's real "กำลังรอสัญญาณ" waiting state.

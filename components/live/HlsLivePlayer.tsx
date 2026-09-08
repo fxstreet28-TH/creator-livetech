@@ -67,17 +67,47 @@ export type PlayerPresentation = "framed" | "fullbleed";
 /**
  * How a full-bleed video fills the screen. Nothing else reads it.
  *
- * 'cover' is the default and it is not conditional on the source's shape. A
- * 9:16 phone is the canvas; a 16:9 desktop broadcast is CROPPED to fill it,
- * sides cut, exactly the way TikTok and IG Live show a landscape stream. The
- * previous rule here — letterbox a landscape source with `contain` — is what
- * put black bars above and below the picture on every phone watching a creator
- * who streams from a desktop, which is most of them.
+ * 'cover' fills the phone and CROPS whatever does not fit — correct for a
+ * portrait source, which is what a mobile broadcaster publishes, and where
+ * `object-position: 50% 30%` keeps the face rather than the middle.
  *
- * 'contain' is the viewer's own opt-in, from the ⛶ button the phone layout
- * draws in its top bar (see LiveViewerMobile). Nothing chooses it for them.
+ * 'contain' draws the whole frame inside the screen and letterboxes the
+ * difference — correct for a LANDSCAPE source, because a 16:9 desktop
+ * broadcast cropped to 9:19.5 loses about two thirds of its width, and a
+ * creator sits where their camera is aimed: in the part that gets cut.
+ * Facebook Live and YouTube Live have shown landscape broadcasts to portrait
+ * viewers this way for years; black bars are a smaller loss than the face.
+ *
+ * NEITHER IS A DEFAULT. The player does not choose — it reports the source's
+ * shape (see SourceOrientation) and the phone layout resolves that, plus the
+ * viewer's own ⛶ override, into this. See LiveViewerMobile.
  */
 export type PlayerFit = "cover" | "contain";
+
+/**
+ * Which way round the source's own frames are.
+ *
+ * Read from the element, because nothing in a playlist or a track's metadata
+ * says which way up the camera was: a creator on a desktop publishes 16:9 and
+ * a creator on a phone publishes 9:16, down the same pipe, and the publisher
+ * is deliberately not asked to change either (see CreatorBroadcaster).
+ *
+ * 'unknown' is the honest first state — `videoWidth` is 0 until metadata
+ * arrives — and it is one a viewer can see, so whoever resolves it has to pick
+ * something safe for it. `contain` is that: it never hides part of the frame.
+ */
+export type SourceOrientation = "unknown" | "landscape" | "portrait";
+
+/** The source's shape as the element currently reports it. */
+export function readSourceOrientation(
+  video: HTMLVideoElement,
+): SourceOrientation {
+  const { videoWidth, videoHeight } = video;
+  if (videoWidth <= 0 || videoHeight <= 0) return "unknown";
+  // Square counts as portrait: it fills a portrait phone with no crop worth
+  // the name, and there is nothing to letterbox.
+  return videoWidth > videoHeight ? "landscape" : "portrait";
+}
 
 interface HlsLivePlayerProps {
   /** For the diagnostics rows the recovery ladder writes. */
@@ -97,6 +127,15 @@ interface HlsLivePlayerProps {
   presentation?: PlayerPresentation;
   /** Full-bleed only. Defaults to 'cover' — see PlayerFit. */
   fit?: PlayerFit;
+  /**
+   * The source's shape, whenever the element settles on a new one.
+   *
+   * Fired on `loadedmetadata` and on the element's own `resize` — once per
+   * settled state, never polled — and only with a shape that is actually
+   * known. The phone layout is the only caller; it is what turns this into a
+   * PlayerFit. Nothing here branches on it.
+   */
+  onSourceOrientation?: (orientation: SourceOrientation) => void;
   /**
    * Off once the broadcast is over.
    *
@@ -118,6 +157,7 @@ export function HlsLivePlayer({
   overlay,
   presentation = "framed",
   fit = "cover",
+  onSourceOrientation,
   recoveryEnabled = true,
 }: HlsLivePlayerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -365,6 +405,23 @@ export function HlsLivePlayer({
     await handleRef.current?.unmute();
   }, []);
 
+  /**
+   * Tell the parent what shape the source turned out to be.
+   *
+   * Both the events it is bound to fire once per settled state — metadata
+   * arriving, and the stream changing resolution mid-broadcast, which is what
+   * a creator rotating their phone looks like from here. An 'unknown' reading
+   * is swallowed rather than reported: it would only overwrite a shape that is
+   * already correct with one nobody can act on.
+   */
+  const reportSourceOrientation = useCallback(
+    (event: React.SyntheticEvent<HTMLVideoElement>) => {
+      const orientation = readSourceOrientation(event.currentTarget);
+      if (orientation !== "unknown") onSourceOrientation?.(orientation);
+    },
+    [onSourceOrientation],
+  );
+
   // Square and borderless on a phone, where the player is edge-to-edge and a
   // rounded border would just be a hairline of page colour around the video.
   // Rounded again from lg, where it sits inside the padded grid.
@@ -409,17 +466,23 @@ export function HlsLivePlayer({
         controls={!fullBleed}
         onPlay={() => setPaused(false)}
         onPause={() => setPaused(true)}
+        // Once when the dimensions first arrive, and again if they change —
+        // no loop, no polling. `resize` is a media event on <video>, not the
+        // window's; React binds it on the element.
+        onLoadedMetadata={reportSourceOrientation}
+        onResize={reportSourceOrientation}
         aria-label={`ไลฟ์: ${title}`}
-        // `cover` unconditionally in full-bleed unless the viewer asked for
-        // `contain` — the source's own aspect ratio is not consulted. The
-        // framed layout stays `contain`, where letterboxing inside a 16:9 box
-        // is correct.
+        // Whatever the page asked for in full-bleed; the framed layout stays
+        // `contain`, where letterboxing inside a 16:9 box is correct. The
+        // source's shape is REPORTED from here, not acted on here — see
+        // PlayerFit and LiveViewerMobile.
         className={`absolute inset-0 h-full w-full ${
           fullBleed && fit === "cover" ? "object-cover" : "object-contain"
         }`}
-        // Faces sit in the upper third of a broadcast, so a 16:9 frame cropped
-        // to 9:19.5 should keep the top of the shot rather than the middle of
-        // it. Only meaningful while cropping.
+        // Faces sit in the upper third of a broadcast, so a portrait frame
+        // cropped to 9:19.5 should keep the top of the shot rather than the
+        // middle of it. Only meaningful while cropping — `contain` crops
+        // nothing, so there is no position to choose.
         style={
           fullBleed && fit === "cover"
             ? { objectPosition: "50% 30%" }
