@@ -41,20 +41,24 @@ import { logViewerDiagnostic } from '@/lib/live/viewerDiagnostics';
 import { useStaleBuildGuard } from '@/lib/live/useStaleBuildGuard';
 import { useVideoFrameWatchdog } from '@/lib/live/useVideoFrameWatchdog';
 import { useWakeRecheck } from '@/lib/live/useWakeRecheck';
-import type { PlayerFit, PlayerPresentation } from './HlsLivePlayer';
+import {
+  watchSourceOrientation,
+  type PlayerFit,
+  type PlayerPresentation,
+  type SourceOrientation,
+} from './HlsLivePlayer';
 import { LiveRecoveryOverlay } from './LiveRecoveryOverlay';
 import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
 
 export type ViewerPhase = 'connecting' | 'watching' | 'reconnecting' | 'ended' | 'failed';
 
 /**
- * `cover` in full-bleed, unconditionally — the source's shape is not consulted.
+ * Whatever fit the layout handed down — see PlayerFit in HlsLivePlayer.
  *
- * Same rule as HlsLivePlayer, and the same reason it changed: this used to
- * letterbox a LANDSCAPE track, which is exactly the 16:9-in-a-black-band the
- * phone layout exists to get rid of. A desktop broadcast is cropped to fill the
- * phone, sides cut. `contain` is reachable only when the viewer asks for it
- * through the page's ⛶ button.
+ * This file does not decide it and must not: the phone layout picks a fit from
+ * the shape this player REPORTS (see onSourceOrientation) so that all three
+ * viewer players answer the same question the same way, and the ⛶ button
+ * overrides the answer either way.
  *
  * Written onto the element rather than rendered as a prop because the element
  * is the SDK's: tracks are attached with `track.attach()`, which owns
@@ -87,6 +91,15 @@ interface LiveKitLivePlayerProps {
   fit?: PlayerFit;
   /** Off once the broadcast is over — see HlsLivePlayer's copy of this note. */
   recoveryEnabled?: boolean;
+  /**
+   * The source's shape, whenever it is known or changes.
+   *
+   * The third of the three players to report it, and it has to: a LiveKit
+   * session is what a viewer gets on the legacy delivery path, and the phone
+   * layout's letterbox rule cannot have a blind spot in it. See
+   * LiveViewerMobile.
+   */
+  onSourceOrientation?: (orientation: SourceOrientation) => void;
 }
 
 export function LiveKitLivePlayer({
@@ -101,6 +114,7 @@ export function LiveKitLivePlayer({
   presentation = 'framed',
   fit = 'cover',
   recoveryEnabled = true,
+  onSourceOrientation,
 }: LiveKitLivePlayerProps) {
   const fullBleed = presentation === 'fullbleed';
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -135,6 +149,15 @@ export function LiveKitLivePlayer({
   useEffect(() => {
     onEndedRef.current = onEnded;
   }, [onEnded]);
+
+  /**
+   * Same reason as onEndedRef: the connect effect owns the room, and a parent
+   * re-rendering with a new callback identity must not rejoin it.
+   */
+  const onSourceOrientationRef = useRef(onSourceOrientation);
+  useEffect(() => {
+    onSourceOrientationRef.current = onSourceOrientation;
+  }, [onSourceOrientation]);
 
   /**
    * An ended broadcast is not a fault to recover from.
@@ -180,6 +203,16 @@ export function LiveKitLivePlayer({
     // the elements to tear down are the ones this effect appended.
     const container = containerRef.current;
 
+    /**
+     * The orientation watcher on whatever element the SDK last handed over.
+     *
+     * The element is created on subscribe and destroyed on unsubscribe, and
+     * the ladder does both on every rung — so the disposer is held here and
+     * called before a new one is bound, or the listeners on a discarded
+     * element would keep the observer alive with it.
+     */
+    let disposeOrientation: (() => void) | null = null;
+
     // Tracks are attached with `track.attach()` rather than bound to elements
     // we render, because the SDK owns srcObject, autoplay and the muted flag —
     // and a hand-rolled <video> gets one of those wrong on Safari.
@@ -189,11 +222,15 @@ export function LiveKitLivePlayer({
       const element = track.attach();
       if (track.kind === Track.Kind.Video) {
         const video = element as HTMLVideoElement;
-        // Applied once. The dimension listeners that used to be here are gone
-        // with the rule that needed them: the fit no longer depends on how the
-        // creator is holding their camera.
+        // The FIT is applied here and never derived here: what this element
+        // reports upward is the source's shape, and what comes back down is
+        // the layout's decision about it — see LiveViewerMobile.
         applyVideoFit(video, fullBleedRef.current, fitRef.current);
         video.playsInline = true;
+        disposeOrientation?.();
+        disposeOrientation = watchSourceOrientation(video, (orientation) =>
+          onSourceOrientationRef.current?.(orientation),
+        );
       } else {
         // The audio element is present but has nothing to show. Hiding it
         // rather than skipping attach(): a detached audio track is silent.
@@ -206,6 +243,10 @@ export function LiveKitLivePlayer({
     };
 
     const onUnsubscribed = (track: RemoteTrack) => {
+      if (track.kind === Track.Kind.Video) {
+        disposeOrientation?.();
+        disposeOrientation = null;
+      }
       track.detach().forEach((element) => element.remove());
     };
 
@@ -286,6 +327,9 @@ export function LiveKitLivePlayer({
       room.off(RoomEvent.AudioPlaybackStatusChanged, onAudioStatus);
       room.off(RoomEvent.Disconnected, onDisconnected);
       roomRef.current = null;
+      // Before the elements go: the observer holds the element it watches.
+      disposeOrientation?.();
+      disposeOrientation = null;
       container?.replaceChildren();
       void leaveRoom(room);
     };

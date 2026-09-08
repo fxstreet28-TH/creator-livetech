@@ -33,25 +33,18 @@
 
 import { useCallback, useState } from "react";
 import { HlsLivePlayer, type HlsLivePlayerProps } from "./HlsLivePlayer";
-import { WhepLivePlayer, type SourceOrientation } from "./WhepLivePlayer";
+import { WhepLivePlayer } from "./WhepLivePlayer";
 import { whepEndpointFromHlsPlaybackUrl } from "@/lib/live/whepClient";
 
-export interface OriginLivePlayerProps extends HlsLivePlayerProps {
-  /**
-   * Forwarded to whichever player is mounted, once both have it.
-   *
-   * Only WHEP reads it today: PR #57 adds the same callback to HlsLivePlayer,
-   * and the line below starts forwarding it there in the same change. Wired now
-   * because #57's letterbox rule breaks silently — a landscape source shown
-   * portrait — if the callback stops firing on one of the two paths.
-   */
-  onSourceOrientation?: (orientation: SourceOrientation) => void;
-}
+/**
+ * Exactly HlsLivePlayer's props, `onSourceOrientation` included — it is one of
+ * them now, and both players take it. Nothing here to add: the letterbox rule
+ * breaks silently, as a landscape source shown cropped, if the callback stops
+ * firing on one of the two paths, so the router forwards it to both.
+ */
+export type OriginLivePlayerProps = HlsLivePlayerProps;
 
-export function OriginLivePlayer({
-  onSourceOrientation,
-  ...hlsProps
-}: OriginLivePlayerProps) {
+export function OriginLivePlayer(hlsProps: OriginLivePlayerProps) {
   /**
    * Resolved on every render rather than memoised: it is a URL parse against a
    * prop that does not change for the life of a broadcast (the origin playback
@@ -94,7 +87,7 @@ export function OriginLivePlayer({
         fit={hlsProps.fit}
         recoveryEnabled={hlsProps.recoveryEnabled}
         onFailure={handleWhepFailure}
-        onSourceOrientation={onSourceOrientation}
+        onSourceOrientation={hlsProps.onSourceOrientation}
       />
     );
   }
