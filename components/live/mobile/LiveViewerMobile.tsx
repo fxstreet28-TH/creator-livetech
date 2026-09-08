@@ -41,14 +41,24 @@
  *     MEASURED against what is actually on screen — the chat column, and the
  *     tray when it has rows — rather than reserved; see `giftAnchor`.
  *
- * AND THE ONE THING THAT IS NOT NEGOTIABLE: THE VIDEO FILLS THE SCREEN.
+ * AND THE ONE THING THAT IS NOT NEGOTIABLE: THE CREATOR'S FACE IS IN FRAME.
  *
- * `object-fit: cover`, edge to edge, whatever shape the source is. A 16:9
- * desktop broadcast is cropped to the phone's 9:19.5 with its sides cut, the
- * way TikTok and IG Live show one — not letterboxed into a band with black
- * above and below it. The players used to letterbox a landscape source on
- * purpose; that is what the ⛶ button in the top bar is for now, and only when
- * the viewer asks.
+ * A PORTRAIT source fills the screen — `object-fit: cover` edge to edge, with
+ * `object-position: 50% 30%` keeping the top of the shot where faces are. That
+ * is the majority case, because most creators broadcast from a phone, and it
+ * is what TikTok and IG Live look like.
+ *
+ * A LANDSCAPE source is LETTERBOXED — `object-fit: contain`, black bars top
+ * and bottom, the whole 16:9 frame visible. Cropping one to 9:19.5 cuts about
+ * two thirds of its width, and a creator sits where their camera is aimed, so
+ * that crop takes the face out of the picture. Bars are the smaller loss; it
+ * is what Facebook Live and YouTube Live do with a landscape broadcast, and
+ * it is the fix for the desktop-creator case that arrived cropped.
+ *
+ * The choice is made from the SOURCE's own dimensions, not from the device or
+ * the delivery path, and the publisher is untouched by it — a desktop creator
+ * still captures and still previews the natural 16:9 their webcam gives them.
+ * The ⛶ button in the top bar remains the viewer's override on top of that.
  */
 
 import { useCallback, useState } from "react";
@@ -67,7 +77,11 @@ import {
 import { FOLLOW_NOTICE } from "@/components/viewer/CreatorInlineCard";
 import { EmojiReactionButton } from "../EmojiReactionButton";
 import { FloatingReactionsLayer } from "../FloatingReactionsLayer";
-import { HlsLivePlayer, type PlayerFit } from "../HlsLivePlayer";
+import {
+  HlsLivePlayer,
+  type PlayerFit,
+  type SourceOrientation,
+} from "../HlsLivePlayer";
 import { LiveBadge } from "../LiveStatsBar";
 import { LiveChat } from "../LiveChat";
 import { LiveEndedCard } from "../LiveEndedCard";
@@ -90,15 +104,49 @@ export function LiveViewerMobile({ sessionId, state }: LiveViewerMobileProps) {
   const keyboardInset = useKeyboardInset();
 
   /**
-   * How the video fills the screen. COVER by default, always.
-   *
-   * A 16:9 desktop broadcast is cropped to the phone's 9:19.5, sides cut —
-   * which is what TikTok, IG Live and Shopee Live all do, and what this layout
-   * failed to do while the players letterboxed a landscape source. `contain`
-   * is reachable only through the ⛶ button in the top bar, and it is not
-   * remembered: it is a look-at-the-whole-frame gesture, not a preference.
+   * What shape the broadcast turned out to be, reported by whichever player
+   * is mounted. 'unknown' until its metadata arrives, which is after first
+   * paint — so it is a state that gets rendered, not just passed through.
    */
-  const [fit, setFit] = useState<PlayerFit>("cover");
+  const [sourceOrientation, setSourceOrientation] =
+    useState<SourceOrientation>("unknown");
+
+  /**
+   * The ⛶ button's answer, when a viewer has given one. `null` is "hasn't",
+   * which is the case for almost everybody.
+   *
+   * Not remembered across sessions, exactly as before: overriding the fit is a
+   * look-at-it-differently gesture, not a preference.
+   */
+  const [fitOverride, setFitOverride] = useState<PlayerFit | null>(null);
+
+  /**
+   * The fit the source asks for.
+   *
+   * Portrait fills the phone; landscape is letterboxed rather than cropped —
+   * see this file's header for why that is the whole point of this screen.
+   * UNKNOWN RESOLVES TO `contain` deliberately: it is the reading that can
+   * only add bars, never hide part of the frame, so the worst a first paint
+   * can do is show black edges for the moment before the metadata lands. The
+   * other way round would flash a cropped face on every desktop broadcast.
+   */
+  const autoFit: PlayerFit =
+    sourceOrientation === "portrait" ? "cover" : "contain";
+
+  /** What the player is actually told: the viewer's answer, else the source's. */
+  const fit = fitOverride ?? autoFit;
+
+  /**
+   * ⛶ — swap to the other fit, and swap back on a second tap.
+   *
+   * Landing back on what the source would have chosen CLEARS the override
+   * rather than pinning it, so a creator who rotates their phone mid-broadcast
+   * is followed again by a viewer who tapped twice.
+   */
+  const toggleFit = useCallback(() => {
+    const next: PlayerFit = fit === "cover" ? "contain" : "cover";
+    setFitOverride(next === autoFit ? null : next);
+  }, [fit, autoFit]);
 
   /**
    * Where the gift layers sit. The SAME geometry the creator's own phone
@@ -189,6 +237,7 @@ export function LiveViewerMobile({ sessionId, state }: LiveViewerMobileProps) {
             overlay={playerOverlay}
             presentation="fullbleed"
             fit={fit}
+            onSourceOrientation={setSourceOrientation}
           />
         ) : (
           <LiveKitLivePlayer
@@ -203,6 +252,7 @@ export function LiveViewerMobile({ sessionId, state }: LiveViewerMobileProps) {
             onEnded={state.handleEnded}
             presentation="fullbleed"
             fit={fit}
+            onSourceOrientation={setSourceOrientation}
           />
         ))}
 
@@ -257,19 +307,17 @@ export function LiveViewerMobile({ sessionId, state }: LiveViewerMobileProps) {
               <span className="sr-only">คนกำลังรับชม</span>
             </span>
             {/*
-              ⛶ — the only way to a letterboxed picture, and it is off by
-              default. A viewer who wants to read a slide or a chart on a
-              landscape broadcast taps it; everyone else gets the cropped,
-              edge-to-edge frame without knowing this exists.
+              ⛶ — the viewer's override on the fit the source chose. Unchanged
+              in what it does: one tap swaps between filling the screen and
+              showing the whole frame. What changed is only what it starts
+              from, which is now the source's own shape rather than always
+              `cover`. A viewer on a letterboxed landscape broadcast who would
+              rather have it filled and lose the sides taps it and gets that.
             */}
             {watchable && !ended && (
               <button
                 type="button"
-                onClick={() =>
-                  setFit((current) =>
-                    current === "cover" ? "contain" : "cover",
-                  )
-                }
+                onClick={toggleFit}
                 aria-pressed={fit === "contain"}
                 aria-label={
                   fit === "contain" ? "ครอบเต็มจอ" : "แสดงภาพเต็มเฟรม"

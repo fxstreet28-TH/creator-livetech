@@ -41,20 +41,23 @@ import { logViewerDiagnostic } from '@/lib/live/viewerDiagnostics';
 import { useStaleBuildGuard } from '@/lib/live/useStaleBuildGuard';
 import { useVideoFrameWatchdog } from '@/lib/live/useVideoFrameWatchdog';
 import { useWakeRecheck } from '@/lib/live/useWakeRecheck';
-import type { PlayerFit, PlayerPresentation } from './HlsLivePlayer';
+import {
+  readSourceOrientation,
+  type PlayerFit,
+  type PlayerPresentation,
+  type SourceOrientation,
+} from './HlsLivePlayer';
 import { LiveRecoveryOverlay } from './LiveRecoveryOverlay';
 import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
 
 export type ViewerPhase = 'connecting' | 'watching' | 'reconnecting' | 'ended' | 'failed';
 
 /**
- * `cover` in full-bleed, unconditionally — the source's shape is not consulted.
+ * Whatever fit the page asked for, in full-bleed only.
  *
- * Same rule as HlsLivePlayer, and the same reason it changed: this used to
- * letterbox a LANDSCAPE track, which is exactly the 16:9-in-a-black-band the
- * phone layout exists to get rid of. A desktop broadcast is cropped to fill the
- * phone, sides cut. `contain` is reachable only when the viewer asks for it
- * through the page's ⛶ button.
+ * Same rule as HlsLivePlayer: this player does not choose between cropping and
+ * letterboxing either — it reports the track's shape upward and wears what
+ * comes back. See PlayerFit.
  *
  * Written onto the element rather than rendered as a prop because the element
  * is the SDK's: tracks are attached with `track.attach()`, which owns
@@ -85,6 +88,8 @@ interface LiveKitLivePlayerProps {
   presentation?: PlayerPresentation;
   /** Full-bleed only. Defaults to 'cover' — see PlayerFit. */
   fit?: PlayerFit;
+  /** The track's shape, once settled — see HlsLivePlayer's copy of this note. */
+  onSourceOrientation?: (orientation: SourceOrientation) => void;
   /** Off once the broadcast is over — see HlsLivePlayer's copy of this note. */
   recoveryEnabled?: boolean;
 }
@@ -100,6 +105,7 @@ export function LiveKitLivePlayer({
   onEnded,
   presentation = 'framed',
   fit = 'cover',
+  onSourceOrientation,
   recoveryEnabled = true,
 }: LiveKitLivePlayerProps) {
   const fullBleed = presentation === 'fullbleed';
@@ -135,6 +141,16 @@ export function LiveKitLivePlayer({
   useEffect(() => {
     onEndedRef.current = onEnded;
   }, [onEnded]);
+
+  /**
+   * Same reason as fullBleedRef: the connect effect reads this, and a prop
+   * identity that changes on the page's next render must not tear down the
+   * room and rejoin it.
+   */
+  const onSourceOrientationRef = useRef(onSourceOrientation);
+  useEffect(() => {
+    onSourceOrientationRef.current = onSourceOrientation;
+  }, [onSourceOrientation]);
 
   /**
    * An ended broadcast is not a fault to recover from.
@@ -189,10 +205,20 @@ export function LiveKitLivePlayer({
       const element = track.attach();
       if (track.kind === Track.Kind.Video) {
         const video = element as HTMLVideoElement;
-        // Applied once. The dimension listeners that used to be here are gone
-        // with the rule that needed them: the fit no longer depends on how the
-        // creator is holding their camera.
         applyVideoFit(video, fullBleedRef.current, fitRef.current);
+        /*
+          The track's dimensions are not known when the element is created, and
+          a creator who rotates their phone mid-broadcast changes them — so the
+          shape is reported on both events rather than read once. Two listeners
+          on an element this effect owns and drops on teardown, not a loop.
+        */
+        const report = () => {
+          const orientation = readSourceOrientation(video);
+          if (orientation !== 'unknown') onSourceOrientationRef.current?.(orientation);
+        };
+        report();
+        video.addEventListener('loadedmetadata', report);
+        video.addEventListener('resize', report);
         video.playsInline = true;
       } else {
         // The audio element is present but has nothing to show. Hiding it
