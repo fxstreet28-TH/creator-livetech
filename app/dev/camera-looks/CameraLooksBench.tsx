@@ -219,7 +219,7 @@ function LookRow({ id }: { id: FilterId }) {
  *
  * So this panel builds a real `createFilteredStream`, hands it a synthetic
  * camera, and reads pixels back OFF THE OUTPUT TRACK — through a <video>
- * element fed by `filtered.stream`, which is the same object handed to
+ * element fed by `filtered.previewStream`, which is the same canvas handed to
  * `publishTracks`. Nothing here inspects the canvas directly. If the swatch
  * below is tinted, the tint is in the frames a viewer receives.
  *
@@ -271,7 +271,7 @@ function PublishedTrackPanel() {
 
       const video = outputRef.current;
       if (video) {
-        video.srcObject = filtered.stream;
+        video.srcObject = filtered.previewStream;
         video.muted = true;
         video.playsInline = true;
         await video.play().catch(() => undefined);

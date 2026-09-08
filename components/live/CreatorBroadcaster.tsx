@@ -70,7 +70,9 @@ import { publishWhip, thaiForWhipError, type WhipSession } from '@/lib/live/whip
 import type { BroadcastQuality, LiveDelivery } from '@/lib/live/types';
 import {
   createFilteredStream,
+  DESKTOP_PUBLISH_SCALE,
   filterLabelFor,
+  isDesktopBroadcastViewport,
   type FilteredStream,
   type FilterId,
   type LookMode,
@@ -278,6 +280,41 @@ export const ULTRA_WIDE_STEP = 0.5;
 /** The slider's ceiling when the camera exposes no range of its own. */
 export const DIGITAL_MAX_ZOOM = 3;
 
+/**
+ * Every local canvas stream, deduped.
+ *
+ * One on a phone, where the creator watches the same canvas the audience gets.
+ * Two on desktop, where the published one is padded — and BOTH of them have to
+ * hear about a mute, because the audience's copy is what actually goes silent
+ * or black and the creator's copy is their only sign that it did.
+ */
+function localStreams(filtered: FilteredStream): MediaStream[] {
+  return filtered.publishStream === filtered.previewStream
+    ? [filtered.publishStream]
+    : [filtered.publishStream, filtered.previewStream];
+}
+
+/**
+ * Follow a LiveKit mute onto the creator's own self-view.
+ *
+ * The SDK mutes the PUBLISHED track, which on a padded desktop broadcast is no
+ * longer the track the creator is watching — so "ปิดกล้อง" would black out the
+ * audience and leave the creator looking at themselves, with nothing on screen
+ * saying their camera is off. A no-op wherever the two streams are the same
+ * object, which is every phone broadcast and every desktop one before this.
+ */
+function blankPreview(
+  filtered: FilteredStream | null,
+  source: Track.Source,
+  enabled: boolean,
+) {
+  if (!filtered || filtered.publishStream === filtered.previewStream) return;
+  if (source === Track.Source.Microphone) return;
+  filtered.previewStream.getVideoTracks().forEach((track) => {
+    track.enabled = enabled;
+  });
+}
+
 export function CreatorBroadcaster({
   liveSessionId,
   wsUrl,
@@ -362,6 +399,17 @@ export function CreatorBroadcaster({
   useEffect(() => {
     portraitRef.current = portrait;
   }, [portrait]);
+
+  /**
+   * Whether this broadcast is being run from a desktop viewport.
+   *
+   * null until the first capture setup answers it, and never re-read after
+   * that — see the note where it is filled in. It is deliberately NOT the
+   * `portrait` prop: that says which camera to open, this says how the
+   * published frame is composed, and a creator on a narrow desktop window is
+   * still a desktop creator to the camera and a phone one to this.
+   */
+  const desktopBroadcastRef = useRef<boolean | null>(null);
 
   const [openMenu, setOpenMenu] = useState<'look' | 'camera' | null>(null);
   const [phase, setPhase] = useState<BroadcastPhase>('connecting');
@@ -647,6 +695,18 @@ export function CreatorBroadcaster({
       }
 
       if (!filtered) {
+        /**
+         * Desktop or phone, decided once for the life of this broadcast.
+         *
+         * Cached in a ref rather than read here every time, because `connect`
+         * runs again on every rung of the reconnect ladder: a creator who
+         * resized their window mid-broadcast must not come back from a blip
+         * with a differently framed picture.
+         */
+        if (desktopBroadcastRef.current === null) {
+          desktopBroadcastRef.current = isDesktopBroadcastViewport();
+        }
+
         try {
           filtered = await createFilteredStream(
             camera,
@@ -658,6 +718,12 @@ export function CreatorBroadcaster({
             // cropped. Desktop passes nothing and is unchanged — a 1080p rung
             // must still publish 1920x1080.
             portraitRef.current ? PHONE_MAX_LONG_EDGE : undefined,
+            // Desktop only, and it changes what the AUDIENCE gets, not what
+            // the creator sees: the published canvas draws the same frame at
+            // 75% with black around it, so a phone viewer that letterboxes a
+            // landscape source ends up with the creator centred and further
+            // away instead of filling the width. The preview stays full-frame.
+            desktopBroadcastRef.current ? DESKTOP_PUBLISH_SCALE : undefined,
           );
           filteredRef.current = filtered;
           setLookMode(filtered.getStats().lookMode);
@@ -671,11 +737,13 @@ export function CreatorBroadcaster({
       }
 
       // The self-view shows the CANVAS, not the camera — so what the creator
-      // is looking at is exactly the frames the audience receives, filter
-      // included. Muted is not a preference: an unmuted self-view is a
-      // feedback loop.
+      // is looking at is the frames the audience receives, filter included.
+      // The PREVIEW canvas, specifically: on desktop the published one has the
+      // same picture drawn smaller with black around it, and a creator framing
+      // a shot needs their own full frame, not the padded one. Muted is not a
+      // preference: an unmuted self-view is a feedback loop.
       if (videoRef.current) {
-        videoRef.current.srcObject = filtered.stream;
+        videoRef.current.srcObject = filtered.previewStream;
         videoRef.current.muted = true;
         void videoRef.current.play().catch(() => {});
       }
@@ -712,7 +780,7 @@ export function CreatorBroadcaster({
 
           whip = await publishWhip({
             endpoint: whipUrl,
-            stream: filtered.stream,
+            stream: filtered.publishStream,
             quality,
             micEnabled,
             maxFramerate: resolutionFor(quality).frameRate,
@@ -739,7 +807,7 @@ export function CreatorBroadcaster({
             wsUrl,
             token,
             quality,
-            stream: filtered.stream,
+            stream: filtered.publishStream,
             micEnabled,
             delivery,
           });
@@ -877,7 +945,9 @@ export function CreatorBroadcaster({
       return () => clearInterval(timer);
     }
 
-    const stream = filteredRef.current?.stream;
+    // The published stream: it is the one carrying the microphone. The preview
+    // canvas is video only — a self-view is muted by definition.
+    const stream = filteredRef.current?.publishStream;
     const audioTrack = stream?.getAudioTracks()[0];
     if (!audioTrack) return;
 
@@ -950,13 +1020,15 @@ export function CreatorBroadcaster({
      * "camera off" means.
      */
     if (delivery === 'origin') {
-      const stream = filteredRef.current?.stream;
-      if (!stream) return;
-      const tracks =
-        source === Track.Source.Microphone ? stream.getAudioTracks() : stream.getVideoTracks();
-      tracks.forEach((track) => {
-        track.enabled = next;
-      });
+      const filtered = filteredRef.current;
+      if (!filtered) return;
+      for (const stream of localStreams(filtered)) {
+        const tracks =
+          source === Track.Source.Microphone ? stream.getAudioTracks() : stream.getVideoTracks();
+        tracks.forEach((track) => {
+          track.enabled = next;
+        });
+      }
       return;
     }
 
@@ -965,6 +1037,7 @@ export function CreatorBroadcaster({
     try {
       if (next) await publication.unmute();
       else await publication.mute();
+      blankPreview(filteredRef.current, source, next);
     } catch (err) {
       console.error('[CreatorBroadcaster] toggle track failed', err);
     }
