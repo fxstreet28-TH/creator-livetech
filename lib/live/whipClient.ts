@@ -606,9 +606,37 @@ async function applyEncoderCeiling(
     if (!params.encodings || params.encodings.length === 0) {
       params.encodings = [{}];
     }
-    params.encodings[0].maxBitrate = publishBitrateFor(options.quality);
+    const requested = publishBitrateFor(options.quality);
+    params.encodings[0].maxBitrate = requested;
     if (options.maxFramerate) params.encodings[0].maxFramerate = options.maxFramerate;
     await sender.setParameters(params);
+
+    /**
+     * Read the ceiling BACK, and say what actually landed.
+     *
+     * `setParameters` resolving is not evidence the encoder took the value:
+     * the browser is free to clamp it, drop the encoding entry, or accept the
+     * promise and keep its own default — which is exactly the failure that
+     * cannot be told apart from a healthy publish by looking at the picture,
+     * because a stream at a third of its intended bitrate publishes fine and
+     * simply looks soft. The 2026-09-08 origin test surfaced as "signal is
+     * weak" with nothing in any log to confirm or rule out the encoder, and
+     * this line is what makes the next one answerable from a phone console.
+     *
+     * Reported, not enforced. A resolved value below the request is a real
+     * browser decision (a thermal or uplink clamp) and re-asserting it in a
+     * loop would fight the encoder for no gain.
+     */
+    const resolved = sender.getParameters().encodings?.[0]?.maxBitrate;
+    if (resolved === requested) {
+      console.info('[whipClient] encoder ceiling applied', { quality: options.quality, maxBitrate: resolved });
+    } else {
+      console.warn('[whipClient] encoder ceiling did not stick', {
+        quality: options.quality,
+        requested,
+        resolved: resolved ?? null,
+      });
+    }
   } catch (err) {
     console.warn('[whipClient] could not apply encoder ceiling', err);
   }

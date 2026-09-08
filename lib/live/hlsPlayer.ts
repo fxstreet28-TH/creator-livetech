@@ -60,31 +60,62 @@ export type HlsFailureReason =
  * playback sits, and it is the whole latency/robustness dial:
  *
  *   ultra_low     1 segment back. ~2s, and the first dropped segment stalls.
- *   low_latency   3 back. ~3-5s, the default, and what the cost model assumes.
+ *   low_latency   2 back. ~2-4s, the default, and what the cost model assumes.
  *   standard      the library's own defaults plus a longer window — the
  *                 fallback for a viewer on a connection that cannot hold the
  *                 live edge, and the thing to switch a stream to when it
  *                 stutters rather than giving up on LL-HLS entirely.
  *
- * `backBufferLength: 10` everywhere: a live viewer does not scrub backwards,
+ * `backBufferLength: 8` everywhere: a live viewer does not scrub backwards,
  * and an unbounded back buffer on a 60-minute broadcast is a memory leak on a
  * phone — which is where 70% of this audience is.
+ *
+ * THE FORWARD BUFFER IS THE OTHER HALF OF THE LATENCY, and until 2026-09-08 it
+ * was left at the library's defaults — `maxBufferLength: 30`, `maxMaxBuffer
+ * Length: 600`. `liveSyncDurationCount` only decides where playback STARTS
+ * relative to the live edge; the forward buffer decides how far hls.js is
+ * willing to run ahead fetching, and a player holding 30s of segments drifts
+ * back to the end of what it holds after any hiccup instead of catching up.
+ * On the origin path (1s fmp4 segments, hlsSegmentCount 4 on origin-sg-1) that
+ * was measured at 8-15s behind the broadcaster with the CDN only accounting
+ * for ~4s of it. Capping the forward buffer is what closes the rest.
+ *
+ * It also removes the state PR #52's ladder was built to dig out of: a large
+ * forward buffer plus a dropped segment leaves hls.js buffered on BOTH sides of
+ * a hole, stalled between ranges, which the ladder can only fix by rebuilding
+ * the player. The ladder stays as the safety net; this stops it being the
+ * primary path.
+ *
+ * 'standard' keeps a deep forward buffer on purpose — it is the fallback for a
+ * viewer whose connection cannot hold the live edge at all, so trading latency
+ * for segments in hand is the entire point of that rung.
  */
 export function hlsConfigFor(mode: LatencyMode): Partial<HlsConfig> {
   const base: Partial<HlsConfig> = {
-    backBufferLength: 10,
+    backBufferLength: 8,
+    maxBufferLength: 6,
+    maxMaxBufferLength: 10,
     // Catch up to the live edge by playing slightly fast rather than by
     // seeking, which would drop frames and audio in the middle of a sentence.
     maxLiveSyncPlaybackRate: 1.5,
   };
 
   if (mode === 'standard') {
-    return { ...base, lowLatencyMode: false, liveSyncDurationCount: 4, liveMaxLatencyDurationCount: 8 };
+    return {
+      ...base,
+      // Deliberately NOT the capped forward buffer above: this rung exists to
+      // ride out a connection that stutters, and it cannot do that on 6s.
+      maxBufferLength: 30,
+      maxMaxBufferLength: 60,
+      lowLatencyMode: false,
+      liveSyncDurationCount: 4,
+      liveMaxLatencyDurationCount: 8,
+    };
   }
   if (mode === 'ultra_low') {
     return { ...base, lowLatencyMode: true, liveSyncDurationCount: 1, liveMaxLatencyDurationCount: 3 };
   }
-  return { ...base, lowLatencyMode: true, liveSyncDurationCount: 3, liveMaxLatencyDurationCount: 5 };
+  return { ...base, lowLatencyMode: true, liveSyncDurationCount: 2, liveMaxLatencyDurationCount: 5 };
 }
 
 /** True when the browser can play HLS without hls.js — i.e. Safari, incl. iOS. */
