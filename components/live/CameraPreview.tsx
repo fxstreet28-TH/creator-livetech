@@ -21,7 +21,7 @@ import { Camera, Mic, MicOff, RefreshCw } from 'lucide-react';
 import type { BroadcastQuality } from '@/lib/live/types';
 import { thaiForMediaError } from '@/lib/live/livekitClient';
 import { openCamera, type CameraOpenResult } from '@/lib/live/cameraCapture';
-import { filterCssFor, type FilterId } from '@/lib/live/cameraFilters';
+import { filterCssFor, portraitCropRect, type FilterId } from '@/lib/live/cameraFilters';
 import { shouldFlipPreview, type CameraOrientation } from '@/lib/live/cameraOrientation';
 import { CameraControlsMenu } from './CameraControlsMenu';
 import { CameraFilterSelector } from './CameraFilterSelector';
@@ -227,15 +227,42 @@ export function CameraPreview({
 
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
 
+  /*
+    THE SHAPE OF THIS BOX IS THE SHAPE THE BROADCAST WILL BE — which is now
+    9:16 whatever the camera hands back.
+
+    A phone gives an upright frame and publishes it as it is. A WEBCAM gives
+    16:9 and the broadcast canvas crops a centred 9:16 column out of it (see
+    portraitCropRect in lib/live/cameraFilters), so a creator framing
+    themselves in a 16:9 box here would be framing themselves in a box two
+    thirds of which is thrown away the moment they go live. `cover` on a
+    landscape source in this box performs exactly the crop the canvas will:
+    same centre, same column, so the picture below is the picture published.
+
+    The shape is asked of portraitCropRect — the same function the canvas uses
+    — rather than worked out again here, so the box cannot drift away from what
+    is published. Before the camera answers there is no source to shape it to,
+    and the desktop default stays 16:9 for that moment rather than the box
+    changing shape twice on every retry.
+  */
+  const published = portraitCropRect(camera?.settings.width ?? 0, camera?.settings.height ?? 0);
+  const previewIsPortrait = portrait || published.height > published.width;
+  /*
+    The phone screen drives this box from its WIDTH — it is the whole column.
+    The desktop studio drives it from its HEIGHT, because a 9:16 box as wide as
+    a desktop column is several screens tall; it is centred in the column
+    instead.
+  */
+  const previewBoxClass = portrait
+    ? 'aspect-[9/16] max-h-[58dvh] w-full'
+    : previewIsPortrait
+      ? 'mx-auto aspect-[9/16] h-[min(56vh,34rem)]'
+      : 'aspect-video w-full';
+
   return (
     <section aria-label="ตรวจสอบกล้องและไมโครโฟน" className="min-w-0">
-      {/* 16:9 on a desktop, 9:16 on the phone setup screen — the shape the
-          broadcast will actually be, so a creator frames themselves in the box
-          their audience gets rather than in one that will be cropped away. */}
       <div
-        className={`relative w-full overflow-hidden rounded-2xl border border-white/10 bg-black ${
-          portrait ? 'aspect-[9/16] max-h-[58dvh]' : 'aspect-video'
-        }`}
+        className={`relative overflow-hidden rounded-2xl border border-white/10 bg-black ${previewBoxClass}`}
       >
         <video
           ref={videoRef}
@@ -246,12 +273,11 @@ export function CameraPreview({
           muted
           aria-label="ภาพตัวอย่างจากกล้อง"
           className={[
-            // `contain` when the camera would not give an upright frame:
-            // cover-cropping a landscape track into a portrait box is most of
-            // the 2-3x zoom a creator reported. See CreatorBroadcaster.
-            camera?.orientation === 'landscape' && portrait
-              ? 'h-full w-full object-contain'
-              : 'h-full w-full object-cover',
+            // Always `cover`, because the box is always the published shape
+            // and covering it is the crop the broadcast canvas performs. This
+            // used to `contain` a landscape source in a portrait box to avoid
+            // a crop nothing else was doing; the crop is now the product.
+            'h-full w-full object-cover',
             // `false` because this element shows the raw camera: nothing has
             // flipped these frames yet, so the creator's preference is the
             // only thing deciding which way round they appear.

@@ -401,6 +401,78 @@ export interface FilteredStream {
 }
 
 /**
+ * THE PUBLISHED SHAPE IS 9:16 — the shape every viewer renders.
+ *
+ * A phone hands back an upright frame and there is nothing to do; that is the
+ * pass-through below, and it is why the phone path (which asks for nothing —
+ * see lib/live/cameraCapture.ts) is untouched by any of this.
+ *
+ * A WEBCAM hands back 16:9, and a 16:9 track rendered by a 9:16 player is
+ * cover-cropped to a narrow column through the middle of the picture — which
+ * is where the creator is NOT, because they sit where the camera is pointed
+ * rather than where a crop they cannot see will land. That is the bug: a
+ * desktop broadcast looked fine to the creator and arrived on a phone with
+ * their face off the side.
+ *
+ * So the crop happens HERE, one step before the encoder, rather than in the
+ * viewer. Two things follow, and both are the point:
+ *
+ *  - The creator's self-view IS this canvas, so they see the 9:16 and frame
+ *    themselves inside it. That is the entire user interface of this feature —
+ *    no drag, no zoom control, no safe-zone overlay.
+ *  - The encoder never sees the two thirds of a webcam frame that no viewer
+ *    was ever going to be shown. A 1280x720 webcam publishes 406x720: about a
+ *    third of the pixels, off the uplink and out of the encoder's work.
+ *
+ * Decided by what the SOURCE gave, never by the device or the viewport. A
+ * landscape phone crops (correct — its viewers are still upright); a portrait
+ * webcam, a rotated tablet or a square sensor passes straight through.
+ *
+ * The crop is published at its OWN resolution and never upscaled to some
+ * nominal 720x1280: LiveKit's simulcast makes its rungs from whatever it is
+ * given, MediaMTX passes frames through, and an upscale would buy a bigger
+ * number at the cost of encoder work and sharpness.
+ */
+export const PUBLISH_ASPECT = 9 / 16;
+
+/** A rectangle of the SOURCE, in source pixels. */
+export interface CropRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Whether this source gets cropped — i.e. whether it is wider than it is tall.
+ *
+ * The whole branch, in one place, because it is the one decision anything
+ * outside this file might want to reason about. Callers that need the numbers
+ * ask portraitCropRect instead: the previews shape themselves from the RECT so
+ * that the box a creator frames themselves in cannot drift away from the frame
+ * being published.
+ */
+export function cropsToPortrait(sourceWidth: number, sourceHeight: number): boolean {
+  return sourceWidth > 0 && sourceHeight > 0 && sourceWidth > sourceHeight;
+}
+
+/**
+ * The part of the source that gets published.
+ *
+ * A centred 9:16 column of a landscape source; the whole frame of anything
+ * else. The full HEIGHT is always kept: cropping the top off a webcam is how
+ * you cut a creator's head off, and keeping it makes the column as wide as the
+ * source can afford.
+ */
+export function portraitCropRect(sourceWidth: number, sourceHeight: number): CropRect {
+  if (!cropsToPortrait(sourceWidth, sourceHeight)) {
+    return { x: 0, y: 0, width: sourceWidth, height: sourceHeight };
+  }
+  const width = Math.round(sourceHeight * PUBLISH_ASPECT);
+  return { x: Math.round((sourceWidth - width) / 2), y: 0, width, height: sourceHeight };
+}
+
+/**
  * How large a published frame may be, when a caller states a cap.
  *
  * A phone that is asked for nothing (which is the fix for the zoom — see
@@ -437,9 +509,19 @@ export async function createFilteredStream(
   video.playsInline = true;
   await video.play();
 
+  /*
+    The published rectangle of the source. Primed from the track's own account
+    of itself so the captured track STARTS at the published shape rather than
+    changing size a frame later, and corrected from the decoded frame's real
+    dimensions in the draw loop below.
+  */
+  let sourceWidth = 0;
+  let sourceHeight = 0;
+  let crop = portraitCropRect(width, height);
+
   const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
+  canvas.width = crop.width;
+  canvas.height = crop.height;
   // `alpha: false` — the camera has no transparency, and telling the browser
   // so lets it skip compositing work on every single frame.
   const ctx = canvas.getContext('2d', { alpha: false });
@@ -479,10 +561,16 @@ export async function createFilteredStream(
     if (!running) return;
 
     /*
-      THE CANVAS IS THE SIZE OF THE CAMERA, ALWAYS, AND IT IS CHECKED EVERY
+      THE CANVAS IS THE SIZE OF THE PUBLISHED CROP, AND IT IS CHECKED EVERY
       FRAME.
 
-      This is what makes a phone publish PORTRAIT. `getSettings()` above is
+      The crop is the camera's whole frame on a phone (see portraitCropRect),
+      so everything this comment says about following the camera still holds
+      there — the geometry below just goes through the crop rather than
+      straight to the video element.
+
+      Following the DECODED frame rather than getSettings() is what makes a
+      phone publish PORTRAIT. `getSettings()` above is
       read once, before the track has necessarily settled, and on iOS Safari
       it is frequently the landscape figure that was ASKED for rather than the
       portrait one the camera actually produces. A canvas fixed at that first
@@ -500,12 +588,35 @@ export async function createFilteredStream(
       transform below on every frame.
     */
     if (video.videoWidth > 0 && video.videoHeight > 0) {
-      // The camera's own ratio, capped in SIZE only where the caller asked for
-      // a cap. Rounded to even numbers because some encoders reject odd ones.
-      const longest = Math.max(video.videoWidth, video.videoHeight);
+      /*
+        THE CROP, recomputed only when the source dimensions actually change —
+        a camera settling after play(), a front/back flip, a phone rotated
+        mid-broadcast, a track re-negotiated to a different rung. Per frame it
+        would be arithmetic nobody needs; the geometry is a property of the
+        source, not of the frame.
+      */
+      if (video.videoWidth !== sourceWidth || video.videoHeight !== sourceHeight) {
+        sourceWidth = video.videoWidth;
+        sourceHeight = video.videoHeight;
+        crop = portraitCropRect(sourceWidth, sourceHeight);
+        // One line, once per change, in the same shape as the [camera] report
+        // in cameraCapture: this is the line that says whether a broadcast is
+        // publishing the portrait crop or passing a phone's frame through.
+        console.info(
+          `[camera] publish geometry: source ${sourceWidth}x${sourceHeight} -> ` +
+            `crop ${crop.width}x${crop.height} at ${crop.x},${crop.y} ` +
+            `(${cropsToPortrait(sourceWidth, sourceHeight) ? '9:16 centre crop' : 'pass-through'})`,
+        );
+      }
+
+      // The PUBLISHED ratio — the crop's, not the camera's — capped in SIZE
+      // only where the caller asked for a cap. Rounded to even numbers because
+      // some encoders reject odd ones. Never upscaled: a 1280x720 webcam
+      // publishes 406x720 and LiveKit makes its simulcast rungs from that.
+      const longest = Math.max(crop.width, crop.height);
       const scale = maxLongEdge && longest > maxLongEdge ? maxLongEdge / longest : 1;
-      const nextWidth = Math.round((video.videoWidth * scale) / 2) * 2;
-      const nextHeight = Math.round((video.videoHeight * scale) / 2) * 2;
+      const nextWidth = Math.round((crop.width * scale) / 2) * 2;
+      const nextHeight = Math.round((crop.height * scale) / 2) * 2;
       if (canvas.width !== nextWidth || canvas.height !== nextHeight) {
         canvas.width = nextWidth;
         canvas.height = nextHeight;
@@ -534,16 +645,17 @@ export async function createFilteredStream(
       The source rectangle, in SOURCE pixels — which are no longer the same as
       the canvas's once a cap is downscaling the frame.
 
-      At zoom 1 this is the whole camera frame drawn across the whole canvas:
-      the full field of view, scaled but never cropped. Above 1 it is a centred
-      sub-rect of the source, scaled up to fill the same canvas, so the output
-      resolution never changes with zoom.
+      At zoom 1 this is the whole PUBLISHED rectangle drawn across the whole
+      canvas: the 9:16 column of a landscape camera, or the entire frame of an
+      upright one. Above 1 it is a centred sub-rect OF THAT — zoom stays a zoom
+      into what is being published rather than a second, competing crop — and
+      the output resolution never changes with it.
     */
     const zoom = currentZoom > 1 ? currentZoom : 1;
-    const sw = video.videoWidth / zoom;
-    const sh = video.videoHeight / zoom;
-    const sx = (video.videoWidth - sw) / 2;
-    const sy = (video.videoHeight - sh) / 2;
+    const sw = crop.width / zoom;
+    const sh = crop.height / zoom;
+    const sx = crop.x + (crop.width - sw) / 2;
+    const sy = crop.y + (crop.height - sh) / 2;
     ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
     ctx.restore();
 

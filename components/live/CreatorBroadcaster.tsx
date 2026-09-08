@@ -1080,28 +1080,23 @@ export function CreatorBroadcaster({
   const previewFlipped = shouldFlipPreview(orientation.mirrorPreview, orientation.flipOutput);
 
   /*
-    HOW THE SELF-VIEW IS FITTED, and why it is not always `cover`.
-
-    `cover` fills a portrait phone with a portrait camera, which is the point.
-    Point it at a LANDSCAPE track — a camera that refused an upright frame —
-    and it crops away about two thirds of the width, which is most of the
-    reported zoom. So the fit follows what the camera ACTUALLY gave: cover
-    while the source is upright, contain the moment it is not.
-
-    The creator then sees letterboxing that a phone viewer will not (the
-    viewer's player covers, by design). That is the correct trade: the host
-    screen's job is to show the framing being published, and a host who cannot
-    see their own edges cannot frame anything.
-  */
-  const sourceIsLandscape = camera?.orientation === 'landscape';
-
-  /*
     THE PHONE HOST LAYOUT.
 
     The self-view is the viewport — `fixed inset-0` at 100vw x 100dvh, z-0
     under the page's chrome — and `object-cover`, so a portrait camera fills a
     portrait phone edge to edge. Same box, same reasoning and the same z-order
     as the viewer's full-bleed player; see HlsLivePlayer.
+
+    `cover` UNCONDITIONALLY, which it did not used to be. This element shows
+    the CANVAS, and the canvas is never landscape any more: an upright camera
+    passes through and a landscape one is cropped to 9:16 before it is
+    published (see portraitCropRect in lib/live/cameraFilters). The fit used to
+    fall back to `contain` for a camera that refused an upright frame, and that
+    was right while a landscape track could reach viewers — the creator saw
+    letterboxing they would not, but they saw their own edges. Now the crop is
+    upstream of this element: the edges shown here ARE the published ones, and
+    letterboxing would only be the host screen disagreeing with every viewer
+    about the framing.
 
     Everything else this component draws in 'framed' — the pills, the level
     meter, the control row — is the PAGE's here, and reaches it through
@@ -1120,8 +1115,7 @@ export function CreatorBroadcaster({
             playsInline
             aria-label="ภาพที่กำลังถ่ายทอด"
             className={[
-              'absolute inset-0 h-full w-full',
-              sourceIsLandscape ? 'object-contain' : 'object-cover',
+              'absolute inset-0 h-full w-full object-cover',
               previewFlipped ? 'scale-x-[-1]' : '',
             ].join(' ')}
           />
@@ -1178,6 +1172,11 @@ export function CreatorBroadcaster({
         {/* No CSS filter on this element any more. The look is already in the
             pixels — this is the canvas stream, which is what the encoder, the
             egress, Bunny and every viewer receive.
+
+            `contain` in a wide box, so a 9:16 canvas is pillarboxed here
+            rather than cropped again: this is the creator's only view of the
+            frame they are publishing, and it has to show all of it. The bars
+            are the desktop studio's, not the broadcast's.
 
             The transform is the one thing that is still local. It exists so
             the two switches stay independent: the frames here may already be
