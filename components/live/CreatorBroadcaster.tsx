@@ -71,10 +71,12 @@ import type { BroadcastQuality, LiveDelivery } from '@/lib/live/types';
 import {
   createFilteredStream,
   filterLabelFor,
+  DESKTOP_PUBLISH_SCALE,
   type FilteredStream,
   type FilterId,
   type LookMode,
 } from '@/lib/live/cameraFilters';
+import { isDesktopBroadcastViewport } from '@/lib/live/broadcastDevice';
 import {
   isDefaultOrientation,
   shouldFlipPreview,
@@ -423,6 +425,23 @@ export function CreatorBroadcaster({
     const whipAbort = new AbortController();
 
     /**
+     * How much of the published frame this creator's camera fills, decided
+     * ONCE, here, before anything opens.
+     *
+     * A desktop webcam cannot step back, so the published frame is drawn at
+     * DESKTOP_PUBLISH_SCALE inside a canvas of the same size and the margin
+     * becomes the room a viewer sees around the creator. A phone gets 1 and is
+     * a strict pass-through: no second canvas, nothing below 768px changes.
+     *
+     * Read here rather than in `connect()` so a reconnect rebuilds the pipeline
+     * with the SAME shape it started with, and read as a viewport width rather
+     * than from the source's orientation — the viewer decides from the frame it
+     * receives, the publisher decides from who is sending. See
+     * lib/live/broadcastDevice.ts.
+     */
+    const publishScale = isDesktopBroadcastViewport() ? DESKTOP_PUBLISH_SCALE : 1;
+
+    /**
      * The LiveKit room is not constructed at all on an origin broadcast.
      *
      * `createRoom` is cheap, but a constructed Room registers device listeners
@@ -658,6 +677,9 @@ export function CreatorBroadcaster({
             // cropped. Desktop passes nothing and is unchanged — a 1080p rung
             // must still publish 1920x1080.
             portraitRef.current ? PHONE_MAX_LONG_EDGE : undefined,
+            // Desktop only, and the other way round: the frame stays 1920x1080
+            // and the PICTURE inside it gets smaller. See publishScale above.
+            publishScale,
           );
           filteredRef.current = filtered;
           setLookMode(filtered.getStats().lookMode);
@@ -671,11 +693,17 @@ export function CreatorBroadcaster({
       }
 
       // The self-view shows the CANVAS, not the camera — so what the creator
-      // is looking at is exactly the frames the audience receives, filter
-      // included. Muted is not a preference: an unmuted self-view is a
+      // is looking at is the frames the audience receives, filter, mirror and
+      // zoom included. Muted is not a preference: an unmuted self-view is a
       // feedback loop.
+      //
+      // The ONE thing it does not show is the desktop padding. previewStream
+      // is the full-frame canvas, so a desktop creator keeps the natural,
+      // edge-to-edge self-view they have always had while the audience gets
+      // the padded one. Shrinking the creator's own picture to match is the
+      // mistake this pipeline is shaped to avoid.
       if (videoRef.current) {
-        videoRef.current.srcObject = filtered.stream;
+        videoRef.current.srcObject = filtered.previewStream;
         videoRef.current.muted = true;
         void videoRef.current.play().catch(() => {});
       }
@@ -712,7 +740,7 @@ export function CreatorBroadcaster({
 
           whip = await publishWhip({
             endpoint: whipUrl,
-            stream: filtered.stream,
+            stream: filtered.publishStream,
             quality,
             micEnabled,
             maxFramerate: resolutionFor(quality).frameRate,
@@ -739,7 +767,7 @@ export function CreatorBroadcaster({
             wsUrl,
             token,
             quality,
-            stream: filtered.stream,
+            stream: filtered.publishStream,
             micEnabled,
             delivery,
           });
@@ -877,8 +905,7 @@ export function CreatorBroadcaster({
       return () => clearInterval(timer);
     }
 
-    const stream = filteredRef.current?.stream;
-    const audioTrack = stream?.getAudioTracks()[0];
+    const audioTrack = filteredRef.current?.publishStream.getAudioTracks()[0];
     if (!audioTrack) return;
 
     // Safari still only has the prefixed constructor on some versions this
@@ -950,13 +977,25 @@ export function CreatorBroadcaster({
      * "camera off" means.
      */
     if (delivery === 'origin') {
-      const stream = filteredRef.current?.stream;
-      if (!stream) return;
-      const tracks =
-        source === Track.Source.Microphone ? stream.getAudioTracks() : stream.getVideoTracks();
-      tracks.forEach((track) => {
-        track.enabled = next;
-      });
+      const filtered = filteredRef.current;
+      if (!filtered) return;
+      /*
+        BOTH streams, not just the published one.
+
+        They are the same object on a phone broadcast and two different
+        canvases on a padded desktop one, where flipping only the published
+        track would black out the audience while the creator carried on
+        watching themselves — "camera off" lying on the one screen that has to
+        be able to prove it. The microphone tracks ARE the same objects in
+        both, so that half is idempotent rather than doubled.
+      */
+      for (const stream of [filtered.publishStream, filtered.previewStream]) {
+        const tracks =
+          source === Track.Source.Microphone ? stream.getAudioTracks() : stream.getVideoTracks();
+        tracks.forEach((track) => {
+          track.enabled = next;
+        });
+      }
       return;
     }
 
