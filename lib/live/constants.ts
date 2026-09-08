@@ -62,6 +62,38 @@ export function qualityOption(quality: BroadcastQuality): QualityOption {
 }
 
 /**
+ * Target publish bitrate per quality rung, in bits per second.
+ *
+ * THIS IS THE NUMBER THE COST MODEL IS BUILT ON.
+ * BUNNY_LIVE_THB_PER_VIEWER_MINUTE in supabase/functions/_shared/live.ts
+ * assumes 3 Mbps at 720p, and letting the encoder pick its own ceiling would
+ * make the projected bill fiction — so every publisher caps itself here rather
+ * than trusting a default.
+ *
+ * It lives in constants rather than beside one publisher because there are now
+ * two, and they must agree: the LiveKit publisher passes it as `videoEncoding
+ * .maxBitrate`, and the WHIP publisher applies it with `RTCRtpSender
+ * .setParameters` (see ./whipClient.ts). A rung that meant 3 Mbps on one path
+ * and whatever-the-encoder-felt-like on the other would price the same
+ * broadcast differently depending on a vault secret.
+ *
+ * It caps the INGEST, not what a viewer receives: both pipelines transcode or
+ * remux downstream of this.
+ */
+export function publishBitrateFor(quality: BroadcastQuality): number {
+  switch (quality) {
+    case '1080p':
+      return 4_500_000;
+    case '720p':
+      return 3_000_000;
+    case '480p':
+      return 1_500_000;
+    default:
+      return 800_000;
+  }
+}
+
+/**
  * How close to the live edge the viewer's player sits.
  *
  * Separate from quality on purpose — they trade off against different things.

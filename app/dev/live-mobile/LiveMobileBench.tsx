@@ -212,6 +212,7 @@ export function LiveMobileBench() {
             playbackUrl: video ? source : NO_SOURCE,
             latencyMode: 'low_latency',
             creatorUserId: CREATOR.id,
+            source: 'llhls',
           },
       loading: false,
       refresh: noop,

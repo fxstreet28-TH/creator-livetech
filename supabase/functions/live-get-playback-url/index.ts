@@ -9,15 +9,27 @@
  * one SECURITY DEFINER function, `can_watch_live_session`, and the chat channel
  * and the video can no longer disagree about who is allowed in.
  *
- * It answers one of two deliveries:
+ * It answers one of three deliveries:
  *
- *   llhls    the normal path. A Bunny CDN URL the browser plays with hls.js.
- *   livekit  a session with no Bunny stream — a row created before this
+ *   origin   a session carried by our own MediaMTX on origin-sg-1, cached by
+ *            the Bunny pull zone. An LL-HLS playlist the browser plays with
+ *            hls.js — the same player as `llhls`, a different URL.
+ *   llhls    a session carried by Bunny Live. A Bunny CDN URL the browser
+ *            plays with hls.js.
+ *   livekit  a session with no HLS playlist at all — a row created before this
  *            migration, or one whose Bunny create failed and fell back. The
  *            viewer gets a subscriber token instead, so those sessions keep
  *            playing instead of showing an error for something that is not the
  *            viewer's problem.
  *            TODO(phase 2B): drop with the rest of the LiveKit viewer path.
+ *
+ * ORDER MATTERS between those three. The LiveKit answer is selected by the
+ * ABSENCE of a Bunny playlist, so it is the fallback for anything unrecognised
+ * — which an origin session is, since it has no Bunny stream. Checked first,
+ * an origin viewer would be handed a valid token to a LiveKit room that has no
+ * publisher in it and would sit watching nothing, with every layer reporting
+ * success. The origin branch is therefore ahead of it, keyed on the column only
+ * an origin session has.
  *
  * verify_jwt is on, so the login gate is enforced at the gateway before any of
  * this runs; `getAuthedUser` returning null here means a malformed or expired
@@ -81,7 +93,7 @@ Deno.serve(async (req) => {
 
     const { data: session, error: sessionErr } = await supabase
       .from('live_sessions')
-      .select('id, creator_id, room_name, title, status, ended_at, latency_mode, bunny_stream_id, bunny_playback_url, bunny_thumbnail_url, access_level')
+      .select('id, creator_id, room_name, title, status, ended_at, latency_mode, bunny_stream_id, bunny_playback_url, bunny_thumbnail_url, access_level, origin_room_id, hls_playback_url')
       .eq('id', body.session_id)
       .maybeSingle();
 
@@ -134,6 +146,41 @@ Deno.serve(async (req) => {
       'bunny_stream_api_key',
       'bunny_stream_library_id',
     ]);
+
+    // ---- Origin (self-hosted MediaMTX + Bunny pull zone) -------------------
+    //
+    // Ahead of both branches below. See the header for why order decides
+    // correctness here rather than only tidiness.
+    if (session.hls_playback_url) {
+      return jsonResponse({
+        delivery: 'origin',
+        session_id: session.id,
+        playback_url: session.hls_playback_url,
+        thumbnail_url: session.bunny_thumbnail_url,
+        latency_mode: session.latency_mode ?? 'low_latency',
+        creator_user_id: creator?.user_id ?? null,
+        // The URL is stable for the life of the broadcast rather than minted
+        // per request, so `expires_at` is the session's horizon, not a
+        // signature's. It is still sent because the client refreshes on it —
+        // see fetchLivePlayback's callers.
+        expires_at: new Date(Date.now() + PLAYBACK_TTL_SECONDS * 1000).toISOString(),
+        /**
+         * Always false, and deliberately surfaced rather than omitted.
+         *
+         * The pull zone in front of origin-sg-1 is a Standard zone with no
+         * token authentication configured, so this URL is a plain CDN link:
+         * anyone who has it can fetch the playlist without being logged in,
+         * and the login gate plus the entitlement check above are the only
+         * things standing between a viewer and the video. That is the same
+         * posture the llhls path runs in whenever `bunny_stream_token_key` is
+         * unset — reported the same way, so it shows up in a response instead
+         * of only in a vault listing.
+         * TODO(post-launch): enable token auth on aurum-live-origin and sign
+         * this the way signBunnyUrl signs the llhls playlist.
+         */
+        signed: false,
+      });
+    }
 
     // ---- Legacy / fallback delivery ---------------------------------------
     if (!session.bunny_playback_url) {

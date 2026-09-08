@@ -53,11 +53,31 @@ export type DiagnosticOutcome =
 
 export type DeliveryPath = 'hls' | 'livekit';
 
+/**
+ * Which server produced the HLS playlist, when `delivery` is 'hls'.
+ *
+ * NOT part of `delivery`, and that is a schema constraint rather than a
+ * preference: `log_live_viewer_diagnostic` writes p_delivery into a column with
+ * a CHECK on exactly ('hls','livekit'), so a third value would be rejected at
+ * the database and every diagnostic row would be silently lost — on the path
+ * where losing them costs the most, since a viewer who cannot play is the whole
+ * reason the table exists. It rides in the jsonb `detail` instead, which has no
+ * such constraint.
+ */
+export type HlsSource = 'llhls' | 'origin';
+
 export interface DiagnosticEvent {
   sessionId: string;
   step: DiagnosticStep;
   outcome: DiagnosticOutcome;
   delivery: DeliveryPath;
+  /**
+   * Bunny Live, or our own origin-sg-1. Merged into `detail` on the way out.
+   *
+   * "HLS playback failed" names a symptom with two owners and two different
+   * fixes; this is what makes a row point at one of them.
+   */
+  source?: HlsSource;
   attempt?: number;
   elapsedMs?: number;
   detail?: Record<string, unknown>;
@@ -95,6 +115,11 @@ function clientId(): string {
  * Record one ladder event. Never throws, never blocks, never retries.
  */
 export function logViewerDiagnostic(event: DiagnosticEvent): void {
+  // Merged rather than assigned, and the caller's own keys win: `detail` is the
+  // free-form half of the row and a caller that has already said something
+  // about the source knows more than this default does.
+  const detail = event.source ? { source: event.source, ...event.detail } : event.detail;
+
   // Mirrored to the console unconditionally. On the device that is actually
   // broken, a USB cable and Safari's inspector are the fastest path to the
   // answer, and that device is frequently the one whose network write fails.
@@ -102,7 +127,7 @@ export function logViewerDiagnostic(event: DiagnosticEvent): void {
     `[live/recovery] ${event.step} -> ${event.outcome} (${event.delivery}` +
       `${event.attempt ? `, attempt ${event.attempt}` : ''}` +
       `${event.elapsedMs ? `, ${event.elapsedMs}ms` : ''})`,
-    event.detail ?? '',
+    detail ?? '',
   );
 
   try {
@@ -118,7 +143,7 @@ export function logViewerDiagnostic(event: DiagnosticEvent): void {
         p_elapsed_ms: Math.round(event.elapsedMs ?? 0),
         p_build_id: RUNNING_BUILD_ID,
         p_user_agent: typeof navigator === 'undefined' ? null : navigator.userAgent,
-        p_detail: event.detail ?? null,
+        p_detail: detail ?? null,
       })
       .then(
         () => undefined,

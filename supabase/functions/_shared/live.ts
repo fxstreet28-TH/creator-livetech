@@ -60,15 +60,37 @@ export interface LiveCostBreakdown {
   totalThb: number;
 }
 
+/** Which pipeline carried the session being priced. */
+export type LiveDeliveryMode = 'livekit' | 'llhls' | 'origin';
+
 /**
  * What one finished session cost.
  *
  * Peak viewers rather than an average: it is the only audience number the
  * platform actually records (see persistViewerCounts on the client), and
  * over-estimating the bill is the safe direction for a budget kill switch.
+ *
+ * DELIVERY CHANGES THE PER-STREAM LINE, and getting this wrong is not just a
+ * cosmetic figure on a creator's summary. `estimated_cost_thb` is posted to the
+ * platform budget, and the budget is what `check_creator_can_golive` refuses
+ * go-lives on — so a session charged for infrastructure it never touched walks
+ * the platform toward its own kill switch for free.
+ *
+ * An 'origin' session touches neither LiveKit nor Bunny Live: the creator's
+ * WHIP stream terminates on origin-sg-1, which is a droplet on a FLAT monthly
+ * bill. A flat cost does not belong in a per-session estimate at all — it is
+ * the same amount whether the box carries zero broadcasts or twelve — so the
+ * per-stream line is zero rather than small. The audience line stays exactly as
+ * it is: those bytes are still Bunny CDN egress at the same bitrate, so the
+ * same per-viewer-minute rate applies whichever origin served them.
  */
-export function estimateLiveCost(durationMinutes: number, peakViewers: number): LiveCostBreakdown {
-  const livekitThb = durationMinutes * LIVEKIT_THB_PER_STREAM_MINUTE;
+export function estimateLiveCost(
+  durationMinutes: number,
+  peakViewers: number,
+  delivery: LiveDeliveryMode = 'llhls',
+): LiveCostBreakdown {
+  const livekitThb =
+    delivery === 'origin' ? 0 : durationMinutes * LIVEKIT_THB_PER_STREAM_MINUTE;
   const bunnyThb = durationMinutes * peakViewers * BUNNY_LIVE_THB_PER_VIEWER_MINUTE;
   return { livekitThb, bunnyThb, totalThb: livekitThb + bunnyThb };
 }

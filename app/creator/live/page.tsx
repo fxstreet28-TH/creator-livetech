@@ -67,9 +67,17 @@ import type { LiveGiftEvent } from '@/lib/live/gifts';
 /** What the create call gave us, plus the two things it does not return. */
 interface ActiveBroadcast {
   liveSessionId: string;
+  /** Empty on an origin session, which has no LiveKit room to connect to. */
   wsUrl: string;
-  /** SECURITY: a LiveKit room credential. Kept in memory only. */
+  /** SECURITY: a LiveKit room credential. Kept in memory only. Empty on origin. */
   token: string;
+  /**
+   * SECURITY: the WHIP publish capability, on an origin session only; empty on
+   * the other two. Anyone holding this URL can broadcast into this session, so
+   * it stays in memory exactly like `token` above — never logged, never
+   * persisted, never put in a URL. See lib/live/whipClient.ts.
+   */
+  whipUrl: string;
   quality: BroadcastQuality;
   maxViewers: number;
   /**
@@ -78,6 +86,9 @@ interface ActiveBroadcast {
    * 'livekit' means the Bunny stream could not be created and the backend fell
    * back so the creator could still broadcast. The broadcaster skips the
    * egress call in that case — there is nothing to push to.
+   *
+   * 'origin' means our own MediaMTX: the broadcaster publishes over WHIP to
+   * `whipUrl` and there is no room, no token and no egress at all.
    */
   delivery: LiveDelivery;
   /**
@@ -360,10 +371,15 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
       return;
     }
 
+    // Narrowed on `delivery` rather than read as optional fields: the two arms
+    // of CreateLiveResponse carry genuinely different credentials, and reading
+    // the wrong one yields undefined rather than an error — a broadcaster that
+    // connects to nothing and reports no failure.
     setBroadcast({
       liveSessionId: data.live_session_id,
-      wsUrl: data.ws_url,
-      token: data.access_token,
+      wsUrl: data.delivery === 'origin' ? '' : data.ws_url,
+      token: data.delivery === 'origin' ? '' : data.access_token,
+      whipUrl: data.delivery === 'origin' ? data.whip_url : '',
       quality: data.broadcast_quality,
       maxViewers: data.max_viewers,
       delivery: data.delivery,
@@ -430,6 +446,7 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
         token={broadcast.token}
         quality={broadcast.quality}
         delivery={broadcast.delivery}
+        whipUrl={broadcast.whipUrl}
         micEnabled={micEnabled}
         elapsedSeconds={elapsedSeconds}
         filterId={filterId}
@@ -660,6 +677,7 @@ function BroadcastingLayout({
               token={broadcast.token}
               quality={broadcast.quality}
               delivery={broadcast.delivery}
+              whipUrl={broadcast.whipUrl}
               videoDeviceId={videoDeviceId}
               micEnabled={micEnabled}
               elapsedSeconds={elapsedSeconds}

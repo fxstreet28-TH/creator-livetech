@@ -89,6 +89,7 @@ export function CreatorLiveMobileBench() {
         token="dev-token"
         quality="720p"
         delivery="llhls"
+        whipUrl=""
         micEnabled
         elapsedSeconds={761}
         debugCamera
