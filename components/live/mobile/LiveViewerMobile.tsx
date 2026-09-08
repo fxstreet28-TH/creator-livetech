@@ -67,7 +67,8 @@ import {
 import { FOLLOW_NOTICE } from "@/components/viewer/CreatorInlineCard";
 import { EmojiReactionButton } from "../EmojiReactionButton";
 import { FloatingReactionsLayer } from "../FloatingReactionsLayer";
-import { HlsLivePlayer, type PlayerFit } from "../HlsLivePlayer";
+import type { PlayerFit } from "../HlsLivePlayer";
+import { OriginLivePlayer } from "../OriginLivePlayer";
 import { LiveBadge } from "../LiveStatsBar";
 import { LiveChat } from "../LiveChat";
 import { LiveEndedCard } from "../LiveEndedCard";
@@ -177,7 +178,9 @@ export function LiveViewerMobile({ sessionId, state }: LiveViewerMobileProps) {
       {/* ------------------------------------------------------------ video */}
       {watchable &&
         (watch.kind === "hls" ? (
-          <HlsLivePlayer
+          /* WHEP first on the origin path, HLS everywhere else and on any WHEP
+             failure. A drop-in for HlsLivePlayer — see OriginLivePlayer. */
+          <OriginLivePlayer
             sessionId={sessionId}
             recoveryEnabled={!ended}
             playbackUrl={watch.playbackUrl}

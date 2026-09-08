@@ -79,7 +79,13 @@ export type PlayerPresentation = "framed" | "fullbleed";
  */
 export type PlayerFit = "cover" | "contain";
 
-interface HlsLivePlayerProps {
+/**
+ * Exported so the origin router can be a literal drop-in for this player —
+ * see OriginLivePlayer, which takes exactly these props and forwards them
+ * untouched on the fallback path. A type export only; nothing about this
+ * component's behaviour changes.
+ */
+export interface HlsLivePlayerProps {
   /** For the diagnostics rows the recovery ladder writes. */
   sessionId: string;
   playbackUrl: string;
