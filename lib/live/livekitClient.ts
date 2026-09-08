@@ -172,6 +172,27 @@ export async function connectAsPublisher(
         maxBitrate: publishBitrateFor(options.quality),
       },
       /**
+       * H.264, not the SDK's default of VP8 — this is what makes the broadcast
+       * visible on an iPhone.
+       *
+       * iOS Safari's WebRTC stack has a hardware decoder for H.264 and nothing
+       * dependable behind VP8: the negotiation succeeds, the track subscribes,
+       * the viewer count goes up, chat and gifts flow — and the video element
+       * paints a black frame for the whole broadcast. It is the worst shape of
+       * failure this platform has, because every signal a viewer or an operator
+       * looks at says the stream is fine. Desktop Chrome has a solid software
+       * VP8 decoder, which is why the default survived weeks of testing.
+       *
+       * Set for BOTH remaining subscriber kinds, not just LiveKit delivery:
+       * under llhls the one subscriber is the egress worker, whose output is
+       * HLS, and HLS carries H.264/H.265 only — so publishing VP8 there buys a
+       * transcode on the way out and nothing else.
+       *
+       * Simulcast below is unaffected: LiveKit encodes H.264 layers the same
+       * way it encodes VP8 ones.
+       */
+      videoCodec: 'h264',
+      /**
        * On only when real viewers subscribe to this room.
        *
        * Simulcast exists so an SFU can hand each viewer the layer their

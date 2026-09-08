@@ -42,6 +42,7 @@ import {
   EGRESS_START_DELAY_MS,
   MAX_RECONNECT_ATTEMPTS,
   RECONNECT_DELAY_MS,
+  WHIP_ICE_GRACE_MS,
   VIEWER_PERSIST_MS,
 } from '@/lib/live/constants';
 import {
@@ -475,6 +476,139 @@ export function CreatorBroadcaster({
       setDeliveryLive(true);
     };
 
+    /**
+     * ICE-level recovery for the origin path, which the LiveKit path gets free.
+     *
+     * `livekit-client` holds a signalling socket and re-negotiates over it. A
+     * WHIP publisher has one HTTP POST and then nothing — so when normal mobile
+     * jitter breaks the candidate pair, the peer connection dies and the
+     * broadcast ends without anyone being told. In the origin-sg-1 logs that is
+     * lost RTP packets at 05:36:58 and `closed: peer connection closed` at
+     * 05:37:22, with the creator's phone still showing them as live and the
+     * viewer stuck on "รอสัญญาณจาก Creator".
+     *
+     * Two rungs, cheapest first:
+     *
+     *  1. ICE restart. One PATCH to the WHIP resource; the MediaMTX session and
+     *     its HLS muxer survive, so viewers never see the playlist break.
+     *  2. The full re-handshake ladder in onDisconnected — the same three
+     *     backed-off attempts the LiveKit path uses.
+     *
+     * Rung 1 is bounded by the same MAX_RECONNECT_ATTEMPTS as rung 2: a
+     * connection that flaps has a problem an ICE restart cannot fix, and
+     * re-keying it forever would keep a broadcast nominally alive while nothing
+     * reaches the origin.
+     */
+    let iceTimer: ReturnType<typeof setTimeout> | null = null;
+    let iceRestarts = 0;
+    let recovering = false;
+    /**
+     * A restart has been negotiated and ICE has not yet said whether it worked.
+     *
+     * The phase goes back to 'live' when the candidate pair actually forms, not
+     * when the PATCH returns 200: a successful re-key with nothing behind it is
+     * exactly the silent dead broadcast this whole path exists to stop. It also
+     * keeps setPhaseAndReport off the every-event path — it notifies the parent
+     * unconditionally, so 'live' is only re-sent after a real recovery.
+     */
+    let awaitingRestartedIce = false;
+
+    const clearIceTimer = () => {
+      if (iceTimer) clearTimeout(iceTimer);
+      iceTimer = null;
+    };
+
+    const recoverWhip = async () => {
+      if (cancelled || recovering) return;
+      recovering = true;
+      setPhaseAndReport('reconnecting');
+
+      try {
+        if (iceRestarts < MAX_RECONNECT_ATTEMPTS) {
+          iceRestarts += 1;
+          const restarted = await whip?.restartIce(whipAbort.signal);
+          if (cancelled) return;
+          if (restarted) {
+            // Re-keyed against the SAME MediaMTX session, so nothing downstream
+            // has to be told. Whether it took is ICE's answer, below.
+            awaitingRestartedIce = true;
+            /**
+             * And a deadline on that answer.
+             *
+             * A re-keyed connection that cannot find a pair sits in `checking`,
+             * which is not `disconnected` and not `failed` — so without this the
+             * watcher below would match nothing and the broadcast would wait on
+             * an event that never comes. Cleared the moment ICE connects.
+             */
+            clearIceTimer();
+            iceTimer = setTimeout(() => {
+              iceTimer = null;
+              awaitingRestartedIce = false;
+              void recoverWhip();
+            }, WHIP_ICE_GRACE_MS);
+            return;
+          }
+        }
+      } finally {
+        recovering = false;
+      }
+
+      if (!cancelled) onDisconnected();
+    };
+
+    const watchWhipConnection = (pc: RTCPeerConnection) => {
+      const onStateChange = () => {
+        if (cancelled) return;
+        const ice = pc.iceConnectionState;
+        const connection = pc.connectionState;
+
+        // ICE is the finer signal and the one that clears first, so it decides
+        // that the broadcast is healthy again — including after a restart,
+        // which walks back through `checking` and matches nothing below.
+        if (ice === 'connected' || ice === 'completed') {
+          clearIceTimer();
+          if (awaitingRestartedIce) {
+            awaitingRestartedIce = false;
+            setPhaseAndReport('live');
+          }
+          return;
+        }
+
+        // Nothing to restart on a closed connection; only a new one will do.
+        if (connection === 'closed' || ice === 'closed') {
+          clearIceTimer();
+          onDisconnected();
+          return;
+        }
+
+        if (connection === 'failed' || ice === 'failed') {
+          clearIceTimer();
+          awaitingRestartedIce = false;
+          void recoverWhip();
+          return;
+        }
+
+        /**
+         * `disconnected` is given a grace window rather than acted on.
+         *
+         * It is the state a phone passes through on a cell handover and it
+         * clears itself within a second or two, so rescuing it immediately
+         * would turn every lift ride into a visible reconnect. Waiting forever
+         * is what shipped, and what let a three-second airplane-mode blip end a
+         * broadcast. See WHIP_ICE_GRACE_MS.
+         */
+        if ((connection === 'disconnected' || ice === 'disconnected') && !iceTimer) {
+          iceTimer = setTimeout(() => {
+            iceTimer = null;
+            void recoverWhip();
+          }, WHIP_ICE_GRACE_MS);
+        }
+      };
+
+      pc.addEventListener('connectionstatechange', onStateChange);
+      pc.addEventListener('iceconnectionstatechange', onStateChange);
+    };
+
     async function connect() {
       setError(null);
       setPhaseAndReport(retries === 0 ? 'connecting' : 'reconnecting');
@@ -557,6 +691,25 @@ export function CreatorBroadcaster({
        */
       try {
         if (delivery === 'origin') {
+          /**
+           * Retire the previous session BEFORE opening a new one.
+           *
+           * MediaMTX admits one publisher per path and keeps the loser waiting:
+           * a re-handshake that leaves the old peer connection standing gets a
+           * 409, which surfaces to the creator as "ไลฟ์ก่อนหน้ายังปิดไม่สมบูรณ์"
+           * and burns a rung of the ladder every time. The deploy runbook
+           * records the same failure for a missed teardown route. Awaited, so
+           * the DELETE has actually landed before the POST goes out.
+           */
+          if (whip) {
+            const previous = whip;
+            whip = null;
+            whipRef.current = null;
+            clearIceTimer();
+            await previous.close();
+            if (cancelled) return;
+          }
+
           whip = await publishWhip({
             endpoint: whipUrl,
             stream: filtered.stream,
@@ -571,19 +724,16 @@ export function CreatorBroadcaster({
            * WHIP has no reconnect of its own — there is no SDK holding a
            * signalling socket, so nothing retries unless this does. The peer
            * connection's own state is the only signal that the broadcast has
-           * dropped, and it is routed into the SAME ladder the LiveKit path
+           * dropped, and the last rung is the SAME ladder the LiveKit path
            * uses so both pipelines fail over identically.
            *
-           * 'disconnected' is deliberately NOT treated as fatal: it is the
-           * state a phone passes through on a cell handover and it recovers on
-           * its own within seconds. Tearing the session down there would turn
-           * every lift ride into a dropped broadcast.
+           * BOTH state events are listened to, not one. The connection state is
+           * the aggregate (ICE plus DTLS) and is what Chrome moves first; the
+           * ICE state is what Safari reports promptly while its connection
+           * state lags. A publisher that watches only one of them recovers on
+           * one browser and hangs on the other.
            */
-          whip.pc.addEventListener('connectionstatechange', () => {
-            if (cancelled) return;
-            const state = whip?.pc.connectionState;
-            if (state === 'failed' || state === 'closed') onDisconnected();
-          });
+          watchWhipConnection(whip.pc);
         } else {
           await connectAsPublisher(room!, {
             wsUrl,
@@ -635,6 +785,7 @@ export function CreatorBroadcaster({
       cancelled = true;
       if (retryTimer) clearTimeout(retryTimer);
       if (egressTimer) clearTimeout(egressTimer);
+      clearIceTimer();
       // Each handler is removed by reference rather than with
       // removeAllListeners(): the Room is an EventEmitter the SDK also hands
       // to its own internals, and tearing down every listener on it is a

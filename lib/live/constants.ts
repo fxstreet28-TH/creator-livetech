@@ -262,3 +262,20 @@ export const MAX_RECONNECT_ATTEMPTS = 3;
 
 /** Backoff between those attempts. */
 export const RECONNECT_DELAY_MS = 3_000;
+
+/**
+ * How long a WHIP publisher may sit in ICE `disconnected` before it is treated
+ * as a broadcast that needs rescuing.
+ *
+ * `disconnected` is not a failure — it is the state a phone passes through on a
+ * 5G handover, a WiFi-to-cellular switch or a lift ride, and it clears itself
+ * within a second or two. Acting on it immediately would turn every one of
+ * those into a visible reconnect. Acting on it NEVER is what shipped, and what
+ * the origin-sg-1 logs show as `closed: peer connection closed` twenty seconds
+ * after the first lost packets, with the creator still holding a phone that
+ * says they are live.
+ *
+ * Four seconds is past the point where a handover recovers on its own and well
+ * inside the ~30s the browser takes to declare `failed` by itself.
+ */
+export const WHIP_ICE_GRACE_MS = 4_000;
