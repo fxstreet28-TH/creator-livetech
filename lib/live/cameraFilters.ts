@@ -68,6 +68,37 @@ export function filterLabelFor(id: FilterId | null | undefined): string {
 export const BROADCAST_NOTICE = 'ผู้ชมจะเห็นฟิลเตอร์นี้ด้วย';
 
 /**
+ * How much of the published frame a DESKTOP creator's camera fills.
+ *
+ * THE PROBLEM: a laptop webcam sits 40-60cm from a creator's face and its
+ * field of view is fixed in glass. There is no zooming out of a lens. So a
+ * desktop broadcast arrives at a phone viewer — which since the letterbox
+ * change fits the whole 16:9 into the portrait screen rather than cropping it
+ * — with the creator still filling the video area edge to edge. It reads as a
+ * face-cam rather than as a scene.
+ *
+ * THE FIX: draw the frame smaller inside a canvas of the SAME size and publish
+ * that. The margin is opaque black, and the viewer's letterbox treats it as
+ * part of the picture, so what a phone shows is a smaller creator with visible
+ * room on every side. Optically that is what stepping back from the camera
+ * looks like; the lens never moved.
+ *
+ * 0.75 — three quarters of the width and three quarters of the height, so the
+ * creator occupies just over half the frame's area. Tuned to be visibly wider
+ * without pushing anyone into the middle distance. It is one number on purpose:
+ * there is no slider, no gesture and no per-creator setting, and if this wants
+ * to be 0.7 that is this line and nothing else.
+ *
+ * NOT applied to a phone broadcast, which needs none of it — a phone camera is
+ * held at arm's length and its portrait frame already fills a portrait viewer.
+ * See isDesktopBroadcastViewport in ./broadcastDevice for who asks.
+ *
+ * NOT a crop and NOT an aspect change: the published track stays exactly the
+ * dimensions and the 16:9 ratio it always was, so nothing renegotiates.
+ */
+export const DESKTOP_PUBLISH_SCALE = 0.75;
+
+/**
  * ==================================================================
  * THE SAME LOOKS, FOR A CANVAS THAT CANNOT FILTER.
  * ==================================================================
@@ -314,28 +345,148 @@ export function applyLookPasses(
 }
 
 /**
+ * One canvas the draw loop paints, and how much of that canvas the camera
+ * fills.
+ *
+ * Two of these exist on a desktop broadcast and one on a phone — see
+ * createFilteredStream. Bundling the context with its scale and its vignette
+ * cache is what lets the same paint run against either without a branch: the
+ * preview target has scale 1 and the publish target has DESKTOP_PUBLISH_SCALE,
+ * and nothing else about them differs.
+ */
+interface DrawTarget {
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+  /** 1 = edge to edge. Below 1 the frame is centred, with black around it. */
+  scale: number;
+  /** Owned per target: the gradient is built for one canvas, not one stream. */
+  vignette: VignetteCache | null;
+}
+
+/** Everything one frame needs, decided once and painted onto every target. */
+interface FramePaint {
+  lookMode: LookMode;
+  filterId: FilterId;
+  flipped: boolean;
+  /** The centred sub-rect of the camera to draw, in SOURCE pixels. */
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
+}
+
+/**
+ * Draw one camera frame onto one target, look and mirror included.
+ *
+ * This is the whole per-frame paint, lifted out of the draw loop so that a
+ * desktop broadcast can run it twice — once into the preview canvas at full
+ * size and once into the publish canvas at DESKTOP_PUBLISH_SCALE — from a
+ * single requestVideoFrameCallback. Two loops would drift; one loop calling
+ * this twice cannot.
+ */
+function paintFrame(target: DrawTarget, video: HTMLVideoElement, paint: FramePaint) {
+  const { ctx, canvas, scale } = target;
+
+  // The destination rectangle, centred. Rounded before the offset is derived
+  // from it so the two margins stay equal and the picture does not sit half a
+  // pixel off centre.
+  const dw = Math.round(canvas.width * scale);
+  const dh = Math.round(canvas.height * scale);
+  const dx = Math.round((canvas.width - dw) / 2);
+  const dy = Math.round((canvas.height - dh) / 2);
+
+  // save/restore around the whole paint: both the filter and the transform
+  // are drawing state, and a flip that leaked into the next frame would flip
+  // it back. Set per frame rather than once, so a look or a flip changed
+  // mid-broadcast takes effect on the very next frame.
+  ctx.save();
+
+  // THE PADDING, repainted every frame and BEFORE the filter is set.
+  //
+  // Every look pass below is a blend that leaves black at black — soft-light,
+  // overlay, multiply and saturation all resolve to 0 against a zero backdrop
+  // — so in practice the margin would stay black on its own. Repainting it is
+  // one fill of a region nothing else touches, and it means the margin is a
+  // fact rather than a property of the blend maths that happens to hold for
+  // today's six looks.
+  if (scale < 1) {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  // Only where it does something. On the composite path this assignment would
+  // be the silent no-op that caused the bug, and writing it anyway "just in
+  // case" is how it stayed hidden.
+  if (paint.lookMode === 'filter') ctx.filter = filterCssFor(paint.filterId);
+  if (paint.flipped) {
+    // Move the origin to the right edge, then draw leftwards. Scaling without
+    // the translate would put the picture off-canvas. The destination rect is
+    // centred, so it lands on itself under the mirror.
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);
+  }
+  ctx.drawImage(video, paint.sx, paint.sy, paint.sw, paint.sh, dx, dy, dw, dh);
+  ctx.restore();
+
+  /*
+    THE LOOK, ON THE BROWSERS THAT CANNOT FILTER — and note WHERE it is.
+
+    After the restore, so it runs in plain canvas coordinates: the passes
+    cover the whole frame, and painting them through the mirror transform
+    would flip a vignette that is symmetrical anyway while making the code lie
+    about what it depends on.
+
+    After the draw, every frame, which is what makes the zoom crop, the
+    front/back flip and a camera that resized mid-broadcast fall out for free
+    rather than needing handling — they have all already happened by the time
+    these run, so a look survives all three without knowing they exist.
+  */
+  if (paint.lookMode === 'composite') {
+    target.vignette = applyLookPasses(ctx, paint.filterId, target.vignette);
+  }
+}
+
+/**
  * A camera stream with the look burned into its frames.
  *
- * `stream` is what gets published. Its video track comes from a canvas that
- * this module redraws once per camera frame with `ctx.filter` set; its audio
- * tracks are the SOURCE's, passed through untouched — canvas.captureStream()
- * produces video only, and forgetting to carry the audio across is the classic
- * way to ship a silent broadcast.
+ * `publishStream` is what gets published and `previewStream` is what the
+ * creator watches. Their video tracks come from canvases that this module
+ * redraws once per camera frame with `ctx.filter` set; their audio tracks are
+ * the SOURCE's, passed through untouched — canvas.captureStream() produces
+ * video only, and forgetting to carry the audio across is the classic way to
+ * ship a silent broadcast.
+ *
+ * THE TWO ARE THE SAME OBJECT unless a `publishScale` was asked for. Only a
+ * desktop broadcast asks, and only so the published frame can be padded
+ * without shrinking the creator's own self-view — see createFilteredStream.
  *
  * `setFilter` swaps the look mid-broadcast with no republish: the track is the
  * canvas, and the canvas does not care what is being drawn onto it. That is
  * the whole reason the look is changeable from the broadcast bottom bar.
  *
- * COST: one draw per camera frame for the length of the broadcast. That is
- * real, and it is why /creator/live tells creators to broadcast from a
- * computer. `requestVideoFrameCallback` is used where available so the loop
- * runs at the CAMERA's rate (30fps) rather than the display's — on a 120Hz
- * screen a requestAnimationFrame loop would do four times the work for the
- * same output.
+ * COST: one draw per camera frame for the length of the broadcast, or two on a
+ * padded desktop broadcast. That is real, and it is why /creator/live tells
+ * creators to broadcast from a computer. `requestVideoFrameCallback` is used
+ * where available so the loop runs at the CAMERA's rate (30fps) rather than
+ * the display's — on a 120Hz screen a requestAnimationFrame loop would do four
+ * times the work for the same output.
  */
 export interface FilteredStream {
-  /** Publish this. Video from the canvas, audio from the source. */
-  stream: MediaStream;
+  /**
+   * The creator's self-view. ALWAYS the full frame, edge to edge, at the
+   * camera's own framing.
+   *
+   * Not a detail: a preview that shrank with the published frame is what made
+   * a desktop creator feel the tool was fighting them, and it is the reason
+   * the padding lives on a second canvas rather than on this one.
+   */
+  previewStream: MediaStream;
+  /**
+   * Publish this. Identical object to `previewStream` unless a `publishScale`
+   * below 1 was given, in which case it is a separate canvas of the SAME
+   * dimensions carrying the same frame drawn smaller and centred.
+   */
+  publishStream: MediaStream;
   setFilter: (id: FilterId) => void;
   /**
    * Point the canvas at a DIFFERENT camera, without republishing anything.
@@ -378,8 +529,8 @@ export interface FilteredStream {
    * smaller frame. Softer, which is what digital zoom is; never a resolution
    * change mid-broadcast, which would renegotiate.
    *
-   * The creator's self-view IS this canvas, so preview and broadcast cannot
-   * show different crops.
+   * Zoom is a SOURCE rect, so it applies to both canvases equally: a desktop
+   * creator who zooms in sees the same crop they publish, padded.
    */
   setZoom: (zoom: number) => void;
   /**
@@ -394,9 +545,13 @@ export interface FilteredStream {
    * the canvas was asked to capture at. The composite passes are what makes
    * that worth showing: they are cheap, but "cheap" is a claim, and this is
    * the number that settles it on the phone in the creator's hand.
+   *
+   * `publishScale` is 1 on a pass-through pipeline and DESKTOP_PUBLISH_SCALE
+   * on a padded one — the one number that says which of the two shapes a
+   * viewer is receiving.
    */
-  getStats: () => { fps: number; lookMode: LookMode };
-  /** Stops the draw loop and the canvas track. Does NOT stop the source. */
+  getStats: () => { fps: number; lookMode: LookMode; publishScale: number };
+  /** Stops the draw loop and the canvas tracks. Does NOT stop the source. */
   stop: () => void;
 }
 
@@ -420,6 +575,12 @@ export async function createFilteredStream(
   initialFlipped = false,
   /** Longest published edge, in px. Omitted on desktop, which is unchanged. */
   maxLongEdge?: number,
+  /**
+   * How much of the published frame the camera fills. 1, or omitted, is the
+   * pass-through pipeline every caller had before: ONE canvas, previewed and
+   * published. Below 1 builds the second canvas — see DESKTOP_PUBLISH_SCALE.
+   */
+  publishScale?: number,
 ): Promise<FilteredStream> {
   const [sourceVideoTrack] = source.getVideoTracks();
   if (!sourceVideoTrack) throw new Error('No video track to filter');
@@ -427,6 +588,15 @@ export async function createFilteredStream(
   const settings = sourceVideoTrack.getSettings();
   const width = settings.width ?? 1280;
   const height = settings.height ?? 720;
+
+  // Clamped rather than trusted: a caller that computes this from a constant
+  // cannot get it wrong, but a 0 or a NaN reaching the draw loop would publish
+  // an empty black frame for the length of a broadcast.
+  const scale =
+    typeof publishScale === 'number' && Number.isFinite(publishScale) && publishScale > 0
+      ? Math.min(1, publishScale)
+      : 1;
+  const padded = scale < 1;
 
   // A detached <video> is the only way to get decodable frames out of a
   // MediaStreamTrack that drawImage will accept. It is never added to the
@@ -437,13 +607,42 @@ export async function createFilteredStream(
   video.playsInline = true;
   await video.play();
 
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  // `alpha: false` — the camera has no transparency, and telling the browser
-  // so lets it skip compositing work on every single frame.
-  const ctx = canvas.getContext('2d', { alpha: false });
-  if (!ctx) throw new Error('Canvas 2D is unavailable');
+  /**
+   * One canvas, or two.
+   *
+   * `alpha: false` — the camera has no transparency, and telling the browser
+   * so lets it skip compositing work on every single frame. It is also what
+   * makes the padding opaque black rather than transparent, which matters the
+   * moment a second canvas exists.
+   */
+  const makeTarget = (targetScale: number): DrawTarget => {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d', { alpha: false });
+    if (!ctx) throw new Error('Canvas 2D is unavailable');
+    return { canvas, ctx, scale: targetScale, vignette: null };
+  };
+
+  const previewTarget = makeTarget(1);
+  /*
+    THE PUBLISH CANVAS, AND WHY IT IS A SECOND ONE.
+
+    A physical webcam cannot zoom out; its field of view is fixed in glass. The
+    way to give a desktop creator room around them is to draw the frame SMALLER
+    inside a canvas of the same size and let the margin be that room — which
+    the phone viewer's letterbox then contains, so the creator lands as a
+    smaller subject with space on every side instead of filling the width.
+
+    Doing that on the one existing canvas would shrink the creator's own
+    self-view with it, which is exactly the thing a desktop creator hated the
+    last time it was tried. So the scaled draw goes somewhere else, and the
+    preview keeps the frame it always had.
+
+    Not built at all when nothing asked for it: a phone broadcast constructs
+    ONE canvas and ONE captureStream, bit for bit what it did before.
+  */
+  const publishTarget = padded ? makeTarget(scale) : previewTarget;
 
   let currentFilter = initialFilter;
   let currentFlipped = initialFlipped;
@@ -463,7 +662,6 @@ export async function createFilteredStream(
     Desktop lands on 'filter' and is bit-for-bit unchanged by any of this.
   */
   const lookMode: LookMode = supportsCanvasFilter() ? 'filter' : 'composite';
-  let vignette: VignetteCache | null = null;
 
   // The measured draw rate — see getStats. A counter and a window, because a
   // per-frame delta reads as noise on a phone and what anyone actually wants
@@ -473,7 +671,18 @@ export async function createFilteredStream(
   let windowStartedAt = now();
   let measuredFps = 0;
 
-  console.info(`[camera] look mode: ${lookMode}`);
+  console.info(
+    `[camera] look mode: ${lookMode}, publish: ${
+      padded ? `padded ${Math.round(scale * 100)}% (2 canvases)` : 'pass-through (1 canvas)'
+    }`,
+  );
+
+  /**
+   * The canvases this loop paints, in order. One entry on a pass-through
+   * pipeline; on a padded one the preview comes first, so the creator's
+   * self-view is never the frame that gets dropped if the loop runs late.
+   */
+  const targets: DrawTarget[] = padded ? [previewTarget, publishTarget] : [previewTarget];
 
   const draw = () => {
     if (!running) return;
@@ -495,6 +704,10 @@ export async function createFilteredStream(
       settles a moment after `play()`, a phone rotated mid-broadcast, and the
       front/back flip in setSource handing over a different aspect ratio.
 
+      BOTH canvases take the same dimensions. The padded one differs only in
+      how much of itself the picture covers, which is what keeps the published
+      track 16:9 — this pads a frame, it never re-shapes one.
+
       Writing to canvas.width resets the whole 2D context, so it is guarded on
       an actual change — doing it every frame would clear the filter and the
       transform below on every frame.
@@ -503,67 +716,45 @@ export async function createFilteredStream(
       // The camera's own ratio, capped in SIZE only where the caller asked for
       // a cap. Rounded to even numbers because some encoders reject odd ones.
       const longest = Math.max(video.videoWidth, video.videoHeight);
-      const scale = maxLongEdge && longest > maxLongEdge ? maxLongEdge / longest : 1;
-      const nextWidth = Math.round((video.videoWidth * scale) / 2) * 2;
-      const nextHeight = Math.round((video.videoHeight * scale) / 2) * 2;
-      if (canvas.width !== nextWidth || canvas.height !== nextHeight) {
-        canvas.width = nextWidth;
-        canvas.height = nextHeight;
+      const fit = maxLongEdge && longest > maxLongEdge ? maxLongEdge / longest : 1;
+      const nextWidth = Math.round((video.videoWidth * fit) / 2) * 2;
+      const nextHeight = Math.round((video.videoHeight * fit) / 2) * 2;
+      for (const target of targets) {
+        if (target.canvas.width === nextWidth && target.canvas.height === nextHeight) continue;
+        target.canvas.width = nextWidth;
+        target.canvas.height = nextHeight;
         // The vignette gradient is built for one canvas size. applyLookPasses
         // checks this too; dropping it here means the check never has to fail.
-        vignette = null;
+        target.vignette = null;
       }
     }
 
-    // save/restore around the whole paint: both the filter and the transform
-    // are drawing state, and a flip that leaked into the next frame would
-    // flip it back. Set per frame rather than once, so a look or a flip
-    // changed mid-broadcast takes effect on the very next frame.
-    ctx.save();
-    // Only where it does something. On the composite path this assignment
-    // would be the silent no-op that caused the bug, and writing it anyway
-    // "just in case" is how it stayed hidden.
-    if (lookMode === 'filter') ctx.filter = filterCssFor(currentFilter);
-    if (currentFlipped) {
-      // Move the origin to the right edge, then draw leftwards. Scaling
-      // without the translate would put the picture off-canvas.
-      ctx.translate(canvas.width, 0);
-      ctx.scale(-1, 1);
-    }
     /*
       The source rectangle, in SOURCE pixels — which are no longer the same as
       the canvas's once a cap is downscaling the frame.
 
-      At zoom 1 this is the whole camera frame drawn across the whole canvas:
-      the full field of view, scaled but never cropped. Above 1 it is a centred
-      sub-rect of the source, scaled up to fill the same canvas, so the output
-      resolution never changes with zoom.
+      At zoom 1 this is the whole camera frame: the full field of view, scaled
+      but never cropped. Above 1 it is a centred sub-rect of the source, scaled
+      up to fill the same destination, so the output resolution never changes
+      with zoom.
+
+      Computed ONCE for both targets — the crop is a property of the camera,
+      not of where the frame is going.
     */
     const zoom = currentZoom > 1 ? currentZoom : 1;
     const sw = video.videoWidth / zoom;
     const sh = video.videoHeight / zoom;
-    const sx = (video.videoWidth - sw) / 2;
-    const sy = (video.videoHeight - sh) / 2;
-    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-    ctx.restore();
+    const paint: FramePaint = {
+      lookMode,
+      filterId: currentFilter,
+      flipped: currentFlipped,
+      sx: (video.videoWidth - sw) / 2,
+      sy: (video.videoHeight - sh) / 2,
+      sw,
+      sh,
+    };
 
-    /*
-      THE LOOK, ON THE BROWSERS THAT CANNOT FILTER — and note WHERE it is.
-
-      After the restore, so it runs in plain canvas coordinates: the passes
-      cover the whole frame, and painting them through the mirror transform
-      would flip a vignette that is symmetrical anyway while making the code
-      lie about what it depends on.
-
-      After the draw, every frame, which is what makes requirement 4 fall out
-      for free rather than needing handling: the zoom crop, the front/back
-      flip and a camera that resized mid-broadcast have all already happened by
-      the time these run, so a look survives all three without knowing they
-      exist.
-    */
-    if (lookMode === 'composite') {
-      vignette = applyLookPasses(ctx, currentFilter, vignette);
-    }
+    for (const target of targets) paintFrame(target, video, paint);
 
     framesThisWindow += 1;
     const at = now();
@@ -591,23 +782,33 @@ export async function createFilteredStream(
 
   draw();
 
-  const stream = canvas.captureStream(frameRate);
-  // Audio is not optional here — see the note above.
-  for (const audioTrack of source.getAudioTracks()) stream.addTrack(audioTrack);
+  const previewStream = previewTarget.canvas.captureStream(frameRate);
+  const publishStream = padded ? publishTarget.canvas.captureStream(frameRate) : previewStream;
+  // Audio is not optional here — see the note above. Both streams carry the
+  // SAME track objects: a MediaStreamTrack may belong to any number of
+  // streams, and cloning the microphone to keep two of them apart would be a
+  // second live capture of the same input.
+  for (const audioTrack of source.getAudioTracks()) {
+    previewStream.addTrack(audioTrack);
+    if (padded) publishStream.addTrack(audioTrack);
+  }
 
   return {
-    stream,
+    previewStream,
+    publishStream,
     setFilter: (id) => {
       currentFilter = id;
     },
     setFlipped: (flipped) => {
       currentFlipped = flipped;
     },
-    getStats: () => ({ fps: measuredFps, lookMode }),
+    getStats: () => ({ fps: measuredFps, lookMode, publishScale: scale }),
     setZoom: (zoom) => {
       // Floored at 1: there is no such thing as digital zoom OUT. Widening the
       // field of view needs a different camera, which is the 0.5x ultra-wide
-      // device switch and not this.
+      // device switch and not this. The desktop padding is not zoom and does
+      // not go through here — it changes where the frame lands, not which part
+      // of the sensor is read.
       currentZoom = Number.isFinite(zoom) && zoom > 1 ? zoom : 1;
     },
     setSource: async (next) => {
@@ -628,9 +829,12 @@ export async function createFilteredStream(
       if (frameCallbackId !== null && withFrameCallback.cancelVideoFrameCallback) {
         withFrameCallback.cancelVideoFrameCallback(frameCallbackId);
       }
-      // Only the canvas track: the source belongs to whoever opened the
-      // camera, and stopping it here would take the preview with it.
-      stream.getVideoTracks().forEach((track) => track.stop());
+      // Only the canvas tracks: the source belongs to whoever opened the
+      // camera, and stopping it here would take the preview with it. Both
+      // streams on a padded pipeline; they are the same object otherwise, and
+      // stopping an already-stopped track is a no-op either way.
+      previewStream.getVideoTracks().forEach((track) => track.stop());
+      publishStream.getVideoTracks().forEach((track) => track.stop());
       video.srcObject = null;
     },
   };
