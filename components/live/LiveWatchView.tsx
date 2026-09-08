@@ -47,7 +47,7 @@ import {
 import type { CreatorSummary } from "@/lib/viewer/types";
 import { EmojiReactionButton } from "./EmojiReactionButton";
 import { FloatingReactionsLayer } from "./FloatingReactionsLayer";
-import { HlsLivePlayer } from "./HlsLivePlayer";
+import { OriginLivePlayer } from "./OriginLivePlayer";
 import { LiveAccessLockCard } from "./LiveAccessLockCard";
 import { LiveChat } from "./LiveChat";
 import { LiveEndedCard } from "./LiveEndedCard";
@@ -274,7 +274,9 @@ export function LiveWatchView({ sessionId }: { sessionId: string }) {
             fills the column. */}
         <div className="relative flex aspect-video max-h-[55dvh] min-h-0 w-full flex-col lg:aspect-auto lg:max-h-none">
           {watch.kind === "hls" ? (
-            <HlsLivePlayer
+            /* WHEP first on the origin path, HLS everywhere else and on any
+               WHEP failure. A drop-in for HlsLivePlayer — see OriginLivePlayer. */
+            <OriginLivePlayer
               sessionId={sessionId}
               recoveryEnabled={!state.endedWhileWatching}
               playbackUrl={watch.playbackUrl}
