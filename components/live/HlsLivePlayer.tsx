@@ -67,17 +67,78 @@ export type PlayerPresentation = "framed" | "fullbleed";
 /**
  * How a full-bleed video fills the screen. Nothing else reads it.
  *
- * 'cover' is the default and it is not conditional on the source's shape. A
- * 9:16 phone is the canvas; a 16:9 desktop broadcast is CROPPED to fill it,
- * sides cut, exactly the way TikTok and IG Live show a landscape stream. The
- * previous rule here — letterbox a landscape source with `contain` — is what
- * put black bars above and below the picture on every phone watching a creator
- * who streams from a desktop, which is most of them.
+ * A DECISION THIS COMPONENT DOES NOT MAKE. The phone layout picks it from the
+ * source's shape — 'cover' for a portrait broadcast, which is nearly the
+ * phone's own shape, and 'contain' for a landscape one, whose sides cannot be
+ * cut without taking a creator's face with them — and the ⛶ button in its top
+ * bar overrides that either way. See LiveViewerMobile, which is where both
+ * rules live, and `onSourceOrientation`, which is what this player contributes
+ * to them.
  *
- * 'contain' is the viewer's own opt-in, from the ⛶ button the phone layout
- * draws in its top bar (see LiveViewerMobile). Nothing chooses it for them.
+ * Kept out of here on purpose: three different players can be mounted in that
+ * layout, and a fit each of them derived for itself is a picture that changes
+ * size when WHEP hands a viewer to HLS.
  */
 export type PlayerFit = "cover" | "contain";
+
+/**
+ * Which way round the SOURCE is — not which way round the player is.
+ *
+ * Declared here, beside PlayerFit, because the two are the question and the
+ * answer: a player REPORTS this upward and is told a fit back, and the rule
+ * connecting them lives in the phone layout (see LiveViewerMobile) so that all
+ * three players stay interchangeable from the layout's point of view. A player
+ * that decided its own fit would make the picture jump the moment WHEP gave
+ * way to HLS.
+ */
+export type SourceOrientation = "landscape" | "portrait";
+
+/**
+ * Report a <video> element's source shape, whenever it is known or changes.
+ *
+ * `loadedmetadata` and the element's own `resize` event are what fire when the
+ * DECODED size changes — a creator rotating their phone mid-broadcast, or a
+ * WHEP stream renegotiating — and a ResizeObserver on the element catches the
+ * case where a layout change is what made the shape matter. Deduped by the
+ * caller, so dragging a window edge does not re-report sixty times a second.
+ *
+ * Returns a disposer. Shared by the three players so that the rule they feed is
+ * fed identically, whichever one happens to be mounted.
+ */
+export function watchSourceOrientation(
+  video: HTMLVideoElement,
+  report: (orientation: SourceOrientation) => void,
+): () => void {
+  let last: SourceOrientation | null = null;
+
+  const read = () => {
+    const { videoWidth, videoHeight } = video;
+    // Zero until the first frame is decoded, and a 0/0 ratio is not an
+    // orientation — reporting one would pin the layout to a guess.
+    if (!videoWidth || !videoHeight) return;
+    const orientation: SourceOrientation =
+      videoWidth > videoHeight ? "landscape" : "portrait";
+    if (last === orientation) return;
+    last = orientation;
+    report(orientation);
+  };
+
+  video.addEventListener("loadedmetadata", read);
+  video.addEventListener("resize", read);
+  const observer =
+    typeof ResizeObserver !== "undefined" ? new ResizeObserver(read) : null;
+  observer?.observe(video);
+  // Metadata may already be in by the time this runs — a player that attached
+  // late (the ladder's rebuild rung, a LiveKit track subscribe) would otherwise
+  // wait for a rotation that never comes.
+  read();
+
+  return () => {
+    video.removeEventListener("loadedmetadata", read);
+    video.removeEventListener("resize", read);
+    observer?.disconnect();
+  };
+}
 
 /**
  * Exported so the origin router can be a literal drop-in for this player —
@@ -111,6 +172,15 @@ export interface HlsLivePlayerProps {
    * who is reading the "ไลฟ์จบแล้ว" card.
    */
   recoveryEnabled?: boolean;
+  /**
+   * The source's shape, whenever it is known or changes.
+   *
+   * The phone layout turns it into a fit — see LiveViewerMobile. Every viewer
+   * player takes the same callback, because any of the three can be the one
+   * mounted and a rule fed by only some of them fails silently, as a landscape
+   * broadcast shown cropped.
+   */
+  onSourceOrientation?: (orientation: SourceOrientation) => void;
 }
 
 export function HlsLivePlayer({
@@ -125,6 +195,7 @@ export function HlsLivePlayer({
   presentation = "framed",
   fit = "cover",
   recoveryEnabled = true,
+  onSourceOrientation,
 }: HlsLivePlayerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const handleRef = useRef<HlsHandle | null>(null);
@@ -285,6 +356,29 @@ export function HlsLivePlayer({
   }, [playbackUrl, effectiveLatencyMode, handlePhaseChange, ladder.attemptKey]);
 
   /**
+   * Tell the layout what shape the source is.
+   *
+   * Keyed on the ladder's rebuildKey because that rung REPLACES the <video>
+   * element: listeners bound to the old one would go with it, and the layout
+   * would keep whatever fit the last element reported forever.
+   *
+   * The callback is read through a ref so a parent passing an inline function
+   * cannot re-bind these listeners on every render.
+   */
+  const onSourceOrientationRef = useRef(onSourceOrientation);
+  useEffect(() => {
+    onSourceOrientationRef.current = onSourceOrientation;
+  }, [onSourceOrientation]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    return watchSourceOrientation(video, (orientation) =>
+      onSourceOrientationRef.current?.(orientation),
+    );
+  }, [ladder.rebuildKey]);
+
+  /**
    * The picture froze while everything claimed to be fine.
    *
    * Marking it stalled is what turns `health` unhealthy and starts the clock;
@@ -416,8 +510,8 @@ export function HlsLivePlayer({
         onPlay={() => setPaused(false)}
         onPause={() => setPaused(true)}
         aria-label={`ไลฟ์: ${title}`}
-        // `cover` unconditionally in full-bleed unless the viewer asked for
-        // `contain` — the source's own aspect ratio is not consulted. The
+        // Whatever fit the phone layout handed down — see PlayerFit; the
+        // source's own dimensions are REPORTED from here and read there. The
         // framed layout stays `contain`, where letterboxing inside a 16:9 box
         // is correct.
         className={`absolute inset-0 h-full w-full ${

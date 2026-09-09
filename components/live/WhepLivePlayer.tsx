@@ -36,18 +36,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Play, Volume2 } from "lucide-react";
 import { subscribeWhep, WhepError, type WhepSession } from "@/lib/live/whepClient";
-import type { PlayerFit, PlayerPresentation } from "./HlsLivePlayer";
+import {
+  watchSourceOrientation,
+  type PlayerFit,
+  type PlayerPresentation,
+  type SourceOrientation,
+} from "./HlsLivePlayer";
 import { DurationPill, LiveBadge, ViewerCountPill } from "./LiveStatsBar";
 
 /**
- * Which way round the SOURCE is, which is not which way round the player is.
- *
- * Fed to `onSourceOrientation` for the letterbox decision PR #57 makes in the
- * viewer layout. Declared here rather than imported because that PR has not
- * merged yet; when it does, this type moves next to its consumer and this file
- * imports it instead.
+ * Re-exported for the call sites that imported it from here while the letterbox
+ * rule was being built. It is declared next to PlayerFit now — see
+ * HlsLivePlayer, where the shape a player reports and the fit it is handed back
+ * belong together.
  */
-export type SourceOrientation = "landscape" | "portrait";
+export type { SourceOrientation };
 
 /**
  * How long a handshake that SUCCEEDED has to actually produce a picture.
@@ -102,10 +105,10 @@ export interface WhepLivePlayerProps {
   /**
    * The source's shape, whenever it is known or changes.
    *
-   * Wired defensively: PR #57's letterbox rule depends on this firing whichever
-   * player is mounted, and nothing passes it today. When #57 lands, the origin
-   * router forwards it to both players and the callback starts being read
-   * without this file changing.
+   * The letterbox rule depends on this firing whichever player is mounted — a
+   * viewer dropped from WHEP to HLS mid-broadcast must not have the picture
+   * change shape under them — so all three players take it and the phone layout
+   * reads it. See LiveViewerMobile.
    */
   onSourceOrientation?: (orientation: SourceOrientation) => void;
 }
@@ -299,45 +302,26 @@ export function WhepLivePlayer({
   /**
    * The source's shape, from the element's intrinsic dimensions.
    *
-   * TWO SOURCES, because they answer different questions. `loadedmetadata` and
-   * the element's own `resize` event fire when the DECODED size changes, which
-   * is what actually changes when a creator rotates their phone mid-broadcast.
-   * The ResizeObserver watches the element's box, which catches the case where
-   * a layout change is what made the shape matter. Deduped below, so a viewer
-   * dragging a window does not fire this every frame.
+   * The same watcher the HLS player uses, deliberately: a viewer handed from
+   * WHEP to HLS mid-broadcast must be told the same shape by both, or the
+   * fallback would show up as the picture changing size.
+   *
+   * The callback is read through a ref so a parent passing an inline function
+   * cannot re-bind these listeners on every render.
    */
-  const lastOrientationRef = useRef<SourceOrientation | null>(null);
-  const reportOrientation = useCallback(() => {
-    const video = videoRef.current;
-    if (!video || !onSourceOrientation) return;
-    const { videoWidth, videoHeight } = video;
-    // Zero until the first frame is decoded, and a 0/0 ratio is not an
-    // orientation — reporting one would pin the layout to a guess.
-    if (!videoWidth || !videoHeight) return;
-    const orientation: SourceOrientation =
-      videoWidth >= videoHeight ? "landscape" : "portrait";
-    if (lastOrientationRef.current === orientation) return;
-    lastOrientationRef.current = orientation;
-    console.info("[whep] source orientation", { videoWidth, videoHeight, orientation });
-    onSourceOrientation(orientation);
+  const onSourceOrientationRef = useRef(onSourceOrientation);
+  useEffect(() => {
+    onSourceOrientationRef.current = onSourceOrientation;
   }, [onSourceOrientation]);
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !onSourceOrientation) return;
-
-    video.addEventListener("resize", reportOrientation);
-    const observer =
-      typeof ResizeObserver !== "undefined" ? new ResizeObserver(reportOrientation) : null;
-    observer?.observe(video);
-    // Metadata may already be in by the time this effect runs.
-    reportOrientation();
-
-    return () => {
-      video.removeEventListener("resize", reportOrientation);
-      observer?.disconnect();
-    };
-  }, [reportOrientation, onSourceOrientation]);
+    if (!video) return;
+    return watchSourceOrientation(video, (orientation) => {
+      console.info("[whep] source orientation", { orientation });
+      onSourceOrientationRef.current?.(orientation);
+    });
+  }, []);
 
   const enableAudio = useCallback(() => {
     const video = videoRef.current;
@@ -366,15 +350,16 @@ export function WhepLivePlayer({
         // on the chat input row.
         controls={!fullBleed}
         onPlaying={handlePlaying}
-        onLoadedMetadata={reportOrientation}
         onPlay={() => setPaused(false)}
         onPause={() => setPaused(true)}
         aria-label={`ไลฟ์: ${title}`}
+        // Whatever fit the phone layout handed down — see PlayerFit.
         className={`absolute inset-0 h-full w-full ${
           fullBleed && fit === "cover" ? "object-cover" : "object-contain"
         }`}
-        // Faces sit in the upper third of a broadcast, so a 16:9 frame cropped
-        // to 9:19.5 should keep the top of the shot rather than the middle.
+        // Faces sit in the upper third of a broadcast, so a portrait frame
+        // cropped to 9:19.5 should keep the top of the shot, not the middle.
+        // Only meaningful while cropping.
         style={
           fullBleed && fit === "cover" ? { objectPosition: "50% 30%" } : undefined
         }
