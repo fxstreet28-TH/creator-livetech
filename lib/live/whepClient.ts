@@ -29,8 +29,12 @@
  * MediaMTX path worth saving, and a re-POST would restart the HLS muxer under
  * every viewer mid-segment. A subscriber has none of that: it holds nothing the
  * server needs and nothing another viewer can see. So a failed WHEP session is
- * not repaired, it is ABANDONED, and the viewer is moved to the HLS URL that is
- * already on the same session row. See OriginLivePlayer for that swap.
+ * never repaired — it is DISCARDED and, where it is worth having again, a whole
+ * new one is negotiated from scratch. That is one POST and under a second, and
+ * it is the entire recovery story on this path: WhepLivePlayer resubscribes,
+ * and OriginLivePlayer moves the viewer to the HLS URL on the same session row
+ * once the resubscribes have been spent. See isStructuralWhepFailure for which
+ * failures are worth another handshake and which are a verdict about WHEP.
  *
  * NOT A CAPABILITY, unlike the WHIP endpoint. `whip_publish_url` is the publish
  * grant — whoever reaches the path first broadcasts into it — which is why it
@@ -117,6 +121,19 @@ export interface WhepSession {
  */
 export async function subscribeWhep(options: WhepSubscribeOptions): Promise<WhepSession> {
   console.info('[whep] handshake start', { endpoint: options.endpoint });
+
+  /**
+   * A browser with no WebRTC at all.
+   *
+   * STRUCTURAL, and named as such — see isStructuralWhepFailure. Every other
+   * failure in this file is worth another go on the viewer's next resume,
+   * because the usual cause of one is that iOS suspended the tab. This cause
+   * does not change while the page is open, so retrying it is a guaranteed
+   * black second bought on every fold of the phone.
+   */
+  if (typeof RTCPeerConnection === 'undefined') {
+    throw new WhepError('no_webrtc', 'This browser has no RTCPeerConnection');
+  }
 
   /**
    * No ICE servers, deliberately — the same call whipClient.ts makes, for the
@@ -414,4 +431,56 @@ export class WhepError extends Error {
     this.name = 'WhepError';
     this.code = code;
   }
+}
+
+/**
+ * Failure codes that mean WHEP CANNOT work here, as opposed to did not just now.
+ *
+ * THIS IS THE LINE PR #60 GOT WRONG, and it is the whole of why a folded phone
+ * never came back. That PR's rule was "one WHEP failure falls back to HLS
+ * permanently for this mount", and for the failures it was written against —
+ * a corporate firewall eating UDP, a browser with WebRTC switched off — it is
+ * exactly right: a handshake that failed for one of those reasons fails again
+ * for the same reason, and every retry is another black second charged to the
+ * viewer's patience.
+ *
+ * A peer connection that iOS closed while the tab was in the background is not
+ * one of those. It is not evidence about WHEP at all; it is evidence that the
+ * tab was suspended. Treating it as a capability verdict threw away the
+ * low-latency path for the rest of an hour-long broadcast over an ordinary
+ * phone gesture — and, because the HLS fallback is suspended too, it did not
+ * even buy a picture.
+ *
+ * So the permanent rule survives, narrowed to the codes that actually mean it:
+ *
+ *   no_webrtc   the browser has no RTCPeerConnection
+ *   no_publisher (HTTP 404) no such path — the creator is not pushing frames,
+ *                and HlsLivePlayer's counted waiting screen is the correct
+ *                place for a viewer who arrived early, not a spinner that
+ *                falls back eight seconds later
+ *   http_405    the endpoint does not take POST
+ *   http_501    the server does not implement WHEP
+ *   no_local_sdp the browser would not build an offer
+ *
+ * Everything else — a failed or closed connection, a network error, a timeout,
+ * a 5xx — is retryable, and a resume tries WHEP again. See OriginLivePlayer for
+ * the bounded ladder that spends those retries.
+ */
+const STRUCTURAL_WHEP_FAILURES = new Set([
+  'no_webrtc',
+  'no_publisher',
+  'http_405',
+  'http_501',
+  'no_local_sdp',
+]);
+
+/**
+ * Whether a failure reason should retire WHEP for the whole broadcast.
+ *
+ * Takes the string reason the player reports rather than the error, because by
+ * the time the router decides this it is holding a code from `WhepError.code`,
+ * a peer-connection state, or one of the player's own verdicts.
+ */
+export function isStructuralWhepFailure(reason: string): boolean {
+  return STRUCTURAL_WHEP_FAILURES.has(reason);
 }
