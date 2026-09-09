@@ -48,11 +48,30 @@ export const LIVEKIT_THB_PER_STREAM_MINUTE = (0.015 + 2 * 0.0005) * THB_PER_USD;
 /**
  * Bunny CDN, per viewer-minute.
  *
- * 720p at ~3 Mbps is 22.5 MB/minute; APAC volume tier is $0.005/GB. This is
- * the number the whole migration was for: ~0.0039 THB against the 0.0377
- * THB/viewer-minute the old model charged.
+ * 720p at 6 Mbps is 45 MB/minute; APAC volume tier is $0.005/GB. That works
+ * out at ~0.0077 THB, against the 0.0377 THB/viewer-minute the pre-migration
+ * model charged — so the migration's saving is ~5x rather than the ~10x it was
+ * at 3 Mbps, and still the reason the migration happened.
+ *
+ * THE 6 IS A HAND-WRITTEN COPY of the 720p rung in publishBitrateFor
+ * (lib/live/constants.ts), and it has to be: this file is a Deno edge function
+ * and cannot import from the Next app. There is no build step that will catch
+ * the two drifting apart, so raising a rung there means editing this line in
+ * the same commit. It was 3 until the 2026-09-09 encoder-starvation fix
+ * doubled the ceiling; leaving it at 3 would have understated HLS egress by
+ * exactly 2x for every session priced after that.
+ *
+ * WHAT THIS LINE IS AND IS NOT. It prices bytes Bunny serves, which means
+ * HLS-delivered viewers. A viewer on the WHEP path is served by the origin
+ * droplet and touches Bunny not at all — yet estimateLiveCost below charges
+ * this line for every delivery mode including 'origin'. That over-charge is
+ * older than this change and is deliberate on the safe side (see the note on
+ * estimateLiveCost), but doubling the rate doubles it too, and the modelled
+ * figure feeds the platform budget that gates go-lives. Worth revisiting now
+ * that WHEP is the primary origin path; not changed here, because quietly
+ * making the kill switch more permissive is not a bitrate PR's business.
  */
-export const BUNNY_LIVE_THB_PER_VIEWER_MINUTE = ((3 * 60) / 8 / 1024) * 0.005 * THB_PER_USD;
+export const BUNNY_LIVE_THB_PER_VIEWER_MINUTE = ((6 * 60) / 8 / 1024) * 0.005 * THB_PER_USD;
 
 export interface LiveCostBreakdown {
   livekitThb: number;

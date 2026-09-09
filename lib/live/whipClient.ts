@@ -609,6 +609,30 @@ async function applyEncoderCeiling(
     const requested = publishBitrateFor(options.quality);
     params.encodings[0].maxBitrate = requested;
     if (options.maxFramerate) params.encodings[0].maxFramerate = options.maxFramerate;
+
+    /**
+     * WHAT TO GIVE UP FIRST when the ceiling is not enough.
+     *
+     * WebRTC's default balances resolution against framerate. For this product
+     * that is the wrong trade in one direction: a dropped framerate reads as
+     * ภาพสะดุด — the stutter Por recorded — while a brief softening of a 720p
+     * picture on a phone held at arm's length is close to invisible. So the
+     * encoder is told to hold the framerate and spend resolution.
+     *
+     * This is the half of the fix that matters when the ceiling is reached
+     * ANYWAY. 6 Mbps is more headroom, not infinite headroom, and very high
+     * motion will still find the top of it; what changes is that finding it
+     * now costs sharpness for a second instead of a visible hitch.
+     *
+     * Set on the same parameters object as the ceiling, in the same
+     * setParameters call, because each call reads the object whole — writing
+     * it separately would mean a second round trip and a window where one of
+     * the two had landed and the other had not.
+     *
+     * `maintain-framerate` protects the 30fps this pipeline already asks for.
+     * It does not raise it.
+     */
+    params.degradationPreference = 'maintain-framerate';
     await sender.setParameters(params);
 
     /**
@@ -627,14 +651,24 @@ async function applyEncoderCeiling(
      * browser decision (a thermal or uplink clamp) and re-asserting it in a
      * loop would fight the encoder for no gain.
      */
-    const resolved = sender.getParameters().encodings?.[0]?.maxBitrate;
+    const applied = sender.getParameters();
+    const resolved = applied.encodings?.[0]?.maxBitrate;
+    // Read back alongside the ceiling and for the same reason: a browser is
+    // free to accept the promise and keep its own preference, and the
+    // difference is invisible in the picture until someone is moving.
+    const degradation = applied.degradationPreference ?? null;
     if (resolved === requested) {
-      console.info('[whipClient] encoder ceiling applied', { quality: options.quality, maxBitrate: resolved });
+      console.info('[whipClient] encoder ceiling applied', {
+        quality: options.quality,
+        maxBitrate: resolved,
+        degradationPreference: degradation,
+      });
     } else {
       console.warn('[whipClient] encoder ceiling did not stick', {
         quality: options.quality,
         requested,
         resolved: resolved ?? null,
+        degradationPreference: degradation,
       });
     }
   } catch (err) {

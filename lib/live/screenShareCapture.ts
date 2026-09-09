@@ -94,6 +94,24 @@ export async function startScreenShare(
     return null;
   }
 
+  /**
+   * Tell the encoder this is a DOCUMENT, not a person.
+   *
+   * The opposite hint to the camera's, for the opposite content: what a
+   * creator shares here is a candlestick chart, a platform, a document — thin
+   * lines, small text, high spatial detail — and 'detail' spends bits on
+   * keeping that legible rather than on temporal smoothness. A blurred axis
+   * label is a chart a viewer cannot read; a chart that updates a touch less
+   * smoothly is still a chart.
+   *
+   * On the SOURCE track. It is drawn into the composite canvas rather than
+   * published directly, so this tunes nothing on its own today — the canvas
+   * carries its own hint. Set anyway because it is the honest description of
+   * this track, and because it is what would take effect the day a share is
+   * published as a second track rather than composited into one.
+   */
+  track.contentHint = 'detail';
+
   const settings = track.getSettings();
   console.info(
     `[screen] sharing ${settings.width ?? '?'}x${settings.height ?? '?'} @${settings.frameRate ?? '?'}fps` +

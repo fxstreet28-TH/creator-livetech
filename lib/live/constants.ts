@@ -66,30 +66,71 @@ export function qualityOption(quality: BroadcastQuality): QualityOption {
  *
  * THIS IS THE NUMBER THE COST MODEL IS BUILT ON.
  * BUNNY_LIVE_THB_PER_VIEWER_MINUTE in supabase/functions/_shared/live.ts
- * assumes 3 Mbps at 720p, and letting the encoder pick its own ceiling would
+ * assumes the 720p rung, and letting the encoder pick its own ceiling would
  * make the projected bill fiction — so every publisher caps itself here rather
- * than trusting a default.
+ * than trusting a default. That constant is a HAND-WRITTEN copy of the 720p
+ * figure, not a computed one: it lives in a Deno edge function that cannot
+ * import this module. Change a rung here and change it there in the same
+ * commit, or the bill and the broadcast stop describing each other.
  *
  * It lives in constants rather than beside one publisher because there are now
  * two, and they must agree: the LiveKit publisher passes it as `videoEncoding
  * .maxBitrate`, and the WHIP publisher applies it with `RTCRtpSender
- * .setParameters` (see ./whipClient.ts). A rung that meant 3 Mbps on one path
- * and whatever-the-encoder-felt-like on the other would price the same
+ * .setParameters` (see ./whipClient.ts). A rung that meant one bitrate on one
+ * path and whatever-the-encoder-felt-like on the other would price the same
  * broadcast differently depending on a vault secret.
  *
  * It caps the INGEST, not what a viewer receives: both pipelines transcode or
  * remux downstream of this.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY 6 Mbps AT 720p, AND NOT 3.
+ * ---------------------------------------------------------------------------
+ *
+ * 3 Mbps was chosen for a creator sitting still and talking, and for that it is
+ * plenty. The 2026-09-09 test found where it stops being plenty, in three
+ * stages over 80 seconds:
+ *
+ *   sitting still          — WHEP parity, no measurable delay
+ *   picking up a phone,    — delay begins to ACCUMULATE
+ *   rotating the camera
+ *   screen share composite — heavy delay, stutter, frames dropped on the phone
+ *
+ * That is a bitrate ceiling being hit, not a transport fault. Motion costs
+ * bits: the same picture moving needs several times the bits/second of the
+ * picture at rest, and a composite — a candlestick chart at full detail
+ * ALONGSIDE a face — is a busy frame everywhere at once, so it hits the
+ * ceiling even at moderate motion. When an encoder hits a ceiling it can shed
+ * quality, or it can let its send queue grow; a growing send queue IS
+ * accumulating latency, which is precisely the symptom that was recorded. The
+ * origin's own logs agree from the other end: `segment duration changed from
+ * 2s to 3s` and repeated `RTP packets lost` are what a starved encoder looks
+ * like to the server it is feeding.
+ *
+ * So the ceiling doubles at every rung, keeping the ladder's proportions. It
+ * buys headroom, and headroom is what the accumulating delay was short of.
+ *
+ * WHAT IT COSTS: nothing, at this scale. The origin VPS includes 4 TB/month
+ * and current usage is a rounding error against it, so the ingest side is free
+ * until the audience is orders of magnitude larger. The Bunny line for
+ * HLS-delivered viewers does double, and that is a real change to the modelled
+ * bill — see the constant named above.
+ *
+ * WHAT IT DOES NOT FIX ON ITS OWN: a 6 Mbps ceiling is still a ceiling, and
+ * very high motion will still reach it. Two companion changes make reaching it
+ * graceful rather than stuttery — `degradationPreference` on the sender, and a
+ * `contentHint` on each track — and the three are only a fix together.
  */
 export function publishBitrateFor(quality: BroadcastQuality): number {
   switch (quality) {
     case '1080p':
-      return 4_500_000;
+      return 9_000_000;
     case '720p':
-      return 3_000_000;
+      return 6_000_000;
     case '480p':
-      return 1_500_000;
+      return 3_000_000;
     default:
-      return 800_000;
+      return 1_600_000;
   }
 }
 

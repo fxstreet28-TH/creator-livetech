@@ -172,6 +172,24 @@ export async function connectAsPublisher(
         maxBitrate: publishBitrateFor(options.quality),
       },
       /**
+       * Hold the framerate, spend resolution, when the ceiling is not enough.
+       *
+       * The same trade the WHIP sender makes (see applyEncoderCeiling in
+       * ./whipClient.ts) and for the same reason: a dropped framerate reads as
+       * stutter, a briefly softer 720p picture does not.
+       *
+       * Stated rather than inherited. The SDK already defaults to exactly this
+       * for `Source.Camera`, which is what this track is published as — so
+       * today the line changes nothing. It is here because the default is
+       * keyed on the SOURCE and this track is a canvas wearing a camera label
+       * (see the note above on why), which makes the two coupled in a way
+       * nothing enforces: publish it as anything else, or let the SDK revisit
+       * its per-source defaults, and the encoder would quietly start trading
+       * the other way. Cheaper to say what we want than to depend on someone
+       * else's default continuing to agree with us.
+       */
+      degradationPreference: 'maintain-framerate',
+      /**
        * H.264, not the SDK's default of VP8 — this is what makes the broadcast
        * visible on an iPhone.
        *
