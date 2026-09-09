@@ -93,6 +93,15 @@ import {
   type ScreenShareSession,
 } from '@/lib/live/screenShareCapture';
 import {
+  COMPOSITE_LAYOUT_LABELS,
+  COMPOSITE_LAYOUT_ORDER,
+  DEFAULT_COMPOSITE_LAYOUT,
+  DEFAULT_PIP_CORNER,
+  PIP_CORNER_LABELS,
+  PIP_CORNER_ORDER,
+} from '@/lib/live/compositeCanvas';
+import type { CompositeLayout, PipCorner } from '@/lib/live/compositeCanvas';
+import {
   isDefaultOrientation,
   shouldFlipPreview,
   type CameraOrientation,
@@ -279,6 +288,17 @@ export interface BroadcastControls {
   screenSharing: boolean;
   /** Start a share (the browser puts up its picker), or end the running one. */
   toggleScreenShare: () => void;
+  /**
+   * How the composite is arranged, and which corner the จอลอย face sits in.
+   *
+   * Only meaningful while `screenSharing` — the controls that set these render
+   * only then — but always readable, because the choice is remembered for the
+   * rest of the broadcast when a share is stopped and started again.
+   */
+  compositeLayout: CompositeLayout;
+  pipCorner: PipCorner;
+  setCompositeLayout: (layout: CompositeLayout) => void;
+  setPipCorner: (corner: PipCorner) => void;
 }
 
 /**
@@ -482,6 +502,49 @@ export function CreatorBroadcaster({
     serverHasNoScreenShare,
   );
   const [screenSharing, setScreenSharing] = useState(false);
+  /**
+   * How the composite is arranged, and where the จอลอย face sits.
+   *
+   * State for the buttons, refs for the pipeline. Both, because the two are
+   * read at different times: React renders from the state, while `connect` —
+   * which runs again on every rung of the reconnect ladder — needs the current
+   * choice at a moment when it has no access to a render's closure. Written
+   * together in the two setters below so they cannot drift.
+   *
+   * Per BROADCAST, not per share. Stopping a share and starting another keeps
+   * the creator's arrangement, because being made to re-pick จอลอย every time
+   * you pause a share is the kind of small insult that makes a studio feel
+   * cheap. Nothing is written to storage, so the next broadcast starts fresh
+   * at ครึ่ง-ครึ่ง.
+   */
+  const [compositeLayout, setCompositeLayoutState] = useState<CompositeLayout>(
+    DEFAULT_COMPOSITE_LAYOUT,
+  );
+  const [pipCorner, setPipCornerState] = useState<PipCorner>(DEFAULT_PIP_CORNER);
+  const compositeLayoutRef = useRef<CompositeLayout>(DEFAULT_COMPOSITE_LAYOUT);
+  const pipCornerRef = useRef<PipCorner>(DEFAULT_PIP_CORNER);
+
+  /**
+   * Push a layout choice straight at the paint loop.
+   *
+   * Not an effect. An effect would land the change a render later, and this is
+   * a live broadcast control — the creator presses จอลอย and the very next
+   * painted frame should be จอลอย, for them and for the audience at once.
+   * `filteredRef` may be null before the pipeline opens, in which case the ref
+   * above carries the choice into `connect`.
+   */
+  const chooseCompositeLayout = useCallback((next: CompositeLayout) => {
+    compositeLayoutRef.current = next;
+    setCompositeLayoutState(next);
+    filteredRef.current?.setCompositeLayout(next, pipCornerRef.current);
+  }, []);
+
+  const choosePipCorner = useCallback((next: PipCorner) => {
+    pipCornerRef.current = next;
+    setPipCornerState(next);
+    filteredRef.current?.setCompositeLayout(compositeLayoutRef.current, next);
+  }, []);
+
   /**
    * The running capture, held outside React so the teardown paths — the
    * browser's own "Stop sharing" bar, the toggle, a reconnect, unmount — can
@@ -814,6 +877,10 @@ export function CreatorBroadcaster({
             desktopBroadcastRef.current === true,
           );
           filteredRef.current = filtered;
+          // The arrangement the creator last chose, carried across a
+          // reconnect. A fresh pipeline starts at the defaults, so without
+          // this a blip would silently put a creator back in ครึ่ง-ครึ่ง.
+          filtered.setCompositeLayout(compositeLayoutRef.current, pipCornerRef.current);
           setLookMode(filtered.getStats().lookMode);
         } catch (err) {
           if (cancelled) return;
@@ -970,6 +1037,12 @@ export function CreatorBroadcaster({
       screenShareRef.current?.stop();
       screenShareRef.current = null;
       setScreenSharing(false);
+      // The arrangement is per-broadcast and this is where a broadcast ends.
+      // Deliberately NOT reset when a share merely stops — see the state above.
+      compositeLayoutRef.current = DEFAULT_COMPOSITE_LAYOUT;
+      pipCornerRef.current = DEFAULT_PIP_CORNER;
+      setCompositeLayoutState(DEFAULT_COMPOSITE_LAYOUT);
+      setPipCornerState(DEFAULT_PIP_CORNER);
       // Order matters: the filter stops its draw loop and its canvas track,
       // then the camera itself is released. Stopping the camera first leaves
       // the loop drawing a dead <video>.
@@ -1444,6 +1517,10 @@ export function CreatorBroadcaster({
           screenShareAvailable: screenShareReady,
           screenSharing,
           toggleScreenShare: () => void toggleScreenShare(),
+          compositeLayout,
+          pipCorner,
+          setCompositeLayout: chooseCompositeLayout,
+          setPipCorner: choosePipCorner,
         })}
       </>
     );
@@ -1530,9 +1607,10 @@ export function CreatorBroadcaster({
         instead, a 22rem panel hanging off the third control in the row runs
         straight off a 360px screen.
 
-        flex-wrap because the row now carries four controls plus the quality
-        pill: on a narrow phone they wrap onto a second line rather than
-        squeezing past the edge.
+        flex-wrap because the row carries four controls plus the quality pill,
+        and on a desktop mid-share two more groups on top of that — the layout
+        segments and, under จอลอย, the corner picker. They wrap onto a second
+        line rather than squeezing past the edge.
       */}
       <div
         className="relative flex shrink-0 flex-wrap items-center gap-2"
@@ -1611,6 +1689,103 @@ export function CreatorBroadcaster({
             }
             label={screenSharing ? 'หยุดแชร์หน้าจอ' : 'แชร์หน้าจอ'}
           />
+        )}
+        {/*
+          HOW THE SHARE AND THE FACE ARE ARRANGED.
+
+          Present only while a share is actually running, and gated on the same
+          screenShareReady as the button above it: with nothing shared there is
+          no arrangement to make, and three dead buttons in the bottom bar of a
+          phone studio is three buttons of clutter explaining a feature that
+          screen has no way to offer.
+
+          Not in the ลุค/กล้อง popover with the other pickers, deliberately.
+          Those are set-and-forget; this is watched. A creator picking จอลอย is
+          looking at the preview to see where they land, and a panel covering
+          the preview is a panel covering the thing being decided.
+        */}
+        {screenShareReady && screenSharing && (
+          <div
+            role="radiogroup"
+            aria-label="รูปแบบการจัดวาง"
+            className="inline-flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.04] p-1"
+          >
+            {COMPOSITE_LAYOUT_ORDER.map((layout) => (
+              <button
+                key={layout}
+                type="button"
+                role="radio"
+                aria-checked={compositeLayout === layout}
+                onClick={() => chooseCompositeLayout(layout)}
+                className={[
+                  'relative z-50 inline-flex min-h-9 items-center rounded-lg px-2.5 text-xs font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400',
+                  compositeLayout === layout
+                    ? 'bg-cyan-400/20 text-cyan-100'
+                    : 'text-white/65 hover:bg-white/[0.06] hover:text-white/85',
+                ].join(' ')}
+              >
+                {COMPOSITE_LAYOUT_LABELS[layout]}
+              </button>
+            ))}
+          </div>
+        )}
+        {/*
+          WHICH CORNER THE จอลอย FACE SITS IN.
+
+          Four buttons rather than a drag handle, and that is the whole scope:
+          a creator needs their face off whatever the share is putting in that
+          corner, which four presets answer completely. Free-drag on a canvas
+          is a different feature — pointer capture, bounds, a preview that has
+          to hit-test — and it is not this one.
+
+          Only under จอลอย, because a corner is a property of a floating face
+          and the other two layouts have nowhere to put it.
+        */}
+        {screenShareReady && screenSharing && compositeLayout === 'pip' && (
+          <div
+            role="radiogroup"
+            aria-label="ตำแหน่งภาพลอย"
+            className="inline-flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.04] p-1"
+          >
+            {PIP_CORNER_ORDER.map((corner) => (
+              <button
+                key={corner}
+                type="button"
+                role="radio"
+                aria-checked={pipCorner === corner}
+                aria-label={PIP_CORNER_LABELS[corner]}
+                title={PIP_CORNER_LABELS[corner]}
+                onClick={() => choosePipCorner(corner)}
+                className={[
+                  'relative z-50 grid h-9 w-9 place-items-center rounded-lg transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400',
+                  pipCorner === corner ? 'bg-cyan-400/20' : 'hover:bg-white/[0.06]',
+                ].join(' ')}
+              >
+                {/* A frame with a dot in the corner this button selects — the
+                    picture of the choice, which is quicker to read at a glance
+                    than ซ้ายบน/ขวาล่าง and needs no translation. The label is
+                    still there for a screen reader. */}
+                <span
+                  aria-hidden
+                  className={[
+                    'grid h-5 w-4 rounded-[3px] border p-[2px]',
+                    pipCorner === corner ? 'border-cyan-200/70' : 'border-white/35',
+                    corner === 'top-left' || corner === 'top-right' ? 'items-start' : 'items-end',
+                    corner === 'top-left' || corner === 'bottom-left'
+                      ? 'justify-items-start'
+                      : 'justify-items-end',
+                  ].join(' ')}
+                >
+                  <span
+                    className={[
+                      'h-1.5 w-1.5 rounded-[1px]',
+                      pipCorner === corner ? 'bg-cyan-200' : 'bg-white/50',
+                    ].join(' ')}
+                  />
+                </span>
+              </button>
+            ))}
+          </div>
         )}
 
         <MenuButton

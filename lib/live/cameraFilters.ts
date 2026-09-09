@@ -30,15 +30,19 @@
  */
 
 import {
-  CAMERA_SLOT,
   COMPOSITE_HEIGHT,
   COMPOSITE_WIDTH,
+  DEFAULT_COMPOSITE_LAYOUT,
+  DEFAULT_PIP_CORNER,
   FULL_FRAME,
-  SCREEN_SLOT,
+  PIP_RADIUS,
   containRect,
   coverSourceRect,
+  isCompositeLayout,
+  isPipCorner,
+  layoutRects,
 } from './compositeCanvas';
-import type { Rect } from './compositeCanvas';
+import type { CompositeLayout, PipCorner, Rect } from './compositeCanvas';
 
 export const CAMERA_FILTERS = {
   none: { label: 'ปกติ', filter: 'none' },
@@ -433,10 +437,9 @@ export interface FilteredStream {
    *
    * This is the TikTok-Live layout, and it is a mode of the same canvas rather
    * than a second pipeline: pass a display stream and the next frame is drawn
-   * 720x1280 with the screen contained in the top 55% and the camera covering
-   * the bottom 45%; pass null and the frame after that is the camera-only
-   * frame this pipeline has always produced. See ./compositeCanvas for the
-   * layout and the reasoning behind those numbers.
+   * 720x1280 in whichever arrangement the creator has chosen — see
+   * setCompositeLayout — and pass null and the frame after that is the
+   * camera-only frame. See ./compositeCanvas for the layouts themselves.
    *
    * NOTHING DOWNSTREAM LEARNS ABOUT IT. `publishStream` is the same object,
    * carrying the same track, from the same canvas — so there is no
@@ -449,11 +452,32 @@ export interface FilteredStream {
    * The preview canvas composites too, deliberately: a creator arranging a
    * chart and their own face needs to see the frame the audience gets, and a
    * self-view showing only the camera would leave them guessing where the
-   * split lands. This is the one thing the camera-only publish
+   * split lands, and a creator arranging จอลอย needs to see which corner they
+   * just put themselves in. This is the one thing the camera-only publish
    * frame does NOT mirror to the preview — see `portrait` — because there the
    * two differ only in how much of the width survives.
    */
   setScreenSource: (next: MediaStream | null) => Promise<void>;
+  /**
+   * Arrange the composite: which preset, and which corner the จอลอย face sits
+   * in.
+   *
+   * Free, and free for the same reason setFilter is: these are two variables
+   * the paint loop reads, so the next frame is simply drawn somewhere else.
+   * No replaceTrack, no renegotiation, no reconnect — and since Fix 2 not even
+   * an in-band resize, because the publish canvas is 720x1280 in every desktop
+   * mode. A creator can flip between ครึ่ง-ครึ่ง, จอลอย and เฉพาะหน้าจอ as
+   * often as they like and the audience just sees the picture rearrange.
+   *
+   * Takes effect whether or not a share is running: paintComposite reads these
+   * when it next runs, so a layout chosen and then a share started comes up in
+   * the layout that was chosen.
+   *
+   * `pipCorner` is optional because the corner is a property of จอลอย alone —
+   * omitting it changes the preset and leaves the corner where the creator
+   * last put it.
+   */
+  setCompositeLayout: (layout: CompositeLayout, pipCorner?: PipCorner) => void;
   /**
    * What the pipeline is actually doing, for the ?debug=camera chip.
    *
@@ -474,6 +498,9 @@ export interface FilteredStream {
     portrait: boolean;
     /** True while a screen share is being composited in. See setScreenSource. */
     compositing: boolean;
+    /** The creator's chosen arrangement. Only meaningful while compositing. */
+    layout: CompositeLayout;
+    pipCorner: PipCorner;
   };
   /** Stops the draw loop and the canvas track. Does NOT stop the source. */
   stop: () => void;
@@ -605,6 +632,20 @@ export async function createFilteredStream(
    */
   let screenVideo: HTMLVideoElement | null = null;
   let compositing = false;
+  /**
+   * The creator's chosen arrangement, and where the floating face sits.
+   *
+   * Plain variables read by paintComposite every frame, exactly like the look
+   * and the mirror before them — which is what makes switching layouts free:
+   * the published track is the canvas, and the canvas does not care what is
+   * being drawn onto it.
+   *
+   * They survive a share being stopped and restarted, because they live for
+   * as long as this pipeline does. They do NOT survive the broadcast: a new
+   * broadcast builds a new pipeline and starts at the defaults again.
+   */
+  let currentLayout: CompositeLayout = DEFAULT_COMPOSITE_LAYOUT;
+  let currentPipCorner: PipCorner = DEFAULT_PIP_CORNER;
   let running = true;
   let rafId: number | null = null;
   let frameCallbackId: number | null = null;
@@ -816,31 +857,32 @@ export async function createFilteredStream(
   /**
    * One target, one frame, in COMPOSITE mode.
    *
-   * The sibling of paintFrame above, and the split is deliberate: every line
-   * of the camera-only path — the dimension watch that follows the camera, the
-   * padded destination box, the full-canvas look — is about publishing ONE
-   * source at its own ratio, and none of it survives contact with a frame that
-   * has two sources and a shape of its own. Branching inside paintFrame would
-   * have meant a conditional on nearly every line of it; two functions with
-   * one branch between them is the smaller thing to read and the smaller thing
-   * to get wrong.
+   * The sibling of paintFrame above, and the split is deliberate: the
+   * camera-only path is about publishing ONE source, following its ratio on
+   * the preview and covering a fixed frame on the publish canvas, and none of
+   * that survives contact with a frame that has two sources and an
+   * arrangement chosen by the creator. Branching inside paintFrame would have
+   * meant a conditional on nearly every line of it; two functions with one
+   * branch between them is the smaller thing to read and the smaller thing to
+   * get wrong.
    *
    * `target.portrait` is ignored here, and that is the design: this frame is
    * 720x1280 for BOTH targets, so the preview and the publish canvas paint
-   * IDENTICAL pictures while this runs — which is what makes the studio
-   * WYSIWYG in this mode.
+   * identical pictures while this runs — which is what makes the studio
+   * WYSIWYG, and what lets a creator arrange จอลอย and see where it lands.
    */
   const paintComposite = (target: PaintTarget) => {
     const { canvas, ctx } = target;
 
     /*
-      THE CANVAS IS THE COMPOSITE'S OWN SIZE, not the camera's.
+      THE CANVAS IS THE COMPOSITE'S OWN SIZE.
 
       Same guard as the camera-only path and for the same reason — writing to
       canvas.width resets the 2D context. On the publish canvas this is now a
-      no-op: that canvas is already 720x1280 in camera-only mode, so starting
-      and stopping a share changes NOTHING about the published track's
-      dimensions. Only the preview, which follows the camera, resizes here.
+      no-op: since Fix 2 that canvas is already 720x1280 in camera-only mode,
+      so starting and stopping a share changes NOTHING about the published
+      track's dimensions. Only the preview, which follows the camera, actually
+      resizes here.
     */
     if (canvas.width !== COMPOSITE_WIDTH || canvas.height !== COMPOSITE_HEIGHT) {
       canvas.width = COMPOSITE_WIDTH;
@@ -848,20 +890,26 @@ export async function createFilteredStream(
       target.vignette = null;
     }
 
+    // The creator's arrangement, read fresh every frame — which is all
+    // "switching layout mid-share" amounts to. Nothing is rebuilt, nothing is
+    // renegotiated, and the next frame out is simply drawn somewhere else.
+    const rects = layoutRects(currentLayout, currentPipCorner);
+
     /*
       Black, every frame, before anything is drawn.
 
-      Not the belt-and-braces the padded path's fill is: here it is load-
-      bearing. A contained screen share leaves real margin inside the top slot
-      whenever the shared surface is not 9:14 — which is always — and a tab
-      resized mid-share changes where that margin falls. Without this, the
-      previous frame's picture stays in the strip the new one no longer covers.
+      Load-bearing, not belt-and-braces. A contained screen share leaves real
+      margin inside its slot whenever the shared surface is not the slot's
+      ratio — which is always — a tab resized mid-share moves where that
+      margin falls, and a creator moving the จอลอย face from one corner to
+      another leaves the old corner behind. Without this, the previous frame's
+      picture stays wherever the new one no longer covers.
     */
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     /*
-      THE TOP SLOT: the screen, whole, and untouched.
+      THE SCREEN: whole, and untouched.
 
       No look, no mirror, no zoom, and each omission is a decision rather than
       an oversight. A look is a portrait grade — a warm wash over a candlestick
@@ -872,60 +920,61 @@ export async function createFilteredStream(
     */
     const screen = screenVideo;
     if (screen && screen.videoWidth > 0 && screen.videoHeight > 0) {
-      const box = containRect(screen.videoWidth, screen.videoHeight, SCREEN_SLOT);
+      const box = containRect(screen.videoWidth, screen.videoHeight, rects.screen);
       if (box.width > 0 && box.height > 0) {
         ctx.drawImage(screen, box.x, box.y, box.width, box.height);
       }
     }
 
     /*
-      THE BOTTOM SLOT: the creator, filling it, with everything that applies to
-      a camera still applying.
+      THE FACE, filling its rect, with everything that applies to a camera
+      still applying — or not drawn at all in เฉพาะหน้าจอ, where `face` is
+      null and the creator has said they want to be out of the way.
 
       Clipped first, then transformed, then drawn — the clip is set while the
       transform is still identity so it stays in canvas coordinates, and a
-      mirror inside it maps the slot onto itself instead of sliding the
+      mirror inside it maps the rect onto itself instead of sliding the
       picture sideways.
     */
-    if (video.videoWidth > 0 && video.videoHeight > 0) {
-      const src = coverSourceRect(video.videoWidth, video.videoHeight, CAMERA_SLOT, currentZoom);
+    const face = rects.face;
+    if (face && video.videoWidth > 0 && video.videoHeight > 0) {
+      const src = coverSourceRect(video.videoWidth, video.videoHeight, face, currentZoom);
 
       ctx.save();
       ctx.beginPath();
-      ctx.rect(CAMERA_SLOT.x, CAMERA_SLOT.y, CAMERA_SLOT.width, CAMERA_SLOT.height);
+      // Rounded in จอลอย, where the face is laid OVER the share and a hard
+      // rectangle reads as a hole punched in it. Square in ครึ่ง-ครึ่ง, where
+      // it is a panel meeting the screen's edge and a rounded corner there
+      // would just show black. roundRect is guarded because it is newer than
+      // this pipeline's floor; a square pip is a cosmetic loss, not a broken
+      // frame.
+      if (currentLayout === 'pip' && typeof ctx.roundRect === 'function') {
+        ctx.roundRect(face.x, face.y, face.width, face.height, PIP_RADIUS);
+      } else {
+        ctx.rect(face.x, face.y, face.width, face.height);
+      }
       ctx.clip();
       if (lookMode === 'filter') ctx.filter = filterCssFor(currentFilter);
       if (currentFlipped) {
-        // Reflect about the slot's own vertical centre line. The slot spans
-        // the full canvas width today, so this is the same translate the
-        // camera-only path uses — written against the slot anyway, because a
-        // layout constant is not a promise.
-        ctx.translate(CAMERA_SLOT.x * 2 + CAMERA_SLOT.width, 0);
+        // Reflect about the rect's own vertical centre line, so a mirrored
+        // face stays in its corner instead of jumping across the frame.
+        ctx.translate(face.x * 2 + face.width, 0);
         ctx.scale(-1, 1);
       }
-      ctx.drawImage(
-        video,
-        src.x,
-        src.y,
-        src.width,
-        src.height,
-        CAMERA_SLOT.x,
-        CAMERA_SLOT.y,
-        CAMERA_SLOT.width,
-        CAMERA_SLOT.height,
-      );
+      if (src.width > 0 && src.height > 0) {
+        ctx.drawImage(video, src.x, src.y, src.width, src.height, face.x, face.y, face.width, face.height);
+      }
       ctx.restore();
 
-      // The look, on the browsers that cannot filter — clipped to the camera
-      // slot for the same reason the padded path clips it to the picture, only
-      // more so: unclipped, a วินเทจ vignette would darken the corners of the
-      // chart. Reachable only where `ctx.filter` is missing, which is a phone,
-      // which has no getDisplayMedia — so this is correctness kept honest
-      // rather than a path anyone runs today.
+      // The look, on the browsers that cannot filter — clipped to the face for
+      // the same reason the draw is: unclipped, a วินเทจ vignette would darken
+      // the corners of the chart. Reachable only where `ctx.filter` is
+      // missing, which is a phone, which has no getDisplayMedia — so this is
+      // correctness kept honest rather than a path anyone runs today.
       if (lookMode === 'composite') {
         ctx.save();
         ctx.beginPath();
-        ctx.rect(CAMERA_SLOT.x, CAMERA_SLOT.y, CAMERA_SLOT.width, CAMERA_SLOT.height);
+        ctx.rect(face.x, face.y, face.width, face.height);
         ctx.clip();
         target.vignette = applyLookPasses(ctx, currentFilter, target.vignette);
         ctx.restore();
@@ -1174,12 +1223,27 @@ export async function createFilteredStream(
       lookMode,
       portrait: portraitPublish !== null,
       compositing,
+      layout: currentLayout,
+      pipCorner: currentPipCorner,
     }),
     setZoom: (zoom) => {
       // Floored at 1: there is no such thing as digital zoom OUT. Widening the
       // field of view needs a different camera, which is the 0.5x ultra-wide
       // device switch and not this.
       currentZoom = Number.isFinite(zoom) && zoom > 1 ? zoom : 1;
+    },
+    setCompositeLayout: (layout, pipCorner) => {
+      const nextLayout = isCompositeLayout(layout) ? layout : DEFAULT_COMPOSITE_LAYOUT;
+      const nextCorner = isPipCorner(pipCorner) ? pipCorner : currentPipCorner;
+      if (nextLayout === currentLayout && nextCorner === currentPipCorner) return;
+      currentLayout = nextLayout;
+      currentPipCorner = nextCorner;
+      // Logged rather than silent because this is the one control whose effect
+      // on the PUBLISHED frame a creator can only confirm by asking a viewer.
+      console.info(
+        `[composite] layout: ${currentLayout}` +
+          (currentLayout === 'pip' ? ` (${currentPipCorner})` : ''),
+      );
     },
     setScreenSource: async (next) => {
       if (!next) {
@@ -1226,11 +1290,15 @@ export async function createFilteredStream(
 
       compositing = true;
       const settings = screenTrack.getSettings();
+      const rects = layoutRects(currentLayout, currentPipCorner);
       console.info(
-        `[composite] on — ${COMPOSITE_WIDTH}x${COMPOSITE_HEIGHT}: screen ` +
+        `[composite] on — ${COMPOSITE_WIDTH}x${COMPOSITE_HEIGHT} ${currentLayout}: screen ` +
           `${settings.width ?? '?'}x${settings.height ?? '?'} contained in ` +
-          `${SCREEN_SLOT.width}x${SCREEN_SLOT.height}, camera covering ` +
-          `${CAMERA_SLOT.width}x${CAMERA_SLOT.height} at y=${CAMERA_SLOT.y}`,
+          `${rects.screen.width}x${rects.screen.height} at y=${rects.screen.y}, camera ` +
+          (rects.face
+            ? `covering ${rects.face.width}x${rects.face.height} at ` +
+              `${rects.face.x},${rects.face.y}`
+            : 'not drawn'),
       );
     },
     setSource: async (next) => {

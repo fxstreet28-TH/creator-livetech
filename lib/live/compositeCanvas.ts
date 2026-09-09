@@ -1,5 +1,5 @@
 /**
- * THE TIKTOK-LIVE LAYOUT: a screen on top, a face underneath, one frame out.
+ * THE TIKTOK-LIVE LAYOUT: a screen and a face, arranged, one frame out.
  *
  * This module is the LAYOUT, and nothing else. No canvas, no video element, no
  * draw loop — just the slot rectangles and the two fitting rules that place a
@@ -23,11 +23,21 @@
  * holding. 9:16 fills a phone edge to edge with no bars anywhere, which is the
  * entire point of the layout.
  *
- * WHY 55/45. The screen is the content — a chart, a platform, a document — and
- * it is landscape, so it needs width more than height; the face is a portrait
- * and reads fine in a shorter box. 55% gives a 16:9 share the largest picture
- * that still leaves the creator big enough to be a person rather than a
- * thumbnail. It is one constant: move it and both slots follow.
+ * WHY THE CREATOR CHOOSES. This started as one fixed 55/45 split, on the
+ * reasoning that a landscape share needs width and a face reads fine in a
+ * shorter box. That reasoning is fine and it is still what `split` does — it
+ * was just never ours to settle. A creator walking through a chart wants the
+ * chart big and themselves small; a creator reacting to what is on screen
+ * wants the opposite; a creator reading a document wants to be out of the way
+ * entirely. Those are three different broadcasts, and the person making them
+ * is the one who knows which is which.
+ *
+ * So there are three presets and a corner, and `layoutRects` is the whole of
+ * it: give it a layout and a corner, get back where the two pictures go. Every
+ * rectangle in this file is derived from the two dimensions below, so nothing
+ * can drift out of the frame, and every one is even — these are destination
+ * rectangles on a canvas whose frames reach an H.264 encoder, and odd
+ * dimensions are a thing some encoders refuse.
  */
 
 /** A box on the composite canvas, in canvas pixels. */
@@ -42,8 +52,8 @@ export interface Rect {
 export const COMPOSITE_WIDTH = 720;
 export const COMPOSITE_HEIGHT = 1280;
 
-/** The whole frame. With no screen share at all, the camera-only publish
- *  frame the webcam covers — see cameraFilters. */
+/** The whole frame. The screen's slot in `pip` and `screen`, and — with no
+ *  screen share at all — the camera-only publish frame. See cameraFilters. */
 export const FULL_FRAME: Rect = {
   x: 0,
   y: 0,
@@ -51,48 +61,142 @@ export const FULL_FRAME: Rect = {
   height: COMPOSITE_HEIGHT,
 };
 
-/** How much of the height the screen share gets. See the header. */
-export const SCREEN_SLOT_FRACTION = 0.55;
+/** The arrangements a creator can pick between while sharing. */
+export type CompositeLayout = 'split' | 'pip' | 'screen';
 
-/**
- * The top slot: the screen share.
- *
- * Even height, because the slot is a destination rectangle on a canvas whose
- * frames go to an H.264 encoder and odd dimensions are a thing some encoders
- * refuse. 1280 * 0.55 is 704 exactly, so this rounds nothing today — the
- * rounding is there so that changing SCREEN_SLOT_FRACTION cannot introduce a
- * half-pixel seam between the two slots.
- */
-export const SCREEN_SLOT: Rect = {
-  x: 0,
-  y: 0,
-  width: COMPOSITE_WIDTH,
-  height: Math.round((COMPOSITE_HEIGHT * SCREEN_SLOT_FRACTION) / 2) * 2,
+/** Which corner the floating face sits in, in `pip`. */
+export type PipCorner = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+
+/** The order the segmented control renders in. Object key order is not a contract. */
+export const COMPOSITE_LAYOUT_ORDER: CompositeLayout[] = ['split', 'pip', 'screen'];
+
+export const COMPOSITE_LAYOUT_LABELS: Record<CompositeLayout, string> = {
+  split: 'ครึ่ง-ครึ่ง',
+  pip: 'จอลอย',
+  screen: 'เฉพาะหน้าจอ',
+};
+
+export const PIP_CORNER_ORDER: PipCorner[] = [
+  'top-left',
+  'top-right',
+  'bottom-left',
+  'bottom-right',
+];
+
+export const PIP_CORNER_LABELS: Record<PipCorner, string> = {
+  'top-left': 'ซ้ายบน',
+  'top-right': 'ขวาบน',
+  'bottom-left': 'ซ้ายล่าง',
+  'bottom-right': 'ขวาล่าง',
 };
 
 /**
- * The bottom slot: the creator.
+ * Where a share starts, every time.
  *
- * Defined as "the rest", not as `1 - fraction` computed separately — so the
- * two slots meet exactly, with no gap and no overlap, whatever the fraction is.
+ * Half and half is the one that is never wrong: both pictures are legible, and
+ * a creator who does not touch the control still gets a broadcast worth
+ * watching. The other two are choices, and a choice nobody made is not a
+ * default, it is a surprise.
  */
-export const CAMERA_SLOT: Rect = {
-  x: 0,
-  y: SCREEN_SLOT.height,
-  width: COMPOSITE_WIDTH,
-  height: COMPOSITE_HEIGHT - SCREEN_SLOT.height,
-};
+export const DEFAULT_COMPOSITE_LAYOUT: CompositeLayout = 'split';
+
+/**
+ * Bottom right, which is where a floating face goes almost everywhere.
+ *
+ * It is also the corner least likely to cover anything: a shared chart or
+ * document puts its title and toolbars along the top, and a 16:9 share
+ * contained in a 9:16 frame leaves its widest empty margins top and bottom
+ * anyway. The picker exists because "almost everywhere" is not everywhere.
+ */
+export const DEFAULT_PIP_CORNER: PipCorner = 'bottom-right';
+
+export function isCompositeLayout(value: unknown): value is CompositeLayout {
+  return value === 'split' || value === 'pip' || value === 'screen';
+}
+
+export function isPipCorner(value: unknown): value is PipCorner {
+  return typeof value === 'string' && (PIP_CORNER_ORDER as string[]).includes(value);
+}
+
+/**
+ * The floating face in `pip`: 3:4, upright, and small enough to be a corner.
+ *
+ * 216x288 is 30% of the frame's width. Big enough that a face in it is a
+ * person rather than a smudge, small enough that it reads as an overlay on
+ * the share rather than a second panel competing with it — which is the
+ * difference between จอลอย and ครึ่ง-ครึ่ง. 3:4 rather than the frame's own
+ * 9:16 because a head and shoulders in a tall narrow box is mostly wall.
+ */
+export const PIP_WIDTH = 216;
+export const PIP_HEIGHT = 288;
+
+/** The gap between the floating face and the frame's edges. */
+export const PIP_INSET = 24;
+
+/** Rounded corners on the floating face, so it reads as laid over the share. */
+export const PIP_RADIUS = 12;
+
+/**
+ * Where the two pictures go, for a layout and a corner.
+ *
+ * The whole layout system, as one pure function over two enums: no canvas, no
+ * elements, no state. A wrong arrangement is therefore a wrong number rather
+ * than a creator squinting at a preview, and switching layouts mid-share is
+ * nothing but calling this again — the canvas, the track and the stream are
+ * all untouched by it, so the audience sees the new arrangement without a
+ * reconnect.
+ *
+ * `face` is null in `screen`, which is the honest way to say "not drawn": the
+ * caller skips the camera entirely rather than drawing it somewhere harmless.
+ */
+export function layoutRects(
+  layout: CompositeLayout,
+  pipCorner: PipCorner = DEFAULT_PIP_CORNER,
+): { screen: Rect; face: Rect | null } {
+  if (layout === 'screen') {
+    return { screen: FULL_FRAME, face: null };
+  }
+
+  if (layout === 'pip') {
+    // The share gets the whole frame and is CONTAINED in it, so a 16:9 tab
+    // lands 720x406 (405 rounded up to even) centred vertically, with the
+    // frame's own black above and below — which is exactly the space the
+    // floating face then sits in.
+    const right = COMPOSITE_WIDTH - PIP_WIDTH - PIP_INSET;
+    const bottom = COMPOSITE_HEIGHT - PIP_HEIGHT - PIP_INSET;
+    const left = PIP_INSET;
+    const top = PIP_INSET;
+    return {
+      screen: FULL_FRAME,
+      face: {
+        x: pipCorner === 'top-right' || pipCorner === 'bottom-right' ? right : left,
+        y: pipCorner === 'bottom-left' || pipCorner === 'bottom-right' ? bottom : top,
+        width: PIP_WIDTH,
+        height: PIP_HEIGHT,
+      },
+    };
+  }
+
+  // 'split'. Half each, and the bottom is defined as "the rest" rather than as
+  // a second half computed separately — so the two meet exactly, with no gap
+  // and no overlap, whatever the top rounds to.
+  const top = Math.round(COMPOSITE_HEIGHT / 2 / 2) * 2;
+  return {
+    screen: { x: 0, y: 0, width: COMPOSITE_WIDTH, height: top },
+    face: { x: 0, y: top, width: COMPOSITE_WIDTH, height: COMPOSITE_HEIGHT - top },
+  };
+}
 
 /**
  * Fit a source INSIDE a slot, whole, centred. `object-fit: contain`.
  *
  * This is the screen share's rule, and it is the rule because a screen share
- * is information. A 16:9 chart in a 720x704 slot lands at 720x405 with black
- * above and below it inside the slot; cropping it to fill instead would cut
+ * is information. A 16:9 chart in the 720x640 top slot lands at 720x406 with
+ * black above and below it inside the slot; cropping it to fill would cut
  * the price axis off one side and the time axis off the other, which on a
  * trading chart is most of what the viewer came for.
  *
- * The bars are INSIDE the top slot only. The published frame is still 9:16
+ * The bars are INSIDE the slot only. The published frame is still 9:16
  * edge to edge, so a phone viewer sees no letterbox around the broadcast —
  * only the natural margin around the chart itself, exactly as they would in a
  * TikTok Live.
@@ -127,8 +231,8 @@ export function containRect(sourceWidth: number, sourceHeight: number, slot: Rec
  * This is the camera's rule, and it is the opposite decision for the opposite
  * reason: a face is not information laid out to the edges, it is a subject in
  * the middle, and black bars around a creator are what the whole layout exists
- * to avoid. A 16:9 webcam covering a 720x576 (5:4) slot keeps its full height
- * and loses the outer edges of its width — which is background.
+ * to avoid. A 16:9 webcam covering the 720x640 bottom slot keeps its full
+ * height and loses the outer edges of its width — which is background.
  *
  * It is also what the camera-only publish frame uses, covering the whole
  * 720x1280 — see cameraFilters. That is a harder crop, and deliberately so:
