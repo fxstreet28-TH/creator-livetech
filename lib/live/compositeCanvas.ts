@@ -51,6 +51,22 @@
 
 import type { BroadcastQuality } from './types';
 
+/**
+ * How a source is placed inside its slot.
+ *
+ * TWO RULES, AND WHICH ONE APPLIES IS A PROPERTY OF THE SOURCE, not of the
+ * slot. A shared screen is `contain`: it is information laid out to its own
+ * edges, and cropping a trading chart to fill a slot cuts the price axis off
+ * one side and the time axis off the other. A camera is `cover`: it is a
+ * subject in the middle of a frame, and black bars around a person are the
+ * thing this whole layout exists to avoid.
+ *
+ * The top slot takes either, because since the mobile dual-camera path it
+ * holds either — a shared screen on a desktop, a BACK CAMERA on a phone. See
+ * `setSecondSource` in ./cameraFilters, which is where the choice is made.
+ */
+export type SlotFit = 'contain' | 'cover';
+
 /** A box on the composite canvas, in canvas pixels. */
 export interface Rect {
   x: number;
@@ -335,6 +351,13 @@ export function pipMetrics(size: CompositeSize = COMPOSITE_SIZE_720): {
  *
  * `face` is null in `screen`, which is the honest way to say "not drawn": the
  * caller skips the camera entirely rather than drawing it somewhere harmless.
+ *
+ * THE KEY IS CALLED `screen` AND IT MEANS "THE SECOND SOURCE". It was named
+ * when a shared screen was the only thing that could go there; on a phone the
+ * same rectangle holds the BACK CAMERA, drawn with `cover` instead of
+ * `contain` (see SlotFit). The geometry is identical and deliberately so — the
+ * mobile composite is the desktop `split` layout with a different source in
+ * the top slot, not a second layout system that has to be kept in step.
  */
 export function layoutRects(
   layout: CompositeLayout,

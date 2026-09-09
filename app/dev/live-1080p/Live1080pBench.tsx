@@ -200,7 +200,7 @@ export function Live1080pBench() {
           setRows([...collected]);
 
           // Then each arrangement, with the share mounted.
-          await filtered.setScreenSource(screen.stream);
+          await filtered.setSecondSource(screen.stream, { fit: 'contain', kind: 'screen' });
           for (const layout of COMPOSITE_LAYOUT_ORDER) {
             filtered.setCompositeLayout(layout);
             await wait(SAMPLE_MS);
@@ -218,7 +218,7 @@ export function Live1080pBench() {
             });
             setRows([...collected]);
           }
-          await filtered.setScreenSource(null);
+          await filtered.setSecondSource(null);
         } finally {
           filtered?.stop();
           camera.stop();

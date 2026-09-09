@@ -290,6 +290,50 @@
   line-height: 1;
 }
 
+/* ----------------------------------------------- the dual-camera notice ---
+ * What a phone that will not run both cameras says for itself.
+ *
+ * A dismissible strip rather than a toast that fades: the creator asked a
+ * question mid-broadcast, the answer tells them to use a DIFFERENT control
+ * (the flip button, two slots up the rail), and an answer that disappears
+ * before they have read it is a button that did nothing. It sits above the
+ * bottom stack, clear of the chat and well clear of จบไลฟ์.
+ */
+.dualNotice {
+  position: absolute;
+  left: calc(var(--live-safe-left) + 16px);
+  /* Clear of the rail, which is 44px hard against the right edge. */
+  right: calc(var(--live-safe-right) + 68px);
+  bottom: calc(62dvh + 8px);
+  z-index: 25;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 10, 21, 0.92);
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: left;
+}
+
+.dualNoticeDismiss {
+  flex: none;
+  min-width: 44px;
+  min-height: 32px;
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.dualNoticeDismiss:focus-visible {
+  outline: 2px solid rgba(34, 211, 238, 0.9);
+  outline-offset: 2px;
+}
+
 /* --------------------------------------------------------- zoom slider --- */
 
 .zoomSlider {

@@ -41,6 +41,7 @@ import {
   MicOff,
   RefreshCw,
   Sparkles,
+  SquareSplitVertical,
   Video,
   VideoOff,
   Volume2,
@@ -272,11 +273,45 @@ export function CreatorLiveMobile(props: CreatorLiveMobileProps) {
                 <span>
                   look {filterLabelFor(filterId)} · {c.lookMode ?? '—'} · {c.captureFps || '—'}fps
                 </span>
+                {/*
+                  WHICH TIER THIS PHONE LANDED ON. The one line that answers
+                  the only question the dual-camera feature has: "—" until the
+                  creator taps, then the device's own verdict. Reading it off
+                  the screen beats reading it out of Safari's remote inspector
+                  over a USB cable, which is the alternative.
+                */}
+                {c.dualCameraAvailable && (
+                  <span>
+                    dualcam {c.dualCameraTier ?? 'unprobed'} ·{' '}
+                    {c.dualCameraOn ? 'on (back→top, front→bottom)' : 'off'}
+                  </span>
+                )}
                 {c.portraitRefused && (
                   <span className={styles.debugWarn}>
                     camera refused portrait — publishing 16:9, NOT cropping
                   </span>
                 )}
+              </div>
+            )}
+
+            {/*
+              WHAT THE PHONE SAID WHEN IT WAS ASKED FOR TWO CAMERAS.
+
+              Rendered only after a tap that did not work, and dismissible
+              rather than timed: it tells the creator to reach for a DIFFERENT
+              control, and a message that fades before it is read leaves them
+              with a button that appeared to do nothing.
+            */}
+            {c.dualCameraNotice && (
+              <div className={styles.dualNotice} role="status">
+                <span>{c.dualCameraNotice}</span>
+                <button
+                  type="button"
+                  onClick={c.clearDualCameraNotice}
+                  className={styles.dualNoticeDismiss}
+                >
+                  ปิด
+                </button>
               </div>
             )}
 
@@ -447,10 +482,21 @@ function Rail({
         icon={controls.camOn ? <Video size={19} aria-hidden /> : <VideoOff size={19} aria-hidden />}
       />
 
+      {/*
+        Disabled while both cameras are on screen: there is nothing to flip TO,
+        because the camera this would swap to is the one already filling the
+        top half of the frame. The guard is in flipCamera as well — see there.
+      */}
       <RailButton
         onClick={controls.flipCamera}
-        disabled={controls.flippingCamera}
-        label={controls.facing === 'user' ? 'สลับไปกล้องหลัง' : 'สลับไปกล้องหน้า'}
+        disabled={controls.flippingCamera || controls.dualCameraOn}
+        label={
+          controls.dualCameraOn
+            ? 'สลับกล้องไม่ได้ขณะเปิดกล้องคู่'
+            : controls.facing === 'user'
+              ? 'สลับไปกล้องหลัง'
+              : 'สลับไปกล้องหน้า'
+        }
         icon={
           <RefreshCw
             size={18}
@@ -459,6 +505,42 @@ function Rail({
           />
         }
       />
+
+      {/*
+        กล้องคู่ — the phone's answer to the desktop's แชร์หน้าจอ.
+
+        ABSENT rather than disabled where the device has only one camera, which
+        is the same rule the screen-share button follows on a desktop without
+        getDisplayMedia: a greyed-out control is a promise that it might work
+        later, and on a one-camera device it never will.
+
+        Whether a two-camera device will actually run BOTH at once is not
+        knowable until it is asked, so this button renders on any phone with
+        two cameras and the answer arrives on the first tap — up to a second
+        and a half later, which is what the disabled state during
+        `dualCameraBusy` is for.
+      */}
+      {controls.dualCameraAvailable && (
+        <RailButton
+          onClick={controls.toggleDualCamera}
+          disabled={controls.dualCameraBusy}
+          active={controls.dualCameraOn}
+          label={
+            controls.dualCameraOn
+              ? 'ปิดกล้องคู่'
+              : controls.dualCameraBusy
+                ? 'กำลังตรวจสอบกล้องคู่'
+                : 'เปิดกล้องคู่ (หลังบน + หน้าล่าง)'
+          }
+          icon={
+            <SquareSplitVertical
+              size={18}
+              className={controls.dualCameraBusy ? 'animate-pulse' : ''}
+              aria-hidden
+            />
+          }
+        />
+      )}
 
       {/* 1× → 2× → 3× → 1×. The label IS the state: a zoom a creator cannot
           read off the screen is one they forget they left on. */}
