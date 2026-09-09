@@ -105,8 +105,20 @@ export interface RecoveryLadder {
    * Force an immediate re-attach without resetting an escalation already in
    * progress — for the wake and watchdog detectors, which have found a broken
    * player rather than started a new attempt.
+   *
+   * `rebuild` also throws the <video> ELEMENT away, which is the 'rebuild'
+   * rung's expensive trick rather than the cheap re-attach the other callers
+   * want. It exists for the resume path: a media element iOS suspended in the
+   * background is precisely the wedged decoder that rung was written for, and
+   * making a returning viewer wait out the 8s and 20s boundaries to reach it —
+   * on a signal as strong as the OS handing the page back — is twenty seconds
+   * of black screen spent proving something already known.
    */
-  restartNow: (reason: 'wake' | 'watchdog', detail?: Record<string, unknown>) => void;
+  restartNow: (
+    reason: 'wake' | 'watchdog',
+    detail?: Record<string, unknown>,
+    options?: { rebuild?: boolean },
+  ) => void;
 }
 
 function stepFor(elapsedMs: number): RecoveryStep {
@@ -243,7 +255,11 @@ export function useRecoveryLadder({
   }, [sessionId, delivery, source, reset]);
 
   const restartNow = useCallback(
-    (reason: 'wake' | 'watchdog', detail?: Record<string, unknown>) => {
+    (
+      reason: 'wake' | 'watchdog',
+      detail?: Record<string, unknown>,
+      options?: { rebuild?: boolean },
+    ) => {
       logViewerDiagnostic({
         sessionId,
         delivery,
@@ -264,6 +280,7 @@ export function useRecoveryLadder({
       setExhausted(false);
       attemptRef.current += 1;
       setAttemptKey((n) => n + 1);
+      if (options?.rebuild) setRebuildKey((n) => n + 1);
     },
     [sessionId, delivery, source],
   );

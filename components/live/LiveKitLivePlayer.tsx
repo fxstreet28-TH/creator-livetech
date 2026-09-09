@@ -41,6 +41,7 @@ import { logViewerDiagnostic } from '@/lib/live/viewerDiagnostics';
 import { useStaleBuildGuard } from '@/lib/live/useStaleBuildGuard';
 import { useVideoFrameWatchdog } from '@/lib/live/useVideoFrameWatchdog';
 import { useWakeRecheck } from '@/lib/live/useWakeRecheck';
+import { useResumeTriggers } from '@/lib/live/useResumeTriggers';
 import {
   watchSourceOrientation,
   type PlayerFit,
@@ -49,6 +50,19 @@ import {
 } from './HlsLivePlayer';
 import { LiveRecoveryOverlay } from './LiveRecoveryOverlay';
 import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
+
+/**
+ * How stale the picture may be before this player is called unhealthy, and how
+ * long a resumed room is given to fix itself before it is rebuilt.
+ *
+ * The same numbers, for the same reasons, as HlsLivePlayer — see the constants
+ * at the top of that file. A viewer must not get a different answer to "did my
+ * stream survive the background" depending on which transport they happened to
+ * be on.
+ */
+const LIVEKIT_STALE_MS = 4_000;
+const RESUME_SETTLE_MS = 800;
+const RESTART_DEBOUNCE_MS = 3_000;
 
 export type ViewerPhase = 'connecting' | 'watching' | 'reconnecting' | 'ended' | 'failed';
 
@@ -353,14 +367,6 @@ export function LiveKitLivePlayer({
     if (video) applyVideoFit(video, fullBleed, fit);
   }, [fullBleed, fit]);
 
-  const handleStall = useCallback(
-    (detail: Record<string, unknown>) => {
-      setStalled(true);
-      ladder.restartNow('watchdog', detail);
-    },
-    [ladder],
-  );
-
   /**
    * The SDK owns the element, so it is looked up rather than held in a ref: it
    * is created on track subscribe and replaced whenever the ladder rebuilds
@@ -371,24 +377,111 @@ export function LiveKitLivePlayer({
     [],
   );
 
+  /**
+   * "Connected" is precisely the claim that survives a Safari suspension, so
+   * the room's own state is not enough: there has to be an element with frames
+   * in it, and they have to be recent. A viewer who paused is healthy — the
+   * SDK's element carries native controls and they are allowed to use them.
+   */
+  const lastProgressAtRef = useRef(0);
+  const lastTimeRef = useRef(-1);
+  useEffect(() => {
+    lastProgressAtRef.current = Date.now();
+    const timer = setInterval(() => {
+      const video = getVideo();
+      if (!video) return;
+      if (video.paused || video.readyState < 2) {
+        lastProgressAtRef.current = Date.now();
+        return;
+      }
+      if (video.currentTime !== lastTimeRef.current) {
+        lastTimeRef.current = video.currentTime;
+        lastProgressAtRef.current = Date.now();
+      }
+    }, 1_000);
+    return () => clearInterval(timer);
+  }, [getVideo]);
+
+  const isHealthy = useCallback(() => {
+    const video = getVideo();
+    if (phase !== 'watching' || stalled || !video) return false;
+    if (video.paused) return true;
+    if (video.readyState < 2) return false;
+    return Date.now() - lastProgressAtRef.current < LIVEKIT_STALE_MS;
+  }, [phase, stalled, getVideo]);
+
+  /**
+   * The one door every automatic restart goes through — see the same rule, and
+   * the same reasoning, in HlsLivePlayer. Three detectors now look at a
+   * returning phone and they must not rebuild the room three times.
+   */
+  const lastRestartAtRef = useRef(0);
+  const requestRestart = useCallback(
+    (reason: 'wake' | 'watchdog', detail: Record<string, unknown>) => {
+      const sinceMs = Date.now() - lastRestartAtRef.current;
+      if (sinceMs < RESTART_DEBOUNCE_MS) return;
+      lastRestartAtRef.current = Date.now();
+      ladder.restartNow(reason, detail);
+    },
+    [ladder],
+  );
+
+  const handleStall = useCallback(
+    (detail: Record<string, unknown>) => {
+      setStalled(true);
+      requestRestart('watchdog', detail);
+    },
+    [requestRestart],
+  );
+
   useVideoFrameWatchdog({
     getVideo,
     active: laddering && phase === 'watching',
     onStall: handleStall,
   });
 
+  /**
+   * Coming back from the background — the LiveKit path's share of PR #67.
+   *
+   * WHAT WAS VERIFIED RATHER THAN ASSUMED. livekit-client 2.22.1's `Room`
+   * exposes no reconnect or resume method: the public surface is `connect`,
+   * `disconnect`, `prepareConnection`, `startAudio` and the device switches,
+   * with `Reconnecting`/`Reconnected` emitted by its own internal recovery off
+   * a lost signalling socket. So there is no SDK call to make on a resume, and
+   * its internal reconnect does NOT cover this case — it fires on the socket
+   * going away, not on iOS suspending the media element while the room still
+   * believes it is connected. The reconnect available to us is the ladder's:
+   * tear the room down and build a new one, which is what restartNow does.
+   *
+   * Which is why this is wired the same way as the other two players rather
+   * than left to the SDK.
+   */
+  useResumeTriggers({
+    enabled: laddering,
+    onResume: useCallback(
+      (event) => {
+        const detail = {
+          trigger: event.trigger,
+          hidden_ms: event.hiddenMs,
+          persisted: event.persisted,
+        };
+        if (isHealthy()) return;
+        window.setTimeout(() => {
+          if (isHealthy()) return;
+          requestRestart('wake', detail);
+        }, RESUME_SETTLE_MS);
+      },
+      [isHealthy, requestRestart],
+    ),
+  });
+
+  /** The slow backstop. Shares requestRestart, so it cannot double-rebuild. */
   useWakeRecheck({
     enabled: laddering,
-    // "Connected" is precisely the claim that survives a Safari suspension, so
-    // the room's own state is not enough: there has to be an element with
-    // frames in it.
-    isHealthy: useCallback(() => {
-      const video = getVideo();
-      return phase === 'watching' && !stalled && !!video && !video.paused && video.readyState >= 2;
-    }, [phase, stalled, getVideo]),
+    isHealthy,
     onWake: useCallback(
-      (detail: Record<string, unknown>) => ladder.restartNow('wake', detail),
-      [ladder],
+      (detail: Record<string, unknown>) => requestRestart('wake', detail),
+      [requestRestart],
     ),
   });
 

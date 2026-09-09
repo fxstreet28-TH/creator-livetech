@@ -44,6 +44,7 @@ import type { HlsSource } from "@/lib/live/viewerDiagnostics";
 import { useStaleBuildGuard } from "@/lib/live/useStaleBuildGuard";
 import { useVideoFrameWatchdog } from "@/lib/live/useVideoFrameWatchdog";
 import { useWakeRecheck } from "@/lib/live/useWakeRecheck";
+import { useResumeTriggers } from "@/lib/live/useResumeTriggers";
 import type { LatencyMode } from "@/lib/live/types";
 import { LiveRecoveryOverlay } from "./LiveRecoveryOverlay";
 import { DurationPill, LiveBadge, ViewerCountPill } from "./LiveStatsBar";
@@ -80,6 +81,38 @@ export type PlayerPresentation = "framed" | "fullbleed";
  * size when WHEP hands a viewer to HLS.
  */
 export type PlayerFit = "cover" | "contain";
+
+/**
+ * How stale the picture may be before this player is called unhealthy.
+ *
+ * Only read on a resume — see `isHealthy`. useVideoFrameWatchdog keeps its own,
+ * far more patient ten-second threshold for a foreground stall, where a stream
+ * genuinely can be rebuffering rather than dead.
+ */
+const HLS_STALE_MS = 4_000;
+
+/**
+ * How long a resumed player is given to come back on its own before it is
+ * thrown away.
+ *
+ * A suspended media element frequently DOES resume by itself once the tab is
+ * foregrounded and given a `seekToLive` to chew on, and that is by far the
+ * cheapest possible fix: nothing is rebuilt, nothing is re-buffered, and the
+ * viewer sees a stutter rather than a black screen. Rebuilding at once would
+ * throw that away every time. Eight hundred milliseconds is enough for the
+ * element to present a frame and short enough that a viewer reads it as the
+ * picture coming back rather than as a wait.
+ */
+const RESUME_SETTLE_MS = 800;
+
+/**
+ * The minimum gap between two automatic restarts. See requestRestart.
+ *
+ * Three seconds covers the whole burst a returning phone produces — the resume
+ * settle, useWakeRecheck's 1.5s recheck and the frame watchdog's next tick —
+ * without being long enough to swallow a second, genuinely new failure.
+ */
+const RESTART_DEBOUNCE_MS = 3_000;
 
 /**
  * Which way round the SOURCE is — not which way round the player is.
@@ -379,18 +412,96 @@ export function HlsLivePlayer({
   }, [ladder.rebuildKey]);
 
   /**
+   * The picture's own clock.
+   *
+   * `currentTime` sampled once a second, so that "has this stream moved
+   * recently" can be asked from a resume handler without waiting out
+   * useVideoFrameWatchdog's ten-second stall threshold. Same signal, different
+   * question: the watchdog decides when a foreground player has died, this
+   * decides whether a player that has just been handed back is worth keeping.
+   */
+  const lastProgressAtRef = useRef(0);
+  const lastTimeRef = useRef(-1);
+  useEffect(() => {
+    lastProgressAtRef.current = Date.now();
+    const timer = setInterval(() => {
+      const video = videoRef.current;
+      if (!video) return;
+      if (video.paused || video.readyState < 2) {
+        lastProgressAtRef.current = Date.now();
+        return;
+      }
+      if (video.currentTime !== lastTimeRef.current) {
+        lastTimeRef.current = video.currentTime;
+        lastProgressAtRef.current = Date.now();
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  /**
+   * Is this player actually delivering?
+   *
+   * The transport's own opinion (`phase === 'playing'`) plus the element's
+   * (not paused, has data) plus the picture's (currentTime moved inside
+   * HLS_STALE_MS). The third is what a suspended tab fails: hls.js comes back
+   * from the background believing it is playing, with a <video> that has not
+   * advanced a frame since the page was hidden.
+   *
+   * A DELIBERATELY PAUSED VIDEO IS HEALTHY, as everywhere else in this stack —
+   * the framed player has native controls and a viewer is allowed to use them.
+   */
+  const isHealthy = useCallback((): boolean => {
+    const video = videoRef.current;
+    if (!video || phase !== "playing" || stalled) return false;
+    if (video.paused) return true;
+    if (video.readyState < 2) return false;
+    return Date.now() - lastProgressAtRef.current < HLS_STALE_MS;
+  }, [phase, stalled]);
+
+  /**
+   * The one door every automatic restart goes through, and the one place the
+   * "never stack a rebuild" rule is written down.
+   *
+   * There are now three detectors that can decide this player is broken — the
+   * frame watchdog, useWakeRecheck's 20-second absence check, and the resume
+   * triggers — and on a phone returning from the background all three are
+   * looking at the same corpse. Left to themselves they would call restartNow
+   * three times inside two seconds, which is three players fighting for one
+   * element and a black screen that only reproduces on the fix.
+   */
+  const lastRestartAtRef = useRef(0);
+  const requestRestart = useCallback(
+    (
+      reason: "wake" | "watchdog",
+      detail: Record<string, unknown>,
+      options?: { rebuild?: boolean },
+    ) => {
+      const sinceMs = Date.now() - lastRestartAtRef.current;
+      if (sinceMs < RESTART_DEBOUNCE_MS) {
+        console.info("[hls] restart already in flight; ignoring", { reason, since_ms: sinceMs });
+        return;
+      }
+      lastRestartAtRef.current = Date.now();
+      console.info("[hls] restarting playback", { reason, ...detail, ...options });
+      ladder.restartNow(reason, detail, options);
+    },
+    [ladder],
+  );
+
+  /**
    * The picture froze while everything claimed to be fine.
    *
    * Marking it stalled is what turns `health` unhealthy and starts the clock;
-   * restartNow re-attaches immediately rather than waiting for the first rung,
+   * the restart re-attaches immediately rather than waiting for the first rung,
    * because a frozen picture is not a connect that might still be in progress.
    */
   const handleStall = useCallback(
     (detail: Record<string, unknown>) => {
       setStalled(true);
-      ladder.restartNow("watchdog", detail);
+      requestRestart("watchdog", detail);
     },
-    [ladder],
+    [requestRestart],
   );
 
   useVideoFrameWatchdog({
@@ -399,21 +510,66 @@ export function HlsLivePlayer({
     onStall: handleStall,
   });
 
+  /**
+   * Coming back to a suspended player — the HLS half of PR #67.
+   *
+   * The viewer who folded their phone on the WHEP path and was handed here is
+   * looking at exactly the same problem one layer up: hls.js kept its instance
+   * and its buffer through the background, iOS suspended the media element, and
+   * the element does not restart itself. PR #52's ladder would eventually reach
+   * the rung that fixes it — replacing the <video> — twenty seconds later. A
+   * resume is a strong enough signal to go there directly.
+   *
+   * SEEK FIRST, REBUILD ONLY IF THAT WAS NOT ENOUGH. Jumping to the live edge
+   * is both the cheap fix for the common case (a stream that resumed twenty
+   * minutes behind, which is where this player already sent `seekToLive`) and a
+   * nudge that often wakes a merely-stalled element. The settle window below is
+   * what gives it the chance to work before anything is thrown away.
+   */
+  useResumeTriggers({
+    enabled: recoveryEnabled,
+    onResume: useCallback(
+      (event) => {
+        const detail = {
+          trigger: event.trigger,
+          hidden_ms: event.hiddenMs,
+          persisted: event.persisted,
+        };
+        // Always: a live stream that resumed where it stopped is a live stream
+        // showing the past, whether or not anything is broken.
+        handleRef.current?.seekToLive();
+
+        if (isHealthy()) {
+          console.info("[hls] resume; player is healthy", detail);
+          return;
+        }
+        console.info("[hls] resume; player is not healthy, settling", detail);
+        window.setTimeout(() => {
+          if (isHealthy()) {
+            console.info("[hls] resume; recovered on its own", detail);
+            return;
+          }
+          requestRestart("wake", detail, { rebuild: true });
+        }, RESUME_SETTLE_MS);
+      },
+      [isHealthy, requestRestart],
+    ),
+  });
+
+  /**
+   * The slow backstop, kept.
+   *
+   * It watches the same two doors with a twenty-second absence threshold, and
+   * it stays because it catches the case the resume path cannot: a page that
+   * came back healthy, settled, and only fell over a second later. Both of them
+   * go through requestRestart, which is what stops them rebuilding twice.
+   */
   useWakeRecheck({
     enabled: recoveryEnabled,
-    isHealthy: useCallback(() => {
-      const video = videoRef.current;
-      return (
-        phase === "playing" &&
-        !stalled &&
-        !!video &&
-        !video.paused &&
-        video.readyState >= 2
-      );
-    }, [phase, stalled]),
+    isHealthy,
     onWake: useCallback(
-      (detail: Record<string, unknown>) => ladder.restartNow("wake", detail),
-      [ladder],
+      (detail: Record<string, unknown>) => requestRestart("wake", detail, { rebuild: true }),
+      [requestRestart],
     ),
   });
 
@@ -444,26 +600,48 @@ export function HlsLivePlayer({
     return () => clearInterval(timer);
   }, [phase]);
 
-  /**
-   * Coming back from a backgrounded tab.
-   *
-   * A paused live stream resumes wherever it stopped, which on a 20-minute
-   * detour is 20 minutes behind. Jumping to the live edge is what a viewer
-   * means by "live", and it is the difference between a working stream and one
-   * where the chat is discussing something that has not happened yet.
+  /*
+   * Coming back from a backgrounded tab used to be its own visibilitychange
+   * listener here, calling seekToLive — a live stream that resumed where it
+   * stopped is a live stream showing the past. That is now the first thing the
+   * resume handler above does, on all four doors instead of one, and the
+   * listener it replaced has been removed rather than left to fire twice.
    */
-  useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState === "visible")
-        handleRef.current?.seekToLive();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
-  }, []);
 
   const enableAudio = useCallback(async () => {
     await handleRef.current?.unmute();
   }, []);
+
+  /**
+   * The tap that used to be a bare `play()`.
+   *
+   * PREVIOUS BEHAVIOUR: `video.play()`, its rejection swallowed. That is the
+   * right and sufficient thing for the state this button was built for — iOS
+   * Low Power Mode refusing autoplay on a perfectly good stream — and it does
+   * nothing at all for a viewer who has come back to a suspended hls.js
+   * instance, which is the state they are far more likely to be in. They tap,
+   * the element has nothing to play, and nothing happens.
+   *
+   * NOW: play first, because that is the cheap fix and because the gesture is
+   * only valid inside this handler — calling play() here is what marks the
+   * element user-activated for the programmatic play that follows a rebuild.
+   * Then, if the player is not actually delivering, rebuild it.
+   */
+  const handleTapToPlay = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const healthy = isHealthy();
+    console.info("[hls] tap-to-play", { healthy, phase, stalled });
+
+    void video
+      .play()
+      .then(() => setAutoplayRefused(false))
+      .catch(() => undefined);
+
+    if (healthy) return;
+    handleRef.current?.seekToLive();
+    requestRestart("wake", { trigger: "tap" }, { rebuild: true });
+  }, [isHealthy, phase, stalled, requestRestart]);
 
   // Square and borderless on a phone, where the player is edge-to-edge and a
   // rounded border would just be a hairline of page colour around the video.
@@ -573,14 +751,7 @@ export function HlsLivePlayer({
       {fullBleed && (autoplayRefused || (paused && phase === "playing")) && (
         <button
           type="button"
-          onClick={() => {
-            const video = videoRef.current;
-            if (!video) return;
-            void video
-              .play()
-              .then(() => setAutoplayRefused(false))
-              .catch(() => undefined);
-          }}
+          onClick={handleTapToPlay}
           className="absolute left-1/2 top-1/2 z-20 inline-flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white/15 text-white backdrop-blur-md transition hover:bg-white/25 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
         >
           <Play size={26} aria-hidden />
