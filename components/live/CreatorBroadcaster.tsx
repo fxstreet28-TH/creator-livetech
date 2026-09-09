@@ -93,6 +93,7 @@ import {
   type ScreenShareSession,
 } from '@/lib/live/screenShareCapture';
 import {
+  COMPOSITE_FRAME_RATE,
   COMPOSITE_LAYOUT_LABELS,
   COMPOSITE_LAYOUT_ORDER,
   DEFAULT_COMPOSITE_LAYOUT,
@@ -938,7 +939,19 @@ export function CreatorBroadcaster({
             stream: filtered.publishStream,
             quality,
             micEnabled,
-            maxFramerate: resolutionFor(quality).frameRate,
+            /**
+             * The rate the canvas is ACTUALLY painted at, which is a
+             * function of the mode — 24 while a screen share is being
+             * composited in, the camera's 30 otherwise (see
+             * COMPOSITE_FRAME_RATE). Read from the ref rather than from
+             * React state because this runs on every rung of the reconnect
+             * ladder: a creator whose connection blipped mid-share must come
+             * back with the cap their composite needs, not the one a fresh
+             * broadcast would get.
+             */
+            maxFramerate: screenShareRef.current
+              ? COMPOSITE_FRAME_RATE
+              : resolutionFor(quality).frameRate,
             signal: whipAbort.signal,
           });
           whipRef.current = whip;
@@ -1305,8 +1318,18 @@ export function CreatorBroadcaster({
     screenShareRef.current = null;
     if (stopCapture) session?.stop();
     void filteredRef.current?.setScreenSource(null);
+    /**
+     * The encoder's cap follows the canvas back up to 30.
+     *
+     * In-band on the live session — no renegotiation, nothing a viewer sees
+     * (see WhipSession.setMaxFramerate). Fire-and-forget because it cannot
+     * fail in a way worth handling: the worst case is an encoder still capped
+     * at 24 on a canvas painting 30, which is a slightly smoother picture than
+     * yesterday rather than a broken one.
+     */
+    void whipRef.current?.setMaxFramerate(resolutionFor(quality).frameRate);
     setScreenSharing(false);
-  }, []);
+  }, [quality]);
 
   /**
    * Share a screen, or stop sharing one.
@@ -1363,6 +1386,12 @@ export function CreatorBroadcaster({
     screenShareRef.current = session;
     try {
       await target.setScreenSource(session.stream);
+      // The composite paints at 24 from the line above; this is the encoder
+      // being told the same thing. Capping it is what makes a frame the
+      // encoder cannot finish in time a DROPPED frame rather than a queued
+      // one — a queue is the multi-second lag Por recorded, and it is the one
+      // failure mode no amount of bitrate can fix.
+      void whipRef.current?.setMaxFramerate(COMPOSITE_FRAME_RATE);
     } catch (err) {
       console.error('[composite] could not mount the screen source', err);
       endScreenShare(true);

@@ -81,6 +81,22 @@ interface LiveChatProps {
    * so it stays usable on the creator's screen, which has no gift button.
    */
   action?: React.ReactNode;
+  /**
+   * Rendered as its OWN row, between the message list and the input row.
+   *
+   * The phone's reaction buttons, and nothing else so far. They belong to the
+   * bottom bar rather than to the video — a viewer looking for ❤️ looks where
+   * their thumb already is — but they cannot go in the input row itself: four
+   * 44px targets alongside the field, the emoji picker, the gift button and
+   * the stars link leaves a text field about 14px wide on a 390px phone, which
+   * is not a field at all. Their own line directly above it is the same bottom
+   * cluster with none of that arithmetic.
+   *
+   * A slot rather than an import, for the same reason `action` is one: this
+   * component is mounted on the creator's screen too, and a creator does not
+   * send reactions to their own broadcast.
+   */
+  beforeComposer?: React.ReactNode;
   variant?: LiveChatVariant;
   /**
    * Overlay only: whether the column is showing full, scrollable history.
@@ -110,6 +126,7 @@ export function LiveChat({
   onSend,
   status,
   action,
+  beforeComposer,
   variant = 'panel',
   expanded = false,
   onExpandedChange,
@@ -288,6 +305,8 @@ export function LiveChat({
           ขยายแชท
         </button>
       )}
+
+      {beforeComposer}
 
       <form
         onSubmit={(event) => {

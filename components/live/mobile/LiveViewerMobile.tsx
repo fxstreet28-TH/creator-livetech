@@ -16,14 +16,14 @@
  * whose audience is ~70% phones, and against competitors who all put the
  * broadcast edge to edge. So the video fills the viewport and everything else
  * becomes a translucent layer over it: the creator and the way out at the top,
- * the reaction rail down the right, gifts and chat up the left, the composer
- * along the bottom.
+ * sharing down the right, gifts and chat up the left, the composer along the
+ * bottom with the reaction emoji on the line directly above it.
  *
  * Every one of those layers is an EXISTING component with a second
  * presentation — the same players, the same GiftOverlay and GiftDrawer, the
- * same LiveChat with `variant="overlay"`, the same EmojiReactionButton turned
- * on its side. Nothing about gifts, chat, Realtime or the wallet is different
- * on a phone; only where it is drawn is.
+ * same LiveChat with `variant="overlay"`, the same EmojiReactionButton with
+ * four of its six emoji. Nothing about gifts, chat, Realtime or the wallet is
+ * different on a phone; only where it is drawn is.
  *
  * THE THREE THINGS THAT ARE GENUINELY HARD HERE
  *
@@ -36,7 +36,7 @@
  *  3. NOTHING MAY COVER THE CREATOR'S FACE. That is the centre of the frame,
  *     and it is why the gift stage is anchored to the bottom left instead of
  *     being centred behind a dim, why the tray sits above the chat rather than
- *     in the corner, and why both the reaction rail and the gift stage are
+ *     in the corner, and why both the right rail and the gift stage are
  *     required to finish above 45% of the viewport. The stage's height is
  *     MEASURED against what is actually on screen — the chat column, and the
  *     tray when it has rows — rather than reserved; see `giftAnchor`.
@@ -366,17 +366,14 @@ export function LiveViewerMobile({ sessionId, state }: LiveViewerMobileProps) {
         </div>
       </div>
 
-      {/* ----------------------------------------------------- reaction rail */}
+      {/* ------------------------------------------------------- share button */}
+      {/* What is LEFT of the old right-edge rail. The reaction buttons moved
+          down into the bottom bar (see `beforeComposer` below) because a
+          column of emoji floating over the middle of the video is in the way
+          of the thing a viewer came to watch; sharing is a once-per-visit
+          action that nobody complained about, and it stays where it is. */}
       {!ended && (
         <div className={styles.rail}>
-          <EmojiReactionButton
-            onReact={channel.sendReaction}
-            enabled={channel.connected}
-            orientation="vertical"
-            // ❤️ 🔥 👏 😂. The palette is unchanged; this rail sends the first
-            // four so it plus the share button finishes above the gift stage.
-            limit={4}
-          />
           <LiveShareButton title={title} />
         </div>
       )}
@@ -404,6 +401,20 @@ export function LiveViewerMobile({ sessionId, state }: LiveViewerMobileProps) {
             onExpandedChange={setChatExpanded}
             className={styles.composer}
             listClassName={styles.chat}
+            /* ❤️ 🔥 👏 😂, in the bottom bar on the line directly above the
+               message input. The same four the right-edge rail used to send,
+               the same sender, the same throttle, the same long-press repeat —
+               only where they render changed. Inside the bottom stack, so they
+               ride the keyboard with the composer. */
+            beforeComposer={
+              <div className={styles.reactions}>
+                <EmojiReactionButton
+                  onReact={channel.sendReaction}
+                  enabled={channel.connected}
+                  limit={4}
+                />
+              </div>
+            }
             action={
               <>
                 <button

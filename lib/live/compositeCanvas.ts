@@ -52,6 +52,62 @@ export interface Rect {
 export const COMPOSITE_WIDTH = 720;
 export const COMPOSITE_HEIGHT = 1280;
 
+/**
+ * HOW OFTEN A COMPOSITE FRAME IS PAINTED, AND WHY IT IS NOT 30.
+ *
+ * A camera-only broadcast is one decode, one paint of one source, one encode,
+ * and it fits in a 33ms budget with room to spare. A composite is two decodes
+ * (camera and screen), a paint that draws both, and an encode of a frame where
+ * EVERY pixel has detail — a chart is thin lines and small text corner to
+ * corner, which is close to the worst case an H.264 encoder can be handed at
+ * 30fps on a laptop. Those four costs share one 33ms budget, and when they do
+ * not fit the encoder stops finishing frames on time: they queue, the queue is
+ * latency, and the viewer sees the chart arrive seconds late and then jump.
+ *
+ * 24 buys each stage a 41.7ms budget instead — 24% more time, given away by
+ * the one thing in the frame that does not need 30: a chart. Cinema has run at
+ * 24 for a century; a candlestick scrolling at 24 is indistinguishable from one
+ * scrolling at 30 to anyone who is not counting, and it is emphatically better
+ * than one scrolling at 30 three seconds late.
+ *
+ * The camera-only path keeps its 30 (see createFilteredStream's `frameRate`).
+ * This is the composite's rate, applied while a share is running and given up
+ * the moment it stops.
+ */
+export const COMPOSITE_FRAME_RATE = 24;
+
+/**
+ * The largest screen capture worth asking a browser for.
+ *
+ * The screen's slot in every layout is at most COMPOSITE_WIDTH across, so a
+ * 2560x1440 or 3840x2160 capture is pixels fetched, decoded and then thrown
+ * away by `drawImage` on the main thread, every single frame. Constraining
+ * `getDisplayMedia` moves that downscale into the browser's own capture path,
+ * where it is done off the main thread and once — see lib/live/screenShareCapture.
+ *
+ * 1280x720 rather than 720x1280-shaped: shared surfaces are landscape (a
+ * monitor, a window, a tab) and the constraint is a MAXIMUM on each axis, so a
+ * portrait or square surface is capped just as well by the larger of the two.
+ * Larger than the slot on purpose — a 720-wide capture drawn into a 720-wide
+ * slot would leave nothing for a creator who picks เฉพาะหน้าจอ, where the
+ * screen is drawn full width and a little oversampling keeps text crisp.
+ */
+export const SCREEN_CAPTURE_MAX_WIDTH = 1280;
+export const SCREEN_CAPTURE_MAX_HEIGHT = 720;
+
+/**
+ * The most frames a second worth capturing from a screen.
+ *
+ * 30 rather than COMPOSITE_FRAME_RATE, deliberately. The composite paints at
+ * 24 and reads whatever the screen's <video> last decoded, so a source at 30
+ * costs a handful of decodes that are never drawn — and a source at 24 would
+ * beat against a 24fps paint loop, landing sometimes one frame stale and
+ * sometimes two, which is the judder this whole change is about. A ceiling
+ * comfortably above the consumer, with no shared divisor to resonate with, is
+ * the cheap and correct choice; the expensive thing was 60.
+ */
+export const SCREEN_CAPTURE_MAX_FRAME_RATE = 30;
+
 /** The whole frame. The screen's slot in `pip` and `screen`, and — with no
  *  screen share at all — the camera-only publish frame. See cameraFilters. */
 export const FULL_FRAME: Rect = {

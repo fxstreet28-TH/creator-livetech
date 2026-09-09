@@ -25,6 +25,12 @@
  * something that can only fail.
  */
 
+import {
+  SCREEN_CAPTURE_MAX_FRAME_RATE,
+  SCREEN_CAPTURE_MAX_HEIGHT,
+  SCREEN_CAPTURE_MAX_WIDTH,
+} from './compositeCanvas';
+
 /** A screen capture that is running, and the one way to end it. */
 export interface ScreenShareSession {
   /** Video only, one track. Hand it to the composite pipeline. */
@@ -71,7 +77,45 @@ export async function startScreenShare(
 
   let stream: MediaStream;
   try {
-    stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+    stream = await navigator.mediaDevices.getDisplayMedia({
+      /**
+       * ==============================================================
+       * CAPTURE SMALL. THE COMPOSITE CANNOT USE ANY MORE THAN THIS.
+       * ==============================================================
+       *
+       * `getDisplayMedia({ video: true })` hands back the SOURCE's native
+       * resolution: a 1440p monitor gives 2560x1440, a 4K one 3840x2160, a
+       * Retina tab twice its CSS size. Those frames were then drawn into a
+       * slot at most 720px across by `drawImage`, on the main thread, thirty
+       * times a second — a downscale of eight million pixels per frame, in the
+       * same thread that has to hand the encoder a finished frame every 33ms.
+       * That is where the stutter came from, and it is why raising the bitrate
+       * did nothing for it: no number of bits fixes a frame that was painted
+       * late.
+       *
+       * Constrained, the browser does the same downscale in its own capture
+       * path — off the main thread, in the compositor, once — and hands us
+       * frames the size we were going to use anyway. The pixels a creator sees
+       * on their monitor are unchanged; only what is CAPTURED shrinks.
+       *
+       * A MAXIMUM, not an exact size, on every axis. `max` is a constraint any
+       * source can satisfy by staying under it, so a creator sharing a small
+       * window or a 1366x768 laptop screen gets their own resolution untouched
+       * and nothing is ever upscaled to meet a target.
+       *
+       * The framerate cap is the source's half of the same argument: a 60Hz
+       * monitor captured at 60 is two decoded frames thrown away for every one
+       * painted. 30 is the ceiling the composite could ever consume — it paints
+       * at COMPOSITE_FRAME_RATE, which is lower still — and a ceiling on a
+       * source is free where dropping frames later is not.
+       */
+      video: {
+        width: { max: SCREEN_CAPTURE_MAX_WIDTH },
+        height: { max: SCREEN_CAPTURE_MAX_HEIGHT },
+        frameRate: { max: SCREEN_CAPTURE_MAX_FRAME_RATE },
+      },
+      audio: false,
+    });
   } catch (err) {
     // Dismissing the picker rejects, with a name that varies by browser:
     // Chrome says NotAllowedError, Firefox has been known to say AbortError.
@@ -112,10 +156,52 @@ export async function startScreenShare(
    */
   track.contentHint = 'detail';
 
+  /**
+   * DID THE CONSTRAINT ACTUALLY LAND? Ask, and if not, insist once.
+   *
+   * `getDisplayMedia` constraints are honoured by Chrome and Edge and have a
+   * history of being ignored elsewhere — Firefox has shipped versions that
+   * hand back the native surface whatever is asked for, and a browser is
+   * within its rights to treat display capture as take-it-or-leave-it.
+   * `applyConstraints` on the live track is the second ask, and where it works
+   * it is the same downscale in the same place; where it does not, the
+   * composite still draws the frame correctly, just at the old cost.
+   *
+   * Awaited so the size in the log line below is the FINAL one. It is a few
+   * milliseconds inside a flow that has just waited on a human choosing a
+   * window.
+   */
+  const native = track.getSettings();
+  if ((native.width ?? 0) > SCREEN_CAPTURE_MAX_WIDTH || (native.height ?? 0) > SCREEN_CAPTURE_MAX_HEIGHT) {
+    try {
+      await track.applyConstraints({
+        width: { max: SCREEN_CAPTURE_MAX_WIDTH },
+        height: { max: SCREEN_CAPTURE_MAX_HEIGHT },
+        frameRate: { max: SCREEN_CAPTURE_MAX_FRAME_RATE },
+      });
+    } catch (err) {
+      console.warn('[screen] could not downscale the capture; compositing at source size', err);
+    }
+  }
+
   const settings = track.getSettings();
+  /**
+   * The one line that answers "what is the composite actually drawing?".
+   *
+   * Both numbers, not just the final one: a creator on a 4K monitor whose
+   * browser ignored the cap and one on a 1366x768 laptop that was never over
+   * it both end up with a single resolution in a log, and only the pair says
+   * which of those happened. This is what confirms the fix on the machine
+   * where the stutter was reported, rather than on the one it was fixed on.
+   */
+  const capped =
+    native.width !== settings.width || native.height !== settings.height
+      ? ` (capped from ${native.width ?? '?'}x${native.height ?? '?'})`
+      : '';
   console.info(
     `[screen] sharing ${settings.width ?? '?'}x${settings.height ?? '?'} @${settings.frameRate ?? '?'}fps` +
-      (settings.displaySurface ? ` (${settings.displaySurface})` : ''),
+      (settings.displaySurface ? ` (${settings.displaySurface})` : '') +
+      capped,
   );
 
   /**
