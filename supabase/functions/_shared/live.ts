@@ -45,33 +45,58 @@ export const THB_PER_USD = 35;
  */
 export const LIVEKIT_THB_PER_STREAM_MINUTE = (0.015 + 2 * 0.0005) * THB_PER_USD;
 
+/** The quality rungs a session can be published at, lowest to highest. */
+export type BroadcastQuality = '360p' | '480p' | '720p' | '1080p';
+
 /**
- * Bunny CDN, per viewer-minute.
+ * The publish ceiling per rung, in Mbps.
+ *
+ * A HAND-WRITTEN COPY of publishBitrateFor in lib/live/constants.ts, and it has
+ * to be: this file is a Deno edge function and cannot import from the Next app.
+ * There is no build step that will catch the two drifting apart, so changing a
+ * rung there means editing this table in the same commit. 720p was 3 until the
+ * 2026-09-09 encoder-starvation fix doubled the ceiling; leaving it at 3 would
+ * have understated HLS egress by exactly 2x for every session priced after it.
+ */
+export const PUBLISH_MBPS_BY_QUALITY: Record<BroadcastQuality, number> = {
+  '360p': 1.6,
+  '480p': 3,
+  '720p': 6,
+  '1080p': 9,
+};
+
+/**
+ * Bunny CDN, per viewer-minute, AT THE RUNG THE SESSION WAS PUBLISHED AT.
  *
  * 720p at 6 Mbps is 45 MB/minute; APAC volume tier is $0.005/GB. That works
  * out at ~0.0077 THB, against the 0.0377 THB/viewer-minute the pre-migration
  * model charged — so the migration's saving is ~5x rather than the ~10x it was
  * at 3 Mbps, and still the reason the migration happened.
  *
- * THE 6 IS A HAND-WRITTEN COPY of the 720p rung in publishBitrateFor
- * (lib/live/constants.ts), and it has to be: this file is a Deno edge function
- * and cannot import from the Next app. There is no build step that will catch
- * the two drifting apart, so raising a rung there means editing this line in
- * the same commit. It was 3 until the 2026-09-09 encoder-starvation fix
- * doubled the ceiling; leaving it at 3 would have understated HLS egress by
- * exactly 2x for every session priced after that.
+ * PER-RUNG RATHER THAN A SINGLE CONSTANT, as of the 1080p rung being offered
+ * to creators. It was one number while every session was 720p in practice; a
+ * creator-selectable rung makes that number wrong in both directions at once —
+ * it would under-charge a 1080p chart session by 1.5x and over-charge a 360p
+ * phone broadcast by nearly 4x, and the total feeds the platform budget that
+ * `check_creator_can_golive` refuses go-lives on. A bill that is wrong in the
+ * cheap direction walks the platform toward its own kill switch for free.
  *
  * WHAT THIS LINE IS AND IS NOT. It prices bytes Bunny serves, which means
  * HLS-delivered viewers. A viewer on the WHEP path is served by the origin
  * droplet and touches Bunny not at all — yet estimateLiveCost below charges
  * this line for every delivery mode including 'origin'. That over-charge is
  * older than this change and is deliberate on the safe side (see the note on
- * estimateLiveCost), but doubling the rate doubles it too, and the modelled
- * figure feeds the platform budget that gates go-lives. Worth revisiting now
- * that WHEP is the primary origin path; not changed here, because quietly
- * making the kill switch more permissive is not a bitrate PR's business.
+ * estimateLiveCost); raising a rung raises it too. Worth revisiting now that
+ * WHEP is the primary origin path; not changed here, because quietly making
+ * the kill switch more permissive is not a resolution PR's business.
  */
-export const BUNNY_LIVE_THB_PER_VIEWER_MINUTE = ((6 * 60) / 8 / 1024) * 0.005 * THB_PER_USD;
+export function bunnyThbPerViewerMinute(quality: BroadcastQuality = '720p'): number {
+  const mbps = PUBLISH_MBPS_BY_QUALITY[quality] ?? PUBLISH_MBPS_BY_QUALITY['720p'];
+  return ((mbps * 60) / 8 / 1024) * 0.005 * THB_PER_USD;
+}
+
+/** The 720p rate, which is what a caller naming no rung is priced at. */
+export const BUNNY_LIVE_THB_PER_VIEWER_MINUTE = bunnyThbPerViewerMinute('720p');
 
 export interface LiveCostBreakdown {
   livekitThb: number;
@@ -107,10 +132,18 @@ export function estimateLiveCost(
   durationMinutes: number,
   peakViewers: number,
   delivery: LiveDeliveryMode = 'llhls',
+  /**
+   * The rung the session published at, from its own row.
+   *
+   * Defaulted to 720p, which is both the form's default and what every session
+   * priced before the 1080p rung existed was actually published at — so an old
+   * row with no quality recorded prices exactly as it did before.
+   */
+  quality: BroadcastQuality = '720p',
 ): LiveCostBreakdown {
   const livekitThb =
     delivery === 'origin' ? 0 : durationMinutes * LIVEKIT_THB_PER_STREAM_MINUTE;
-  const bunnyThb = durationMinutes * peakViewers * BUNNY_LIVE_THB_PER_VIEWER_MINUTE;
+  const bunnyThb = durationMinutes * peakViewers * bunnyThbPerViewerMinute(quality);
   return { livekitThb, bunnyThb, totalThb: livekitThb + bunnyThb };
 }
 

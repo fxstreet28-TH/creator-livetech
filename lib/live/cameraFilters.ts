@@ -31,19 +31,18 @@
 
 import {
   COMPOSITE_FRAME_RATE,
-  COMPOSITE_HEIGHT,
-  COMPOSITE_WIDTH,
+  COMPOSITE_SIZE_720,
   DEFAULT_COMPOSITE_LAYOUT,
   DEFAULT_PIP_CORNER,
-  FULL_FRAME,
-  PIP_RADIUS,
   containRect,
   coverSourceRect,
+  fullFrame,
   isCompositeLayout,
   isPipCorner,
   layoutRects,
+  pipMetrics,
 } from './compositeCanvas';
-import type { CompositeLayout, PipCorner, Rect } from './compositeCanvas';
+import type { CompositeLayout, CompositeSize, PipCorner, Rect } from './compositeCanvas';
 
 export const CAMERA_FILTERS = {
   none: { label: 'ปกติ', filter: 'none' },
@@ -449,9 +448,10 @@ export interface FilteredStream {
    *
    * This is the TikTok-Live layout, and it is a mode of the same canvas rather
    * than a second pipeline: pass a display stream and the next frame is drawn
-   * 720x1280 in whichever arrangement the creator has chosen — see
-   * setCompositeLayout — and pass null and the frame after that is the
-   * camera-only frame. See ./compositeCanvas for the layouts themselves.
+   * at the publish size — 720x1280, or 1080x1920 at the 1080p rung — in
+   * whichever arrangement the creator has chosen (see setCompositeLayout), and
+   * pass null and the frame after that is the camera-only frame. See
+   * ./compositeCanvas for the layouts themselves.
    *
    * NOTHING DOWNSTREAM LEARNS ABOUT IT. `publishStream` is the same object,
    * carrying the same track, from the same canvas — so there is no
@@ -477,9 +477,10 @@ export interface FilteredStream {
    * Free, and free for the same reason setFilter is: these are two variables
    * the paint loop reads, so the next frame is simply drawn somewhere else.
    * No replaceTrack, no renegotiation, no reconnect — and since Fix 2 not even
-   * an in-band resize, because the publish canvas is 720x1280 in every desktop
-   * mode. A creator can flip between ครึ่ง-ครึ่ง, จอลอย and เฉพาะหน้าจอ as
-   * often as they like and the audience just sees the picture rearrange.
+   * an in-band resize, because the publish canvas is the SAME size in every
+   * desktop mode, whichever rung that size came from. A creator can flip
+   * between ครึ่ง-ครึ่ง, จอลอย and เฉพาะหน้าจอ as often as they like and the
+   * audience just sees the picture rearrange.
    *
    * Takes effect whether or not a share is running: paintComposite reads these
    * when it next runs, so a layout chosen and then a share started comes up in
@@ -562,11 +563,24 @@ export async function createFilteredStream(
    *
    * Omitted (or false) is the single-canvas pass-through this pipeline has
    * always been — one canvas, published and previewed, at the camera's own
-   * ratio. True builds a SECOND canvas, 720x1280, with the webcam's full
-   * height kept and its outer width cropped away, and leaves the creator's
-   * preview at the full un-cropped frame.
+   * ratio. True builds a SECOND canvas at `publishSize`, with the webcam's
+   * full height kept and its outer width cropped away, and leaves the
+   * creator's preview at the full un-cropped frame.
    */
   portrait?: boolean,
+  /**
+   * The size of the portrait publish frame, and of the composite.
+   *
+   * 720x1280 unless the creator picked 1080p, where it is 1080x1920 — see
+   * compositeSizeFor. It is passed in rather than read from a constant because
+   * it is the creator's choice, and it is fixed for the life of the pipeline:
+   * a rung is chosen on the go-live form and a new broadcast builds a new
+   * pipeline, so nothing here has to survive it changing mid-stream.
+   *
+   * Ignored entirely where `portrait` is false — a phone publishes its own
+   * frame, capped by maxLongEdge, and has no getDisplayMedia to composite with.
+   */
+  publishSize: CompositeSize = COMPOSITE_SIZE_720,
 ): Promise<FilteredStream> {
   const [sourceVideoTrack] = source.getVideoTracks();
   if (!sourceVideoTrack) throw new Error('No video track to filter');
@@ -574,6 +588,37 @@ export async function createFilteredStream(
   const settings = sourceVideoTrack.getSettings();
   const width = settings.width ?? 1280;
   const height = settings.height ?? 720;
+
+  /**
+   * The publish frame, derived once rather than per frame: it is a pure
+   * function of `publishSize`, which cannot change while this pipeline lives,
+   * and the paint loop is the one place in this file where a recomputed
+   * constant costs something real.
+   */
+  const publishFrame = fullFrame(publishSize);
+  const pipRadius = pipMetrics(publishSize).radius;
+
+  /*
+    ONE TICK PAINTS BOTH TARGETS, AND AT 1080p THAT IS THE WHOLE COST.
+
+    While a share is running BOTH canvases paint the whole composite — the
+    creator's self-view has to be the frame the audience gets, or a creator
+    arranging จอลอย cannot see which corner they just put themselves in. So a
+    1080p share paints two 1080x1920 composites inside one 41.7ms budget.
+
+    THE OBVIOUS OPTIMISATION DOES NOT WORK, and it is written down here so the
+    next person does not spend an afternoon rediscovering it. Painting the
+    PREVIEW at 720x1280 while publishing 1080x1920 — free, on the face of it,
+    since a self-view is displayed in a card a few hundred CSS pixels wide —
+    was built and measured on /dev/live-1080p, and it moved the composite's
+    p95 from 41.1ms to 40.1ms. About 2%, which is noise. The cost is not
+    writing the destination pixels; it is READING and filtering the 1920x1080
+    screen source, which happens per target whatever size it is drawn into. A
+    smaller preview does not read less, so the complexity was reverted.
+
+    What would actually move it is painting somewhere other than the main
+    thread — the OffscreenCanvas worker PR #64 deferred as its "fix D".
+  */
 
   // A detached <video> is the only way to get decodable frames out of a
   // MediaStreamTrack that drawImage will accept. It is never added to the
@@ -607,8 +652,8 @@ export async function createFilteredStream(
 
   const createTarget = (portrait: boolean): PaintTarget => {
     const canvas = document.createElement('canvas');
-    canvas.width = portrait ? COMPOSITE_WIDTH : width;
-    canvas.height = portrait ? COMPOSITE_HEIGHT : height;
+    canvas.width = portrait ? publishSize.width : width;
+    canvas.height = portrait ? publishSize.height : height;
     // `alpha: false` — the camera has no transparency, and telling the browser
     // so lets it skip compositing work on every single frame.
     const ctx = canvas.getContext('2d', { alpha: false });
@@ -632,16 +677,17 @@ export async function createFilteredStream(
   /**
    * What the audience gets on a desktop broadcast, and null everywhere else.
    *
-   * A fixed 720x1280 that the webcam COVERS — full height, outer width cropped,
-   * centred — so a phone viewer gets a face edge to edge instead of a small
-   * one in a field of black. On a phone this is null, the published track IS
-   * the preview canvas, and PR #50's "publish the sensor's own frame" path is
-   * untouched: a phone sensor already gives an upright frame and has nothing
-   * to crop.
+   * A fixed portrait frame that the webcam COVERS — full height, outer width
+   * cropped, centred — so a phone viewer gets a face edge to edge instead of a
+   * small one in a field of black. On a phone this is null, the published
+   * track IS the preview canvas, and PR #50's "publish the sensor's own frame"
+   * path is untouched: a phone sensor already gives an upright frame and has
+   * nothing to crop.
    *
-   * 720x1280 is the COMPOSITE's size on purpose. A creator toggling a share on
-   * and off no longer resizes the published canvas at all — there is not even
-   * an in-band resolution change for the audience to ride out.
+   * It is the COMPOSITE's size on purpose, at whichever rung. A creator
+   * toggling a share on and off no longer resizes the published canvas at all
+   * — there is not even an in-band resolution change for the audience to ride
+   * out.
    */
   const portraitPublish = portrait === true ? createTarget(true) : null;
 
@@ -786,7 +832,9 @@ export async function createFilteredStream(
 
   console.info(`[camera] look mode: ${lookMode}`);
   if (portraitPublish) {
-    console.info(`[camera] publishing ${COMPOSITE_WIDTH}x${COMPOSITE_HEIGHT}, camera covering`);
+    console.info(
+      `[camera] publishing ${publishSize.width}x${publishSize.height}, camera covering`,
+    );
   }
 
   /**
@@ -814,9 +862,9 @@ export async function createFilteredStream(
         The same size as a composite, so toggling a share on and off does not
         resize the published canvas at all.
       */
-      if (canvas.width !== COMPOSITE_WIDTH || canvas.height !== COMPOSITE_HEIGHT) {
-        canvas.width = COMPOSITE_WIDTH;
-        canvas.height = COMPOSITE_HEIGHT;
+      if (canvas.width !== publishSize.width || canvas.height !== publishSize.height) {
+        canvas.width = publishSize.width;
+        canvas.height = publishSize.height;
         target.vignette = null;
       }
     } else {
@@ -886,7 +934,7 @@ export async function createFilteredStream(
     */
     let src: Rect;
     if (isPortrait) {
-      src = coverSourceRect(video.videoWidth, video.videoHeight, FULL_FRAME, currentZoom);
+      src = coverSourceRect(video.videoWidth, video.videoHeight, publishFrame, currentZoom);
     } else {
       const zoom = currentZoom > 1 ? currentZoom : 1;
       const sw = video.videoWidth / zoom;
@@ -972,16 +1020,16 @@ export async function createFilteredStream(
       track's dimensions. Only the preview, which follows the camera, actually
       resizes here.
     */
-    if (canvas.width !== COMPOSITE_WIDTH || canvas.height !== COMPOSITE_HEIGHT) {
-      canvas.width = COMPOSITE_WIDTH;
-      canvas.height = COMPOSITE_HEIGHT;
+    if (canvas.width !== publishSize.width || canvas.height !== publishSize.height) {
+      canvas.width = publishSize.width;
+      canvas.height = publishSize.height;
       target.vignette = null;
     }
 
     // The creator's arrangement, read fresh every frame — which is all
     // "switching layout mid-share" amounts to. Nothing is rebuilt, nothing is
     // renegotiated, and the next frame out is simply drawn somewhere else.
-    const rects = layoutRects(currentLayout, currentPipCorner);
+    const rects = layoutRects(currentLayout, currentPipCorner, publishSize);
 
     /*
       Black, every frame, before anything is drawn.
@@ -1037,7 +1085,7 @@ export async function createFilteredStream(
       // this pipeline's floor; a square pip is a cosmetic loss, not a broken
       // frame.
       if (currentLayout === 'pip' && typeof ctx.roundRect === 'function') {
-        ctx.roundRect(face.x, face.y, face.width, face.height, PIP_RADIUS);
+        ctx.roundRect(face.x, face.y, face.width, face.height, pipRadius);
       } else {
         ctx.rect(face.x, face.y, face.width, face.height);
       }
@@ -1554,9 +1602,9 @@ export async function createFilteredStream(
       setPaintRate(COMPOSITE_FRAME_RATE);
       schedulePaintSummary();
       const settings = screenTrack.getSettings();
-      const rects = layoutRects(currentLayout, currentPipCorner);
+      const rects = layoutRects(currentLayout, currentPipCorner, publishSize);
       console.info(
-        `[composite] on @${paintRate}fps — ${COMPOSITE_WIDTH}x${COMPOSITE_HEIGHT} ${currentLayout}: screen ` +
+        `[composite] on @${paintRate}fps — ${publishSize.width}x${publishSize.height} ${currentLayout}: screen ` +
           `${settings.width ?? '?'}x${settings.height ?? '?'} contained in ` +
           `${rects.screen.width}x${rects.screen.height} at y=${rects.screen.y}, camera ` +
           (rects.face

@@ -42,6 +42,24 @@ export interface QualityOption {
    * a disabled option so a creator knows what would unlock it.
    */
   minTierLabel: string;
+  /**
+   * Offered on a desktop viewport only. True for 1080p, and nothing else.
+   *
+   * NOT a capability check — a modern phone can encode 1080p, and this is not
+   * claiming otherwise. It is a fit check, and it fails on both halves. The
+   * content that justifies the rung is a shared chart, and getDisplayMedia
+   * does not exist on iOS at all, so a phone broadcaster cannot produce the
+   * one picture 1080p is for. And the cost is paid in sustained encode on a
+   * device held in a hand: heat, then thermal throttling, then a stream that
+   * degrades halfway through the broadcast rather than at the start of it.
+   *
+   * A tier gate is about what a creator has paid for and stays visible-but-
+   * disabled to say so. This one is about where they are standing, which
+   * changes by rotating a tablet, so it is hidden rather than disabled — an
+   * option greyed out with no way to un-grey it is a worse answer than an
+   * option that is simply not on offer on this screen.
+   */
+  desktopOnly?: boolean;
 }
 
 /**
@@ -49,12 +67,27 @@ export interface QualityOption {
  *
  * 480p has no tier of its own — nothing caps at it — so it comes with Pro,
  * the first tier that reaches past 360p.
+ *
+ * 720p KEEPS (แนะนำ) and keeps being the default. 1080p is not an upgrade
+ * every creator should take: it is 2.25x the pixels through every stage — the
+ * camera, the canvas paint, the encoder — and for a face talking to a camera
+ * it buys almost nothing a viewer can see on a phone. What it is FOR is the
+ * one kind of content where the difference is unmistakable: a shared chart,
+ * which is thin lines and small axis labels edge to edge, and which at 720p
+ * Por could not read on his own phone. Hence the label — คมชัด, and เดสก์ท็อป
+ * because that is where the content and the machine to encode it both are.
  */
 export const QUALITY_OPTIONS: QualityOption[] = [
   { value: '360p', label: '360p (ประหยัดเน็ต)', height: 360, minTierLabel: 'Free' },
   { value: '480p', label: '480p', height: 480, minTierLabel: 'Pro' },
   { value: '720p', label: '720p (แนะนำ)', height: 720, minTierLabel: 'Pro' },
-  { value: '1080p', label: '1080p (คมชัดสูง)', height: 1080, minTierLabel: 'Star' },
+  {
+    value: '1080p',
+    label: '1080p (คมชัด • สำหรับแชร์กราฟบนเดสก์ท็อป)',
+    height: 1080,
+    minTierLabel: 'Star',
+    desktopOnly: true,
+  },
 ];
 
 export function qualityOption(quality: BroadcastQuality): QualityOption {
@@ -65,13 +98,14 @@ export function qualityOption(quality: BroadcastQuality): QualityOption {
  * Target publish bitrate per quality rung, in bits per second.
  *
  * THIS IS THE NUMBER THE COST MODEL IS BUILT ON.
- * BUNNY_LIVE_THB_PER_VIEWER_MINUTE in supabase/functions/_shared/live.ts
- * assumes the 720p rung, and letting the encoder pick its own ceiling would
- * make the projected bill fiction — so every publisher caps itself here rather
- * than trusting a default. That constant is a HAND-WRITTEN copy of the 720p
- * figure, not a computed one: it lives in a Deno edge function that cannot
- * import this module. Change a rung here and change it there in the same
- * commit, or the bill and the broadcast stop describing each other.
+ * bunnyThbPerViewerMinute in supabase/functions/_shared/live.ts prices a
+ * session from the rung it was published at, and letting the encoder pick its
+ * own ceiling would make the projected bill fiction — so every publisher caps
+ * itself here rather than trusting a default. The Mbps figures over there are
+ * HAND-WRITTEN copies of this ladder, not computed ones: that file lives in a
+ * Deno edge function that cannot import this module. Change a rung here and
+ * change it there in the same commit, or the bill and the broadcast stop
+ * describing each other.
  *
  * It lives in constants rather than beside one publisher because there are now
  * two, and they must agree: the LiveKit publisher passes it as `videoEncoding

@@ -100,6 +100,7 @@ import {
   DEFAULT_PIP_CORNER,
   PIP_CORNER_LABELS,
   PIP_CORNER_ORDER,
+  compositeSizeFor,
 } from '@/lib/live/compositeCanvas';
 import type { CompositeLayout, PipCorner } from '@/lib/live/compositeCanvas';
 import {
@@ -871,11 +872,24 @@ export function CreatorBroadcaster({
             // must still publish 1920x1080.
             portraitRef.current ? PHONE_MAX_LONG_EDGE : undefined,
             // Desktop only, and it changes what the AUDIENCE gets, not what
-            // the creator sees: the published canvas is a fixed 720x1280 that
-            // the 16:9 webcam COVERS, so a phone viewer gets a face edge to
-            // edge instead of a small one in a field of black. The preview
+            // the creator sees: the published canvas is a fixed portrait frame
+            // that the 16:9 webcam COVERS, so a phone viewer gets a face edge
+            // to edge instead of a small one in a field of black. The preview
             // stays the full un-cropped webcam frame.
             desktopBroadcastRef.current === true,
+            /*
+              HOW BIG THAT PUBLISHED FRAME IS — and the whole of what makes
+              1080p real rather than a label.
+
+              720x1280 at every rung but 1080p, where it is 1080x1920. The
+              camera above was already asked for the rung's own resolution
+              (resolutionFor: 1920x1080 at 1080p), so without this the extra
+              sensor detail was being downscaled straight back into a 720-wide
+              canvas and published under a 9 Mbps ceiling — more bits for
+              exactly the same picture, which is worse than not offering the
+              option at all.
+            */
+            compositeSizeFor(quality),
           );
           filteredRef.current = filtered;
           // The arrangement the creator last chose, carried across a
@@ -1361,7 +1375,11 @@ export function CreatorBroadcaster({
       // The picker is the browser's, and dismissing it resolves to null —
       // which must leave the studio exactly as it was: no error, no state
       // change, no button stuck looking pressed.
-      session = await startScreenShare(() => endScreenShare(false));
+      // The rung decides how large a capture to ask the browser for: 1280x720
+      // at 720p, 1920x1080 at 1080p. A 720p capture drawn into a 1080-wide
+      // slot would be an upscaled chart, which is the one outcome this whole
+      // change exists to avoid — see screenCaptureCapFor.
+      session = await startScreenShare(() => endScreenShare(false), quality);
     } catch (err) {
       // A policy or an extension refused. The broadcast is unaffected, so this
       // is logged rather than raised as a broadcast error the way a camera
@@ -1398,7 +1416,7 @@ export function CreatorBroadcaster({
       return;
     }
     setScreenSharing(true);
-  }, [endScreenShare]);
+  }, [endScreenShare, quality]);
 
   /**
    * Never leave a capture running behind a studio that is gone.
