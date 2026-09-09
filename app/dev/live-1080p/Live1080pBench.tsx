@@ -157,7 +157,7 @@ export function Live1080pBench() {
     try {
       for (const quality of RUNGS) {
         const size = compositeSizeFor(quality);
-        const cap = screenCaptureCapFor(quality);
+        const cap = screenCaptureCapFor();
         const cam = resolutionFor(quality);
         // The camera as a desktop opens it: the rung's own resolution, 16:9.
         const camera = makeSource(Math.max(cam.width, cam.height), Math.min(cam.width, cam.height), drawFace);
@@ -300,7 +300,7 @@ export function Live1080pBench() {
       <ul className="mt-2 space-y-1 text-sm text-white/50">
         {RUNGS.map((quality) => {
           const size = compositeSizeFor(quality);
-          const cap = screenCaptureCapFor(quality);
+          const cap = screenCaptureCapFor();
           const cam = resolutionFor(quality);
           const option = QUALITY_OPTIONS.find((o) => o.value === quality);
           return (

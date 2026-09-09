@@ -39,6 +39,42 @@
 
 import type { BroadcastQuality } from './types';
 import { publishBitrateFor } from './constants';
+import {
+  applyPublishEncoderParams,
+  readOutboundVideoStats,
+  type PublishVideoStats,
+} from './encoderParams';
+
+/** The log prefix every line from this publisher carries. */
+const LOG = '[whipClient]';
+
+/**
+ * How often the sender's own account of itself is read while publishing.
+ *
+ * THE BLIND SPOT THIS CLOSES. `degradationPreference: 'maintain-framerate'`
+ * tells WebRTC that when CPU or uplink is tight it may LOWER THE ENCODED
+ * RESOLUTION to hold the framerate. It does that silently: a creator who
+ * selected 1080p can be publishing 540p or 360p for the length of a broadcast
+ * with every log line, every pill and every preview saying 1080p, because
+ * every one of those describes what was ASKED FOR. The only place the truth
+ * exists is `outbound-rtp`, and until this nobody read it.
+ *
+ * Five seconds is slow enough to be free (one getStats over a handful of
+ * reports) and fast enough that a creator watching their own console sees a
+ * drop while it is happening rather than afterwards.
+ */
+const WHIP_STATS_INTERVAL_MS = 5_000;
+
+/**
+ * How often an unchanged reading is repeated to the console.
+ *
+ * Every read would be 720 lines an hour saying the same thing, which is how a
+ * useful log becomes one nobody reads. So a reading is logged when it CHANGES
+ * — a different resolution, a different limitation reason, a different encoder
+ * — and otherwise once a minute, which is enough for "it has been fine for the
+ * last ten minutes" to be visible as well as claimed.
+ */
+const WHIP_STATS_HEARTBEAT_MS = 60_000;
 
 /**
  * How long to wait for ICE candidate gathering before posting the offer anyway.
@@ -133,6 +169,51 @@ export interface WhipSession {
    * this existed.
    */
   setMaxFramerate(fps: number): Promise<void>;
+  /**
+   * โหมดกราฟ: tell the encoder the frame it is being handed is a CHART.
+   *
+   * ONE CALL, BOTH NUMBERS, because they always move together and because
+   * `setParameters` reads its object whole — two calls would be two round
+   * trips with a window in between where one had landed and the other had not.
+   *
+   * WHAT CHART MODE CHANGES, and why each is the opposite of the camera-only
+   * choice PR #63 made (the values themselves live in ./encoderParams, which
+   * is the one place both publishers read them from):
+   *
+   *   degradationPreference   'maintain-resolution', not 'maintain-framerate'.
+   *                           A chart may drop a frame; it may never drop
+   *                           pixels. Holding the framerate is right for a
+   *                           face — a stutter on a person is what a viewer
+   *                           notices — and it is exactly wrong for a chart,
+   *                           where the softening it trades away IS the
+   *                           content. A candle at 22fps is a candle; a candle
+   *                           at 540p is a smudge.
+   *   scaleResolutionDownBy   1, written explicitly, so nothing in the layer
+   *                           or adaptation machinery can halve the frame
+   *                           behind the preference.
+   *   maxBitrate              1.5x the rung. See CHART_MODE_BITRATE_MULTIPLIER
+   *                           — thin lines are where an H.264 encoder at the
+   *                           ladder's own ceiling starts blocking.
+   *
+   * SCOPED TO A DESKTOP SCREEN SHARE, by the caller. The mobile dual-camera
+   * composite calls `setMaxFramerate` and not this: its top slot is a back
+   * camera, which is a moving picture of the world and wants the camera's
+   * trade, not a document's.
+   *
+   * Reverting is the same call with `chartMode: false`, which restores every
+   * PR #63 value exactly. Never throws — see applyPublishEncoderParams.
+   */
+  setEncoderMode(options: { maxFramerate?: number; chartMode?: boolean }): Promise<void>;
+  /**
+   * What the encoder is actually sending, right now. See PublishVideoStats.
+   *
+   * Null before the first frame is encoded (there is no `outbound-rtp` report
+   * yet) and null where the browser reports no video sender at all. The
+   * session polls this itself every WHIP_STATS_INTERVAL_MS and logs it; this
+   * is the same read, exposed so the ?debug=camera chip can show a creator the
+   * encoder's real resolution beside the one they chose.
+   */
+  getVideoStats(): Promise<PublishVideoStats | null>;
   /**
    * Swap the track a sender is publishing, WITHOUT renegotiating.
    *
@@ -235,6 +316,11 @@ export async function publishWhip(options: WhipPublishOptions): Promise<WhipSess
      * A broadcast that publishes successfully and delivers a black screen with
      * sound. iPhone publishers never hit it — Safari offers H.264 first — which
      * is exactly why it survived the first round of origin testing.
+     *
+     * Exported so /dev/live-chart's loopback peer connection negotiates the
+     * same codec this publisher does: an encoder's behaviour under pressure is
+     * a property OF THE CODEC, and a bench measuring VP8 would be measuring
+     * something no creator publishes.
      */
     preferH264(videoTransceiver);
 
@@ -251,7 +337,20 @@ export async function publishWhip(options: WhipPublishOptions): Promise<WhipSess
      * the belt to that braces: setParameters after negotiation is the path
      * every browser honours.
      */
-    await applyEncoderCeiling(videoTransceiver.sender, options.quality, options.maxFramerate);
+    /**
+     * The publish always begins in camera-only terms, whatever it will become.
+     *
+     * A share cannot already be running here — the studio mounts one only
+     * after the session is live — so starting in chart mode would be asserting
+     * something about a frame that does not exist yet. `setEncoderMode` is
+     * what moves it, in-band, the moment a share actually starts.
+     */
+    await applyPublishEncoderParams(videoTransceiver.sender, {
+      quality: options.quality,
+      maxFramerate: options.maxFramerate,
+      chartMode: false,
+      label: LOG,
+    });
 
     await waitForIceGathering(pc, options.signal);
     throwIfAborted(options.signal);
@@ -279,6 +378,98 @@ export async function publishWhip(options: WhipPublishOptions): Promise<WhipSess
      */
     let remoteSdp = answerSdp;
 
+    /**
+     * The two encoder numbers this session currently stands behind.
+     *
+     * Held here rather than read back off the sender because `getParameters`
+     * reports what the BROWSER settled on, clamps included, and writing that
+     * back as if it were the request would let one clamp become permanent.
+     * These are the asks; the readback in applyEncoderCeiling says what
+     * happened to them.
+     */
+    let currentFramerate = options.maxFramerate;
+    let chartMode = false;
+
+    /** The previous stats read, so the next one can derive a bitrate. */
+    let previousStats: PublishVideoStats | null = null;
+    let statsTimer: ReturnType<typeof setInterval> | null = null;
+    let firstStatsTimer: ReturnType<typeof setTimeout> | null = null;
+    /** performance.now() of the last line actually printed. See the heartbeat. */
+    let lastLoggedAt = 0;
+    /** What that line said, so an unchanged reading can stay quiet. */
+    let lastLoggedKey = '';
+
+    const readVideoStats = async (): Promise<PublishVideoStats | null> => {
+      const stats = await readOutboundVideoStats(videoTransceiver.sender, previousStats);
+      if (stats) previousStats = stats;
+      return stats;
+    };
+
+    const stopStatsPolling = () => {
+      if (statsTimer !== null) {
+        clearInterval(statsTimer);
+        statsTimer = null;
+      }
+      // The opening read too: a broadcast torn down inside the first second and
+      // a half would otherwise call getStats on a closed sender, which throws
+      // and logs a warning about a session nobody is publishing.
+      if (firstStatsTimer !== null) {
+        clearTimeout(firstStatsTimer);
+        firstStatsTimer = null;
+      }
+    };
+
+    /**
+     * THE LINE THAT WOULD HAVE CAUGHT THIS MONTHS AGO.
+     *
+     * A creator on 1080p whose encoder has quietly settled at 960x540 under
+     * `cpu` looks, in every other log this pipeline writes, exactly like a
+     * creator on 1080p. This prints the difference, with the reason attached,
+     * from the machine it is happening on.
+     *
+     * Quiet by default: printed when the reading CHANGES, and otherwise once
+     * a minute. See WHIP_STATS_HEARTBEAT_MS.
+     */
+    const pollStats = () => {
+      void readVideoStats().then((stats) => {
+        if (!stats) return;
+        const key =
+          `${stats.frameWidth}x${stats.frameHeight}|${stats.qualityLimitationReason}|` +
+          `${stats.encoderImplementation}|${chartMode}`;
+        const at = performance.now();
+        if (key === lastLoggedKey && at - lastLoggedAt < WHIP_STATS_HEARTBEAT_MS) return;
+        lastLoggedKey = key;
+        lastLoggedAt = at;
+        const limited = stats.qualityLimitationReason && stats.qualityLimitationReason !== 'none';
+        const line = {
+          mode: chartMode ? 'chart' : 'camera',
+          quality: options.quality,
+          sending: `${stats.frameWidth ?? '?'}x${stats.frameHeight ?? '?'}`,
+          fps: stats.framesPerSecond,
+          bitrate: stats.bitrate === null ? null : Math.round(stats.bitrate / 1_000) + 'kbps',
+          qualityLimitationReason: stats.qualityLimitationReason,
+          qualityLimitationDurations: stats.qualityLimitationDurations,
+          encoder: stats.encoderImplementation,
+          powerEfficient: stats.powerEfficientEncoder,
+          codec: stats.codec,
+        };
+        // A limited encoder is a warning because it is a picture the creator
+        // is not getting and cannot see they are not getting; an unlimited one
+        // is information.
+        if (limited) console.warn('[whipClient] outbound video — LIMITED', line);
+        else console.info('[whipClient] outbound video', line);
+      });
+    };
+
+    statsTimer = setInterval(pollStats, WHIP_STATS_INTERVAL_MS);
+    // One read shortly after the handshake, so the opening resolution is in
+    // the console before anyone thinks to look for it. Not immediate: there is
+    // no outbound-rtp report until frames have actually been encoded.
+    firstStatsTimer = setTimeout(() => {
+      firstStatsTimer = null;
+      pollStats();
+    }, 1_500);
+
     return {
       pc,
       resourceUrl,
@@ -303,9 +494,37 @@ export async function publishWhip(options: WhipPublishOptions): Promise<WhipSess
         // framerate would be writing back whatever the browser currently
         // holds for the bitrate, which after a clamp is not what was asked
         // for. One writer for both numbers, always.
-        await applyEncoderCeiling(videoTransceiver.sender, options.quality, fps);
+        currentFramerate = fps;
+        await applyPublishEncoderParams(videoTransceiver.sender, {
+          quality: options.quality,
+          maxFramerate: currentFramerate,
+          chartMode,
+          label: LOG,
+        });
       },
-      close: () => closeWhipSession(pc, resourceUrl),
+      setEncoderMode: async ({ maxFramerate, chartMode: nextChartMode }) => {
+        // Both remembered before the write, so a later setMaxFramerate cannot
+        // silently drop chart mode by writing back the object without it —
+        // which is the exact bug shape `setParameters` reading its object
+        // whole invites.
+        if (maxFramerate !== undefined) currentFramerate = maxFramerate;
+        if (nextChartMode !== undefined) chartMode = nextChartMode;
+        await applyPublishEncoderParams(videoTransceiver.sender, {
+          quality: options.quality,
+          maxFramerate: currentFramerate,
+          chartMode,
+          label: LOG,
+        });
+        // Read the encoder's own account of itself on the NEXT poll rather
+        // than now: the frames encoded under the new parameters do not exist
+        // yet, so a read here would report the mode that was just left.
+        lastLoggedAt = 0;
+      },
+      getVideoStats: () => readVideoStats(),
+      close: async () => {
+        stopStatsPolling();
+        await closeWhipSession(pc, resourceUrl);
+      },
     };
   } catch (err) {
     // The peer connection is this function's to own until it hands one back.
@@ -404,7 +623,7 @@ async function postOffer(
  * go-live over: the fallback is the browser's own order, which is what shipped
  * before this function existed.
  */
-function preferH264(transceiver: RTCRtpTransceiver): void {
+export function preferH264(transceiver: RTCRtpTransceiver): void {
   if (typeof RTCRtpTransceiver === 'undefined') return;
   if (!('setCodecPreferences' in RTCRtpTransceiver.prototype)) return;
 
@@ -689,109 +908,6 @@ async function closeWhipSession(
     }
   }
   pc.close();
-}
-
-/**
- * Apply the bitrate ceiling to an already-negotiated sender.
- *
- * Swallows its own failures. Every part of this is optional in some browser —
- * `getParameters` can return no encodings before the first frame, and
- * `setParameters` rejects outright on older Safari — and none of it is worth
- * failing a go-live over. The consequence of it not landing is a stream that
- * uses more uplink than the cost model assumes, which is a billing
- * inaccuracy, not a broken broadcast.
- */
-async function applyEncoderCeiling(
-  sender: RTCRtpSender,
-  quality: BroadcastQuality,
-  maxFramerate: number | undefined,
-): Promise<void> {
-  try {
-    const params = sender.getParameters();
-    if (!params.encodings || params.encodings.length === 0) {
-      params.encodings = [{}];
-    }
-    const requested = publishBitrateFor(quality);
-    params.encodings[0].maxBitrate = requested;
-    if (maxFramerate) params.encodings[0].maxFramerate = maxFramerate;
-
-    /**
-     * WHAT TO GIVE UP FIRST when the ceiling is not enough.
-     *
-     * WebRTC's default balances resolution against framerate. For this product
-     * that is the wrong trade in one direction: a dropped framerate reads as
-     * ภาพสะดุด — the stutter Por recorded — while a brief softening of a 720p
-     * picture on a phone held at arm's length is close to invisible. So the
-     * encoder is told to hold the framerate and spend resolution.
-     *
-     * This is the half of the fix that matters when the ceiling is reached
-     * ANYWAY. 6 Mbps is more headroom, not infinite headroom, and very high
-     * motion will still find the top of it; what changes is that finding it
-     * now costs sharpness for a second instead of a visible hitch.
-     *
-     * Set on the same parameters object as the ceiling, in the same
-     * setParameters call, because each call reads the object whole — writing
-     * it separately would mean a second round trip and a window where one of
-     * the two had landed and the other had not.
-     *
-     * `maintain-framerate` protects the 30fps this pipeline already asks for.
-     * It does not raise it.
-     */
-    params.degradationPreference = 'maintain-framerate';
-    await sender.setParameters(params);
-
-    /**
-     * Read the ceiling BACK, and say what actually landed.
-     *
-     * `setParameters` resolving is not evidence the encoder took the value:
-     * the browser is free to clamp it, drop the encoding entry, or accept the
-     * promise and keep its own default — which is exactly the failure that
-     * cannot be told apart from a healthy publish by looking at the picture,
-     * because a stream at a third of its intended bitrate publishes fine and
-     * simply looks soft. The 2026-09-08 origin test surfaced as "signal is
-     * weak" with nothing in any log to confirm or rule out the encoder, and
-     * this line is what makes the next one answerable from a phone console.
-     *
-     * Reported, not enforced. A resolved value below the request is a real
-     * browser decision (a thermal or uplink clamp) and re-asserting it in a
-     * loop would fight the encoder for no gain.
-     */
-    const applied = sender.getParameters();
-    const resolved = applied.encodings?.[0]?.maxBitrate;
-    /**
-     * The framerate cap, read back for the same reason the bitrate is.
-     *
-     * This is the number that decides whether an encoder under pressure drops
-     * a frame or queues it, and the difference between those two is the whole
-     * of the reported stutter: a drop is a momentary dip nobody names, a queue
-     * is latency that grows until the picture catches up in a lurch. A browser
-     * that quietly kept its own default here would look identical in every log
-     * except this one.
-     */
-    const resolvedFramerate = applied.encodings?.[0]?.maxFramerate ?? null;
-    // Read back alongside the ceiling and for the same reason: a browser is
-    // free to accept the promise and keep its own preference, and the
-    // difference is invisible in the picture until someone is moving.
-    const degradation = applied.degradationPreference ?? null;
-    if (resolved === requested) {
-      console.info('[whipClient] encoder ceiling applied', {
-        quality,
-        maxBitrate: resolved,
-        maxFramerate: resolvedFramerate,
-        degradationPreference: degradation,
-      });
-    } else {
-      console.warn('[whipClient] encoder ceiling did not stick', {
-        quality,
-        requested,
-        resolved: resolved ?? null,
-        maxFramerate: resolvedFramerate,
-        degradationPreference: degradation,
-      });
-    }
-  } catch (err) {
-    console.warn('[whipClient] could not apply encoder ceiling', err);
-  }
 }
 
 /**

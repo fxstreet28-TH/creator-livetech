@@ -149,6 +149,17 @@ interface GoLiveSetupFormProps {
    * and offer a rung the studio around it cannot serve.
    */
   desktop?: boolean;
+  /**
+   * True when the rung on the dropdown was restored from the last broadcast
+   * rather than chosen here. Renders one line saying so.
+   *
+   * IT IS NOT COSMETIC. The rung is the billing line (see
+   * bunnyThbPerViewerMinute), and a bill that moved because a browser
+   * remembered something is a bill nobody agreed to — so the restore is
+   * visible, in the same glance as the value it explains, before anything is
+   * created. See lib/live/studioQuality.
+   */
+  qualityRestored?: boolean;
 }
 
 const INPUT_CLASS =
@@ -167,6 +178,7 @@ export function GoLiveSetupForm({
   submitError,
   submitPlacement = 'inline',
   desktop = true,
+  qualityRestored = false,
 }: GoLiveSetupFormProps) {
   const titleId = useId();
   const titleErrorId = useId();
@@ -175,6 +187,20 @@ export function GoLiveSetupForm({
   const coverId = useId();
   const coverErrorId = useId();
   const qualityId = useId();
+
+  /**
+   * Should the form suggest 1080p? See the note beside where it renders.
+   *
+   * `quotaLoading` is part of the condition rather than a wrapper around it: a
+   * nudge that appears, then vanishes when the quota says the tier cannot
+   * reach 1080p, is a worse experience than one that arrives a moment late.
+   */
+  const nudgeTo1080 =
+    desktop &&
+    !quotaLoading &&
+    value.quality !== '1080p' &&
+    quota !== null &&
+    isQualityAllowed('1080p', quota.maxQuality);
   const latencyId = useId();
 
   const set = <K extends keyof GoLiveDraft>(key: K, next: GoLiveDraft[K]) =>
@@ -285,6 +311,49 @@ export function GoLiveSetupForm({
             );
           })}
         </select>
+
+        {/*
+          WHERE THIS VALUE CAME FROM, when it was not chosen here.
+
+          One line, and only when a rung was actually restored. See
+          `qualityRestored` — the point is that a creator never discovers from
+          an invoice that their browser made a billing decision for them.
+        */}
+        {qualityRestored && (
+          <p className="mt-2 text-[11px] leading-relaxed text-white/40">
+            จำค่าจากไลฟ์ครั้งก่อน — เปลี่ยนได้จากรายการด้านบน
+          </p>
+        )}
+
+        {/*
+          THE 1080p NUDGE, and why it is here rather than mid-broadcast.
+
+          A rung is fixed when the session row is created: `broadcast_quality`
+          is written once, the canvas size and the encoder ceiling both derive
+          from it, and changing it later would mean tearing down the publish
+          and rebuilding it — which under HLS breaks the playlist every viewer
+          is mid-segment on. So the only honest moment to ask "are you about to
+          share a chart?" is BEFORE going live, which is this form.
+
+          Offered when all three hold: this is a desktop (where a share is even
+          possible — getDisplayMedia does not exist on iOS), the creator's tier
+          reaches 1080p, and they are currently on something lower. One tap
+          takes it, and it is a suggestion in a form rather than a change made
+          on their behalf — the rung is the bill.
+        */}
+        {nudgeTo1080 && (
+          <p className="mt-2 text-[11px] leading-relaxed text-cyan-200/70">
+            แชร์กราฟบนเดสก์ท็อป? 1080p ทำให้เส้นเทียนและราคาบนแกนอ่านออกบนมือถือ{' '}
+            <button
+              type="button"
+              onClick={() => set('quality', '1080p')}
+              disabled={disabled}
+              className="font-semibold text-cyan-200 underline underline-offset-2 hover:text-cyan-100 disabled:opacity-40"
+            >
+              เปลี่ยนเป็น 1080p
+            </button>
+          </p>
+        )}
       </div>
 
       <div className="min-w-0">

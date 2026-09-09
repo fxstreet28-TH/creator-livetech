@@ -37,7 +37,8 @@ import type {
   LiveDelivery,
   LiveQuota,
 } from '@/lib/live/types';
-import { DEFAULT_QUALITY, isQualityAllowed } from '@/lib/live/constants';
+import { DEFAULT_QUALITY, isQualityAllowed, qualityOption } from '@/lib/live/constants';
+import { recallStudioQuality, rememberStudioQuality } from '@/lib/live/studioQuality';
 import { DEFAULT_FILTER_ID, type FilterId } from '@/lib/live/cameraFilters';
 import type { CameraOrientation } from '@/lib/live/cameraOrientation';
 import type { LiveChannelStatus } from '@/lib/live/realtime';
@@ -139,6 +140,13 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
 
   const [draft, setDraft] = useState<GoLiveDraft>(EMPTY_DRAFT);
   const [showErrors, setShowErrors] = useState(false);
+  /**
+   * True when the rung on the form came from last time rather than from the
+   * default. Rendered as one line under the dropdown — the rung is the billing
+   * line, and a bill that changed because a browser remembered something is a
+   * bill nobody agreed to. See lib/live/studioQuality.
+   */
+  const [qualityRestored, setQualityRestored] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -258,10 +266,41 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
       setQuota(result);
       setQuotaLoading(false);
 
-      // Drop the default quality to the tier cap rather than letting the
-      // backend clamp it silently: a creator who never touched the dropdown
-      // should still see the quality they are about to get.
-      if (result && !isQualityAllowed(DEFAULT_QUALITY, result.maxQuality)) {
+      /**
+       * WHAT RUNG THE DROPDOWN LANDS ON, once the tier is known.
+       *
+       * Three inputs and one answer, resolved here because this is the first
+       * moment all three exist: the creator's own last choice on this device,
+       * the tier cap that has just arrived, and whether this viewport offers
+       * the desktop-only rung at all.
+       *
+       * The remembered rung wins where it is allowed — that is the fix for a
+       * dropdown that reset to 720p on a creator who had twice chosen 1080p
+       * (see lib/live/studioQuality) — and the tier cap wins over it, because
+       * offering a rung the backend will clamp is a form that lies. Where
+       * neither applies, the default drops to the cap exactly as it did
+       * before, so a creator who never touched the dropdown still sees the
+       * quality they are about to get rather than learning it from a clamp.
+       *
+       * Only ever applied to a dropdown the creator has NOT touched — the
+       * `current.quality === DEFAULT_QUALITY` guard — so this can never
+       * overwrite a choice made while the quota request was in flight.
+       */
+      const remembered = recallStudioQuality();
+      const restorable =
+        remembered !== null &&
+        remembered !== DEFAULT_QUALITY &&
+        (!result || isQualityAllowed(remembered, result.maxQuality)) &&
+        // 1080p is not on the phone form's list; a select holding a value its
+        // own options do not contain renders blank. See `desktopOnly`.
+        (!qualityOption(remembered).desktopOnly || !mobile);
+
+      if (restorable) {
+        setDraft((current) =>
+          current.quality === DEFAULT_QUALITY ? { ...current, quality: remembered } : current,
+        );
+        setQualityRestored(true);
+      } else if (result && !isQualityAllowed(DEFAULT_QUALITY, result.maxQuality)) {
         setDraft((current) =>
           current.quality === DEFAULT_QUALITY ? { ...current, quality: result.maxQuality } : current,
         );
@@ -272,7 +311,7 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
     return () => {
       cancelled = true;
     };
-  }, [creatorId]);
+  }, [creatorId, mobile]);
 
   /**
    * The session was closed by something that is not this tab.
@@ -370,6 +409,21 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
       setSubmitting(false);
       return;
     }
+
+    /**
+     * The rung is remembered only now, and only on success.
+     *
+     * A decision that was carried through, not one that was scrolled past: a
+     * creator who opened the dropdown, changed it and then abandoned the page
+     * has told us nothing, and a failed create has told us less. See
+     * lib/live/studioQuality.
+     *
+     * `draft.quality` rather than what the backend came back with, because a
+     * clamp is not a preference — a creator whose tier caps them at 720p today
+     * and who upgrades tomorrow should get the 1080p they asked for, not the
+     * 720p they were given.
+     */
+    rememberStudioQuality(draft.quality);
 
     // Narrowed on `delivery` rather than read as optional fields: the two arms
     // of CreateLiveResponse carry genuinely different credentials, and reading
@@ -503,6 +557,7 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
         onSendChat={channel.sendChat}
         elapsedSeconds={elapsedSeconds}
         onEndRequest={() => setEndOpen(true)}
+        debugCamera={debugCamera}
         endDialog={
           endOpen || summary ? (
             <EndLiveConfirm
@@ -538,6 +593,10 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
       // 1080p is offered on the desktop studio only. See the option's
       // `desktopOnly` note in lib/live/constants.
       desktop={!mobile}
+      // Two lines under the dropdown, and both are about the same rung: one
+      // says where a restored choice came from, the other offers the rung a
+      // creator who is about to share a chart actually wants. See the form.
+      qualityRestored={qualityRestored}
     />
   );
 
@@ -643,6 +702,7 @@ function BroadcastingLayout({
   elapsedSeconds,
   onEndRequest,
   endDialog,
+  debugCamera,
 }: {
   broadcast: ActiveBroadcast | null;
   /** The camera picked on the setup screen. */
@@ -668,6 +728,8 @@ function BroadcastingLayout({
   elapsedSeconds: number;
   onEndRequest: () => void;
   endDialog: React.ReactNode;
+  /** ?debug=camera. Puts the encoder's real numbers over the studio preview. */
+  debugCamera: boolean;
 }) {
   return (
     <main className="flex h-dvh flex-col overflow-hidden bg-[#0a0a15] text-white">
@@ -690,6 +752,13 @@ function BroadcastingLayout({
               onOrientationChange={onOrientationChange}
               viewerCount={viewers.current}
               reactions={reactions}
+              // ?debug=camera puts the ENCODER's real numbers on the desktop
+              // studio too, not just the phone's. Different question, same
+              // flag: the phone asks what the camera handed back, the desktop
+              // asks what the sender is actually publishing — which since
+              // โหมดกราฟ is the one number that says whether a shared chart is
+              // reaching viewers at the resolution it was composed at.
+              reportStats={debugCamera}
               // Over the self-preview, so the creator sees exactly what their
               // audience sees rather than a description of it.
               overlay={<GiftOverlay latestGift={latestGift} resetKey={broadcast.liveSessionId} />}

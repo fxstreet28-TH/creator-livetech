@@ -46,6 +46,7 @@ import {
 } from 'livekit-client';
 import type { BroadcastQuality } from './types';
 import { publishBitrateFor, qualityOption } from './constants';
+import { applyPublishEncoderParams } from './encoderParams';
 
 export { ConnectionState, DisconnectReason, Room, RoomEvent, Track };
 export type { RemoteTrack };
@@ -233,6 +234,47 @@ export async function connectAsPublisher(
   }
 
   return { video, audio };
+}
+
+/**
+ * โหมดกราฟ on the LiveKit path: the same encoder change, through the SDK.
+ *
+ * THE SDK DOES EXPOSE THE SENDER, so this is a real implementation rather than
+ * the comment PR #63 left in its place. `LocalVideoTrack.sender` is the
+ * `RTCRtpSender` LiveKit negotiated, and `applyPublishEncoderParams` is the
+ * same function the WHIP publisher calls against its own — which is the point
+ * of that module existing: a shared chart is the same picture whichever socket
+ * carries it, and two publishers that decided this separately would drift.
+ *
+ * WHAT LIVEKIT DOES AT PUBLISH TIME AND WHY IT IS NOT ENOUGH. `publishTrack`
+ * takes `videoEncoding` and `degradationPreference` above, and it takes them
+ * ONCE. Chart mode is a mid-broadcast change — a creator starts a share twenty
+ * minutes in — and re-publishing the track to carry it would renegotiate,
+ * which under llhls means the egress worker resubscribing and every viewer's
+ * playlist breaking. Reaching the sender is what makes it in-band.
+ *
+ * NULL-TOLERANT AT EVERY STEP AND NEVER THROWS. A room mid-reconnect has no
+ * publication; a publication mid-swap has no track; a track before negotiation
+ * has no sender. None of those is a reason to fail a creator's share, and the
+ * consequence of skipping is the parameters LiveKit set at publish time, which
+ * is exactly the behaviour before this existed.
+ *
+ * Returns whether the parameters were actually applied, so the caller can say
+ * so in a log rather than assume.
+ */
+export async function setLiveKitEncoderMode(
+  room: Room | null,
+  options: { quality: BroadcastQuality; maxFramerate?: number; chartMode: boolean },
+): Promise<boolean> {
+  const sender = localPublication(room, Track.Source.Camera)?.track?.sender;
+  if (!sender) return false;
+  await applyPublishEncoderParams(sender, {
+    quality: options.quality,
+    maxFramerate: options.maxFramerate,
+    chartMode: options.chartMode,
+    label: '[livekit]',
+  });
+  return true;
 }
 
 /** Connect as a viewer. The token carries canPublish: false, so nothing is captured. */

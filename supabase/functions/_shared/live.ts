@@ -66,6 +66,33 @@ export const PUBLISH_MBPS_BY_QUALITY: Record<BroadcastQuality, number> = {
 };
 
 /**
+ * THE ONE THING THIS TABLE CANNOT SEE: โหมดกราฟ.
+ *
+ * While a desktop creator is sharing a screen, the WHIP sender's ceiling is
+ * raised by CHART_MODE_BITRATE_MULTIPLIER in lib/live/constants.ts — 1.5x, so
+ * 720p publishes at 9 Mbps and 1080p at 13.5 while the share is up. A chart is
+ * thin lines and small text corner to corner, and at the ladder's own rung an
+ * H.264 encoder blocks exactly those; the multiplier is what buys them back.
+ *
+ * IT IS NOT ADDED TO THE TABLE, and that is deliberate rather than an
+ * oversight. A share is started and stopped mid-broadcast, several times in a
+ * session, and nothing records how many of a session's minutes carried one —
+ * so there is no honest per-session number to put here. What the row can say
+ * is a RANGE, and this is that statement:
+ *
+ *   the figures above are the LOWER bound for a session that shared a screen;
+ *   the upper bound is 1.5x them, reached only for the minutes a share was up.
+ *
+ * A session that never shared is priced exactly, as it always was. A session
+ * that shared throughout is under-charged by at most 1.5x on the Bunny line —
+ * which at 0.0077 THB/viewer-minute at 720p is 0.0039 THB/viewer-minute of
+ * under-estimate, against a budget kill switch measured in thousands of baht.
+ * Recording share-minutes on the session row is the fix if that ever matters;
+ * it is a schema change and not this PR's business.
+ */
+export const CHART_MODE_MBPS_MULTIPLIER = 1.5;
+
+/**
  * Bunny CDN, per viewer-minute, AT THE RUNG THE SESSION WAS PUBLISHED AT.
  *
  * 720p at 6 Mbps is 45 MB/minute; APAC volume tier is $0.005/GB. That works
