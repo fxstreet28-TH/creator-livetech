@@ -2,10 +2,11 @@
  * The full-bleed phone watch layout — "Design C".
  *
  * Everything a viewer touches floats over a video that fills the viewport, in
- * the TikTok LIVE arrangement: the creator and the exit at the top, reactions
+ * the TikTok LIVE arrangement: the creator and the exit at the top, sharing
  * down the right edge, gifts and chat up the left, the composer along the
- * bottom. The old stacked layout — a 16:9 strip, a creator card, a boxed chat
- * — is what ≥768px still renders, unchanged.
+ * bottom with the reaction emoji on the line above it. The old stacked layout
+ * — a 16:9 strip, a creator card, a boxed chat — is what ≥768px still renders,
+ * unchanged.
  *
  * WHY SO MUCH OF THIS IS HERE AND NOT IN UTILITY CLASSES
  *
@@ -20,8 +21,9 @@
  *     `visualViewport` (see useMobileViewport.ts) because iOS Safari does not
  *     resize the layout viewport when the keyboard opens — `bottom: 0` there
  *     means "behind the keyboard".
- *  3. The reaction rail's vertical position is a clamp against two ceilings at
- *     once, which is not expressible as a utility class.
+ *  3. The right rail's vertical position is a clamp against two ceilings at
+ *     once, and the reaction row is anchored against the composer's own
+ *     height. Neither is expressible as a utility class.
  */
 
 /*
@@ -114,26 +116,26 @@
 }
 
 /*
- * The reaction rail, and the one piece of arithmetic in this file.
+ * What is left of the right-edge rail: the share button, on its own.
  *
- * It has to clear the top bar's two rows, and it has to FINISH above the gift
- * stage — the brief's rule is "never below 45% of viewport height", because
- * below that is where a fullscreen gift and its caption are drawn. The rail is
- * 240px tall (five 40px circles and four 10px gaps), so the second rule is a
- * ceiling on its TOP at `45dvh - 240px`, which on a 812px screen is 125px and
- * on a 932px one is 179px.
+ * IT USED TO BE FIVE CIRCLES. Four reaction emoji and the share button ran
+ * down the right edge, TikTok style, and the arithmetic below reconciled two
+ * ceilings: clear the top bar's two rows, and finish above 45dvh, because
+ * below that is where a fullscreen gift and its caption are drawn. The
+ * reactions have moved into the bottom bar (see `.reactions`), so the column
+ * is 40px tall instead of 240 and the gift-stage ceiling can no longer bind —
+ * a single button at 150px from the top is nowhere near 45dvh on any phone.
  *
- * The clamp reconciles them: the design's 150px where there is room for it,
- * less on a short screen, and never so little that the rail lands on the top
- * bar — which is what the lower bound is for on a very short viewport (a
- * phone in landscape, a small webview).
+ * The clamp is kept for the LOWER bound, which still does something: on a very
+ * short viewport — a phone in landscape, a small webview — it is what stops
+ * the button landing on the top bar. The upper bound is the design's 150px.
  */
 .rail {
   position: absolute;
   right: calc(var(--live-safe-right) + 12px);
   top: clamp(
     calc(var(--live-safe-top) + 92px),
-    calc(45dvh - 240px),
+    calc(45dvh - 40px),
     calc(var(--live-safe-top) + 150px)
   );
   z-index: 20;
@@ -172,8 +174,9 @@
 /*
  * The chat column: a strip up the left, never more than 70% of the width.
  *
- * The right 30% is the reaction rail's, and the cap in px stops a tablet-ish
- * 767px viewport from running one message across the whole frame.
+ * The right 30% belongs to the share button and, on the line above the
+ * composer, to the reaction row; the cap in px stops a tablet-ish 767px
+ * viewport from running one message across the whole frame.
  */
 .chat {
   width: min(70vw, 262px);
@@ -190,30 +193,33 @@
    * the newest five messages straight through a Stardust row — which is the
    * one thing the gift layout's QA is explicit about.
    *
-   * 142px is the gap the tray actually leaves: the tray's content bottom
+   * 142px WAS the gap the tray actually leaves: the tray's content bottom
    * (12px of overlay inset above its 192px offset) minus the chat's own bottom
-   * (the 42px composer plus its 8px gap, above the 12px page inset). It is
-   * about five compact lines, which is the number the design asks for. 38dvh
-   * still binds on a viewport short enough for it to be the smaller of the
-   * two.
+   * (the 42px composer plus its 8px gap, above the 12px page inset). It is now
+   * 92, because the reaction row (44px and its 6px gap — see `.reactions`) now
+   * sits between this column and the composer and the column's bottom edge
+   * moved up by exactly that much. The tray clearance is what is being held
+   * constant here; the cost of moving the emoji down into the bottom bar is
+   * about a line and a half of chat. 38dvh still binds on a viewport short
+   * enough for it to be the smaller of the two.
    *
    * Expanded is a deliberate act by the viewer and covers the tray, which is
    * correct: they asked to read the conversation, not to watch gifts.
    */
-  --live-chat-max: min(38dvh, 142px);
+  --live-chat-max: min(38dvh, 92px);
   /*
    * Expanded, the ceiling is the TOP BAR rather than the design's 70vh.
    *
    * 70vh of an 812px phone is 568px, which puts the "ย่อ" chip — which sits
    * above the list — across the LIVE pill. The subtrahend is everything the
-   * column is not allowed to have: 62px under it (the composer and its gap),
-   * 76px of top bar above it (two rows and their gaps), and 48px for the chip
-   * and its own gap. 70dvh still binds on a tall screen, where it is the
-   * smaller of the two.
+   * column is not allowed to have: 112px under it (the composer and its gap,
+   * and the reaction row and its own — see `.reactions`), 76px of top bar above
+   * it (two rows and their gaps), and 48px for the chip and its own gap. 70dvh
+   * still binds on a tall screen, where it is the smaller of the two.
    */
   --live-chat-max-expanded: min(
     70dvh,
-    calc(100dvh - var(--live-safe-top) - var(--live-safe-bottom) - 186px)
+    calc(100dvh - var(--live-safe-top) - var(--live-safe-bottom) - 236px)
   );
 }
 
@@ -221,6 +227,39 @@
 .composer {
   padding-left: var(--live-safe-left);
   padding-right: var(--live-safe-right);
+}
+
+/*
+ * The reaction row: the bottom bar's own line, directly above the input row.
+ *
+ * WHY IT IS NOT IN THE INPUT ROW ITSELF. That row already carries the field,
+ * the emoji picker, the gift button and the stars link — 128px of round
+ * controls plus their gaps. Four more 44px targets beside them leaves a text
+ * field about 14px wide on a 390px phone, which is not a field at all. The
+ * line above it is the same bottom cluster, the same thumb, and no such
+ * arithmetic.
+ *
+ * RIGHT-ALIGNED, over the gift and emoji buttons rather than over the chat
+ * bubbles beside them — the four circles are 200px of a 390px screen, and the
+ * messages are a left column (see `.chat`).
+ *
+ * The 6px is the gap above; the 8px below is the composer form's own `mt-2`.
+ * Those 50px come OUT OF THE CHAT COLUMN — see `--live-chat-max`, which is
+ * measured from the top of this stack down and had to give them up. There was
+ * nowhere else for them to come from: the stack is anchored to the bottom of
+ * the screen and its top is capped by the gift tray.
+ *
+ * `pointer-events: auto` because the stack around it is deliberately inert
+ * (see `.bottomStack`): it is a positioning frame over the video, and only the
+ * controls inside it take taps.
+ */
+.reactions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+  padding-left: calc(var(--live-safe-left) + 12px);
+  padding-right: calc(var(--live-safe-right) + 12px);
+  pointer-events: auto;
 }
 
 /*
