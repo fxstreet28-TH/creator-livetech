@@ -34,8 +34,19 @@
  * worth interrupting a broadcast for.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Camera, Loader2, Mic, MicOff, Sparkles, Video, VideoOff, WifiOff } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import {
+  Camera,
+  Loader2,
+  Mic,
+  MicOff,
+  ScreenShare,
+  ScreenShareOff,
+  Sparkles,
+  Video,
+  VideoOff,
+  WifiOff,
+} from 'lucide-react';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
 import { markSessionLive, persistViewerCounts, startLiveEgress } from '@/lib/live/api';
 import {
@@ -70,13 +81,26 @@ import { publishWhip, thaiForWhipError, type WhipSession } from '@/lib/live/whip
 import type { BroadcastQuality, LiveDelivery } from '@/lib/live/types';
 import {
   createFilteredStream,
-  DESKTOP_PUBLISH_SCALE,
   filterLabelFor,
   isDesktopBroadcastViewport,
   type FilteredStream,
   type FilterId,
   type LookMode,
 } from '@/lib/live/cameraFilters';
+import {
+  isScreenShareSupported,
+  startScreenShare,
+  type ScreenShareSession,
+} from '@/lib/live/screenShareCapture';
+import {
+  COMPOSITE_LAYOUT_LABELS,
+  COMPOSITE_LAYOUT_ORDER,
+  DEFAULT_COMPOSITE_LAYOUT,
+  DEFAULT_PIP_CORNER,
+  PIP_CORNER_LABELS,
+  PIP_CORNER_ORDER,
+} from '@/lib/live/compositeCanvas';
+import type { CompositeLayout, PipCorner } from '@/lib/live/compositeCanvas';
 import {
   isDefaultOrientation,
   shouldFlipPreview,
@@ -254,6 +278,27 @@ export interface BroadcastControls {
    * see the prop.
    */
   captureFps: number;
+  /**
+   * Whether to offer a screen share at all: `getDisplayMedia` exists AND this
+   * is a desktop viewport. False on every phone, and false is a STATE rather
+   * than a disabled button — see the note on screenShareReady.
+   */
+  screenShareAvailable: boolean;
+  /** True while a screen share is being composited above the camera. */
+  screenSharing: boolean;
+  /** Start a share (the browser puts up its picker), or end the running one. */
+  toggleScreenShare: () => void;
+  /**
+   * How the composite is arranged, and which corner the จอลอย face sits in.
+   *
+   * Only meaningful while `screenSharing` — the controls that set these render
+   * only then — but always readable, because the choice is remembered for the
+   * rest of the broadcast when a share is stopped and started again.
+   */
+  compositeLayout: CompositeLayout;
+  pipCorner: PipCorner;
+  setCompositeLayout: (layout: CompositeLayout) => void;
+  setPipCorner: (corner: PipCorner) => void;
 }
 
 /**
@@ -314,6 +359,11 @@ function blankPreview(
     track.enabled = enabled;
   });
 }
+
+/** See screenShareReady. There is no store behind this, so nothing to unsubscribe. */
+const subscribeToNothing = () => () => {};
+/** The server renders no screen-share button, because there is no browser there. */
+const serverHasNoScreenShare = () => false;
 
 export function CreatorBroadcaster({
   liveSessionId,
@@ -410,6 +460,107 @@ export function CreatorBroadcaster({
    * still a desktop creator to the camera and a phone one to this.
    */
   const desktopBroadcastRef = useRef<boolean | null>(null);
+
+  /**
+   * Whether this studio offers a "แชร์หน้าจอ" button at all.
+   *
+   * Two questions, both of which have to be yes, and NEITHER of them can be
+   * answered while rendering on the server — `navigator` does not exist there
+   * and `matchMedia` does not either, so this starts false and is filled in
+   * after mount. A button that appeared during hydration would be a mismatch;
+   * a button that appears a tick later is a button that appears.
+   *
+   *  - DOES THE BROWSER HAVE getDisplayMedia? Absent on iOS entirely and on
+   *    macOS Safari below 13. Where it is missing there is nothing to disable:
+   *    a greyed-out control is a promise that it might work later, and this
+   *    one never will on that device.
+   *  - IS THIS A DESKTOP VIEWPORT? The same 768px threshold the host layouts
+   *    use (PRs #49, #50, #61). A phone broadcaster is holding the camera they
+   *    are pointing at themselves; there is no second screen to share.
+   */
+  const screenShareOfferRef = useRef<boolean | null>(null);
+  const readScreenShareOffer = useCallback(() => {
+    // Cached on first read, because both halves of the answer are constants
+    // for the life of this studio: an API is present or it is not, and a
+    // creator who drags their window narrower mid-broadcast keeps the mode
+    // they started in — the same rule the portrait publish frame follows.
+    if (screenShareOfferRef.current === null) {
+      screenShareOfferRef.current = isScreenShareSupported() && isDesktopBroadcastViewport();
+    }
+    return screenShareOfferRef.current;
+  }, []);
+  /**
+   * `useSyncExternalStore` rather than state filled in by an effect, because
+   * the two renders differ and React has to be told so: the server has no
+   * `navigator` and must emit a row with no button, the client reads the real
+   * answer, and this is the hook that lets those disagree without it being a
+   * hydration mismatch. Nothing to subscribe to — the value never changes.
+   */
+  const screenShareReady = useSyncExternalStore(
+    subscribeToNothing,
+    readScreenShareOffer,
+    serverHasNoScreenShare,
+  );
+  const [screenSharing, setScreenSharing] = useState(false);
+  /**
+   * How the composite is arranged, and where the จอลอย face sits.
+   *
+   * State for the buttons, refs for the pipeline. Both, because the two are
+   * read at different times: React renders from the state, while `connect` —
+   * which runs again on every rung of the reconnect ladder — needs the current
+   * choice at a moment when it has no access to a render's closure. Written
+   * together in the two setters below so they cannot drift.
+   *
+   * Per BROADCAST, not per share. Stopping a share and starting another keeps
+   * the creator's arrangement, because being made to re-pick จอลอย every time
+   * you pause a share is the kind of small insult that makes a studio feel
+   * cheap. Nothing is written to storage, so the next broadcast starts fresh
+   * at ครึ่ง-ครึ่ง.
+   */
+  const [compositeLayout, setCompositeLayoutState] = useState<CompositeLayout>(
+    DEFAULT_COMPOSITE_LAYOUT,
+  );
+  const [pipCorner, setPipCornerState] = useState<PipCorner>(DEFAULT_PIP_CORNER);
+  const compositeLayoutRef = useRef<CompositeLayout>(DEFAULT_COMPOSITE_LAYOUT);
+  const pipCornerRef = useRef<PipCorner>(DEFAULT_PIP_CORNER);
+
+  /**
+   * Push a layout choice straight at the paint loop.
+   *
+   * Not an effect. An effect would land the change a render later, and this is
+   * a live broadcast control — the creator presses จอลอย and the very next
+   * painted frame should be จอลอย, for them and for the audience at once.
+   * `filteredRef` may be null before the pipeline opens, in which case the ref
+   * above carries the choice into `connect`.
+   */
+  const chooseCompositeLayout = useCallback((next: CompositeLayout) => {
+    compositeLayoutRef.current = next;
+    setCompositeLayoutState(next);
+    filteredRef.current?.setCompositeLayout(next, pipCornerRef.current);
+  }, []);
+
+  const choosePipCorner = useCallback((next: PipCorner) => {
+    pipCornerRef.current = next;
+    setPipCornerState(next);
+    filteredRef.current?.setCompositeLayout(compositeLayoutRef.current, next);
+  }, []);
+
+  /**
+   * The running capture, held outside React so the teardown paths — the
+   * browser's own "Stop sharing" bar, the toggle, a reconnect, unmount — can
+   * all reach it without any of them being a render.
+   */
+  const screenShareRef = useRef<ScreenShareSession | null>(null);
+  /**
+   * True while the browser's picker is up.
+   *
+   * The picker is modal to the browser but not to the page, and it can sit
+   * open for as long as a creator takes to find the right tab — long enough
+   * that a second press of a button that still looks un-pressed is the
+   * obvious thing to do. Without this, that second press opens a second
+   * picker on top of the first.
+   */
+  const screenSharePendingRef = useRef(false);
 
   const [openMenu, setOpenMenu] = useState<'look' | 'camera' | null>(null);
   const [phase, setPhase] = useState<BroadcastPhase>('connecting');
@@ -719,13 +870,17 @@ export function CreatorBroadcaster({
             // must still publish 1920x1080.
             portraitRef.current ? PHONE_MAX_LONG_EDGE : undefined,
             // Desktop only, and it changes what the AUDIENCE gets, not what
-            // the creator sees: the published canvas draws the same frame at
-            // 75% with black around it, so a phone viewer that letterboxes a
-            // landscape source ends up with the creator centred and further
-            // away instead of filling the width. The preview stays full-frame.
-            desktopBroadcastRef.current ? DESKTOP_PUBLISH_SCALE : undefined,
+            // the creator sees: the published canvas is a fixed 720x1280 that
+            // the 16:9 webcam COVERS, so a phone viewer gets a face edge to
+            // edge instead of a small one in a field of black. The preview
+            // stays the full un-cropped webcam frame.
+            desktopBroadcastRef.current === true,
           );
           filteredRef.current = filtered;
+          // The arrangement the creator last chose, carried across a
+          // reconnect. A fresh pipeline starts at the defaults, so without
+          // this a blip would silently put a creator back in ครึ่ง-ครึ่ง.
+          filtered.setCompositeLayout(compositeLayoutRef.current, pipCornerRef.current);
           setLookMode(filtered.getStats().lookMode);
         } catch (err) {
           if (cancelled) return;
@@ -870,6 +1025,24 @@ export function CreatorBroadcaster({
       // strand on the origin box.
       whipAbort.abort();
       void whip?.close();
+      /*
+        A screen share does not survive the pipeline it was composited into.
+
+        This teardown runs when the broadcast is rebuilt from scratch — a
+        manual retry, a delivery change, unmount — and the new pipeline starts
+        camera-only with no source mounted. Leaving the capture running would
+        put the studio's toggle and the browser's stop bar into disagreement
+        about what is being broadcast, with the browser telling the truth.
+      */
+      screenShareRef.current?.stop();
+      screenShareRef.current = null;
+      setScreenSharing(false);
+      // The arrangement is per-broadcast and this is where a broadcast ends.
+      // Deliberately NOT reset when a share merely stops — see the state above.
+      compositeLayoutRef.current = DEFAULT_COMPOSITE_LAYOUT;
+      pipCornerRef.current = DEFAULT_PIP_CORNER;
+      setCompositeLayoutState(DEFAULT_COMPOSITE_LAYOUT);
+      setPipCornerState(DEFAULT_PIP_CORNER);
       // Order matters: the filter stops its draw loop and its canvas track,
       // then the camera itself is released. Stopping the camera first leaves
       // the loop drawing a dead <video>.
@@ -1112,6 +1285,107 @@ export function CreatorBroadcaster({
   }, [flippingCamera, quality, onFacingModeChange]);
 
 
+  /**
+   * Put the studio back to camera-only, whoever asked for it.
+   *
+   * The ONE fallback path, because there are three ways into it and they must
+   * not disagree: the creator presses the toggle again, the creator presses
+   * Chrome's floating "Stop sharing" bar, or the broadcast tears down and
+   * rebuilds. `stopCapture` is false for the second of those — the browser has
+   * already ended the source and calling stop() on it would be a no-op with a
+   * misleading log line.
+   *
+   * The broadcast does not move. Composite off is a flag inside the draw loop
+   * (see setScreenSource), so the canvas keeps painting, the track keeps
+   * flowing, the peer connection is untouched and no viewer reconnects — the
+   * picture simply becomes the camera again on the next frame.
+   */
+  const endScreenShare = useCallback((stopCapture: boolean) => {
+    const session = screenShareRef.current;
+    screenShareRef.current = null;
+    if (stopCapture) session?.stop();
+    void filteredRef.current?.setScreenSource(null);
+    setScreenSharing(false);
+  }, []);
+
+  /**
+   * Share a screen, or stop sharing one.
+   *
+   * DELIBERATELY NOT RECOVERABLE. If the source goes away — the tab is closed,
+   * the window is quit, the creator presses the browser's stop bar — this
+   * falls back to the camera and stays there until someone asks again.
+   * Re-opening the picker on the creator's behalf would be an app deciding to
+   * broadcast a screen that nobody chose, and re-opening it without the picker
+   * is not something the platform allows for exactly that reason.
+   *
+   * Nor is the choice remembered: every broadcast starts camera-only. A
+   * creator who shared a chart last Tuesday and has forgotten about it is one
+   * click from streaming whatever is on their screen now.
+   */
+  const toggleScreenShare = useCallback(async () => {
+    if (screenShareRef.current) {
+      endScreenShare(true);
+      return;
+    }
+    if (screenSharePendingRef.current) return;
+
+    const filtered = filteredRef.current;
+    if (!filtered) return;
+
+    let session: ScreenShareSession | null = null;
+    screenSharePendingRef.current = true;
+    try {
+      // The picker is the browser's, and dismissing it resolves to null —
+      // which must leave the studio exactly as it was: no error, no state
+      // change, no button stuck looking pressed.
+      session = await startScreenShare(() => endScreenShare(false));
+    } catch (err) {
+      // A policy or an extension refused. The broadcast is unaffected, so this
+      // is logged rather than raised as a broadcast error the way a camera
+      // failure is — the creator is still live, just not sharing.
+      console.error('[screen] could not start a share', err);
+      return;
+    } finally {
+      screenSharePendingRef.current = false;
+    }
+    if (!session) return;
+
+    // The pipeline may have been torn down during the seconds the picker was
+    // open — a reconnect, or the creator ending the live. Publishing into a
+    // dead canvas is not possible, so the capture is released instead of left
+    // running with Chrome's bar on screen and nothing behind it.
+    const target = filteredRef.current;
+    if (!target) {
+      session.stop();
+      return;
+    }
+
+    screenShareRef.current = session;
+    try {
+      await target.setScreenSource(session.stream);
+    } catch (err) {
+      console.error('[composite] could not mount the screen source', err);
+      endScreenShare(true);
+      return;
+    }
+    setScreenSharing(true);
+  }, [endScreenShare]);
+
+  /**
+   * Never leave a capture running behind a studio that is gone.
+   *
+   * Chrome's "Stop sharing" bar outlives the page that opened it if the track
+   * is not stopped, and a creator who ended their live and is looking at a
+   * summary screen while the browser insists they are still sharing their
+   * desktop is a privacy problem, not an untidy one.
+   */
+  useEffect(() => {
+    return () => {
+      screenShareRef.current?.stop();
+      screenShareRef.current = null;
+    };
+  }, []);
+
   // The self-view is the canvas, so the output flip is already in these
   // frames — which is exactly why the creator's own preference cannot be read
   // off `mirrorPreview` alone.
@@ -1240,6 +1514,13 @@ export function CreatorBroadcaster({
           portraitRefused: camera?.portraitRefused === true,
           lookMode,
           captureFps,
+          screenShareAvailable: screenShareReady,
+          screenSharing,
+          toggleScreenShare: () => void toggleScreenShare(),
+          compositeLayout,
+          pipCorner,
+          setCompositeLayout: chooseCompositeLayout,
+          setPipCorner: choosePipCorner,
         })}
       </>
     );
@@ -1326,9 +1607,10 @@ export function CreatorBroadcaster({
         instead, a 22rem panel hanging off the third control in the row runs
         straight off a 360px screen.
 
-        flex-wrap because the row now carries four controls plus the quality
-        pill: on a narrow phone they wrap onto a second line rather than
-        squeezing past the edge.
+        flex-wrap because the row carries four controls plus the quality pill,
+        and on a desktop mid-share two more groups on top of that — the layout
+        segments and, under จอลอย, the corner picker. They wrap onto a second
+        line rather than squeezing past the edge.
       */}
       <div
         className="relative flex shrink-0 flex-wrap items-center gap-2"
@@ -1389,6 +1671,123 @@ export function CreatorBroadcaster({
           label="เลือกลุค"
           value={filterLabelFor(filterId)}
         />
+        {/*
+          "แชร์หน้าจอ", and it is ABSENT rather than disabled where it cannot
+          work — see screenShareReady. On a phone, and on any browser without
+          getDisplayMedia, this row is exactly what it was before this feature.
+        */}
+        {screenShareReady && (
+          <ToggleButton
+            onClick={() => void toggleScreenShare()}
+            active={screenSharing}
+            icon={
+              screenSharing ? (
+                <ScreenShareOff size={16} aria-hidden />
+              ) : (
+                <ScreenShare size={16} aria-hidden />
+              )
+            }
+            label={screenSharing ? 'หยุดแชร์หน้าจอ' : 'แชร์หน้าจอ'}
+          />
+        )}
+        {/*
+          HOW THE SHARE AND THE FACE ARE ARRANGED.
+
+          Present only while a share is actually running, and gated on the same
+          screenShareReady as the button above it: with nothing shared there is
+          no arrangement to make, and three dead buttons in the bottom bar of a
+          phone studio is three buttons of clutter explaining a feature that
+          screen has no way to offer.
+
+          Not in the ลุค/กล้อง popover with the other pickers, deliberately.
+          Those are set-and-forget; this is watched. A creator picking จอลอย is
+          looking at the preview to see where they land, and a panel covering
+          the preview is a panel covering the thing being decided.
+        */}
+        {screenShareReady && screenSharing && (
+          <div
+            role="radiogroup"
+            aria-label="รูปแบบการจัดวาง"
+            className="inline-flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.04] p-1"
+          >
+            {COMPOSITE_LAYOUT_ORDER.map((layout) => (
+              <button
+                key={layout}
+                type="button"
+                role="radio"
+                aria-checked={compositeLayout === layout}
+                onClick={() => chooseCompositeLayout(layout)}
+                className={[
+                  'relative z-50 inline-flex min-h-9 items-center rounded-lg px-2.5 text-xs font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400',
+                  compositeLayout === layout
+                    ? 'bg-cyan-400/20 text-cyan-100'
+                    : 'text-white/65 hover:bg-white/[0.06] hover:text-white/85',
+                ].join(' ')}
+              >
+                {COMPOSITE_LAYOUT_LABELS[layout]}
+              </button>
+            ))}
+          </div>
+        )}
+        {/*
+          WHICH CORNER THE จอลอย FACE SITS IN.
+
+          Four buttons rather than a drag handle, and that is the whole scope:
+          a creator needs their face off whatever the share is putting in that
+          corner, which four presets answer completely. Free-drag on a canvas
+          is a different feature — pointer capture, bounds, a preview that has
+          to hit-test — and it is not this one.
+
+          Only under จอลอย, because a corner is a property of a floating face
+          and the other two layouts have nowhere to put it.
+        */}
+        {screenShareReady && screenSharing && compositeLayout === 'pip' && (
+          <div
+            role="radiogroup"
+            aria-label="ตำแหน่งภาพลอย"
+            className="inline-flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.04] p-1"
+          >
+            {PIP_CORNER_ORDER.map((corner) => (
+              <button
+                key={corner}
+                type="button"
+                role="radio"
+                aria-checked={pipCorner === corner}
+                aria-label={PIP_CORNER_LABELS[corner]}
+                title={PIP_CORNER_LABELS[corner]}
+                onClick={() => choosePipCorner(corner)}
+                className={[
+                  'relative z-50 grid h-9 w-9 place-items-center rounded-lg transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400',
+                  pipCorner === corner ? 'bg-cyan-400/20' : 'hover:bg-white/[0.06]',
+                ].join(' ')}
+              >
+                {/* A frame with a dot in the corner this button selects — the
+                    picture of the choice, which is quicker to read at a glance
+                    than ซ้ายบน/ขวาล่าง and needs no translation. The label is
+                    still there for a screen reader. */}
+                <span
+                  aria-hidden
+                  className={[
+                    'grid h-5 w-4 rounded-[3px] border p-[2px]',
+                    pipCorner === corner ? 'border-cyan-200/70' : 'border-white/35',
+                    corner === 'top-left' || corner === 'top-right' ? 'items-start' : 'items-end',
+                    corner === 'top-left' || corner === 'bottom-left'
+                      ? 'justify-items-start'
+                      : 'justify-items-end',
+                  ].join(' ')}
+                >
+                  <span
+                    className={[
+                      'h-1.5 w-1.5 rounded-[1px]',
+                      pipCorner === corner ? 'bg-cyan-200' : 'bg-white/50',
+                    ].join(' ')}
+                  />
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+
         <MenuButton
           ref={cameraButtonRef}
           open={openMenu === 'camera'}
@@ -1451,6 +1850,44 @@ function MenuButton({
       {label}
       {value && <span className="text-white/40">{value}</span>}
       {badge && <OrientationChangedBadge />}
+    </button>
+  );
+}
+
+/**
+ * A labelled on/off control in the bottom bar.
+ *
+ * Shaped like MenuButton rather than like the icon-only ControlButton beside
+ * it, because it needs a word: mic and camera are universal glyphs and a
+ * screen-share icon is not, and a creator hunting for this while live should
+ * not have to hover anything to find it. `aria-pressed` rather than
+ * `aria-expanded` — this toggles a thing, it does not open one.
+ */
+function ToggleButton({
+  onClick,
+  active,
+  icon,
+  label,
+}: {
+  onClick: () => void;
+  active: boolean;
+  icon: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={[
+        'relative z-50 inline-flex min-h-11 items-center gap-2 rounded-xl border px-3 text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400',
+        active
+          ? 'border-cyan-400/40 bg-cyan-400/15 text-cyan-100 hover:bg-cyan-400/20'
+          : 'border-white/10 bg-white/[0.04] text-white/80 hover:bg-white/[0.08]',
+      ].join(' ')}
+    >
+      {icon}
+      {label}
     </button>
   );
 }
