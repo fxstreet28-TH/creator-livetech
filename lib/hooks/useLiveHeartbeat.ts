@@ -26,11 +26,18 @@
  *     for a session that has already ended, and this reports that upward. A
  *     restored background tab must not resurrect a session the watchdog
  *     closed, and it must not keep an ended row's heartbeat fresh.
- *  3. IT FIRES THE BEACON. On `pagehide` — not `beforeunload`, which does not
- *     run on iOS at all and is unreliable on a killed tab — it posts a
- *     best-effort end request, so the ordinary "closed the tab" case is
- *     instant instead of 90 seconds late. The watchdog is what makes it
- *     correct; the beacon only makes it quick.
+ *  3. IT FIRES THE BEACON, BUT NOT ON A BACKGROUND. On `pagehide` — not
+ *     `beforeunload`, which does not run on iOS at all and is unreliable on a
+ *     killed tab — it posts a best-effort end request, so the ordinary "closed
+ *     the tab" case is instant instead of 90 seconds late. The watchdog is what
+ *     makes it correct; the beacon only makes it quick.
+ *
+ *     `event.persisted` is what keeps it from being catastrophic. iOS fires
+ *     `pagehide` when it freezes a page into the bfcache, which is what
+ *     backgrounding Safari does — so before PR #67 a creator checking a
+ *     notification mid-broadcast ended their own live, and stopped beating
+ *     even where the request did not land. A frozen page is expected back and
+ *     is left alone; only a real unload beacons.
  */
 
 import { useEffect, useRef } from 'react';
@@ -97,13 +104,23 @@ export function useLiveHeartbeat({
     }
 
     let stopped = false;
+    /**
+     * The session is over as far as the BACKEND is concerned.
+     *
+     * Separate from `stopped`, which a bfcache restore clears — see onPageShow.
+     * This one is never cleared, because a page coming back from the freezer
+     * must not start beating again for a session the watchdog or another
+     * device has already closed. Getting these two confused would resurrect an
+     * ended row's heartbeat, which is failure (2) in the header.
+     */
+    let sessionClosed = false;
     // The beacon must fire at most once: `pagehide` can fire more than once
     // for one page (bfcache), and a second end request would be a wasted
     // round trip answered with `already_ended`.
     let beaconSent = false;
 
     const beat = async () => {
-      if (stopped) return;
+      if (stopped || sessionClosed) return;
 
       const { data } = await supabase.auth.getSession();
       tokenRef.current = data.session?.access_token ?? null;
@@ -113,8 +130,10 @@ export function useLiveHeartbeat({
 
       if (!stillLive) {
         // Stop first: whatever the callback does, this hook must not keep
-        // beating for a session the backend has closed.
+        // beating for a session the backend has closed — and unlike a freeze,
+        // this one is permanent.
         stopped = true;
+        sessionClosed = true;
         closedRef.current?.();
       }
     };
@@ -122,14 +141,75 @@ export function useLiveHeartbeat({
     void beat();
     const timer = setInterval(() => void beat(), HEARTBEAT_INTERVAL_MS);
 
-    // See (1) in the header — a throttled background tab is the common way a
-    // live broadcaster would otherwise be mistaken for an absent one.
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') void beat();
+    /**
+     * See (1) in the header — a throttled background tab is the common way a
+     * live broadcaster would otherwise be mistaken for an absent one.
+     *
+     * ALL FOUR DOORS NOW, not just visibilitychange. iOS restores a broadcasting
+     * page from the bfcache without firing that event at all, and a creator who
+     * came back through that door was relying on the 20-second timer in a tab
+     * whose timers had been frozen for the whole absence — which is the case
+     * the 90-second grace is closest to running out on. `focus` covers a
+     * desktop creator alt-tabbing back to a window that was never hidden, and
+     * `online` says the network is back, which is precisely when a beat that
+     * failed while it was gone needs re-sending.
+     */
+    const onResume = (source: string) => {
+      console.info('[whip] heartbeat on resume', { source });
+      void beat();
     };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') onResume('visibility');
+    };
+    const onFocus = () => onResume('focus');
+    const onOnline = () => onResume('online');
     document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('online', onOnline);
 
-    const onPageHide = () => {
+    /**
+     * A page restored from the bfcache is a broadcast that never ended.
+     *
+     * `pageshow` with `persisted` is the other half of the pagehide guard
+     * below: the page is back, its timers are running again, and the beacon
+     * has to be re-armed so that genuinely closing the tab later still ends
+     * the session promptly.
+     */
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (!event.persisted || sessionClosed) return;
+      beaconSent = false;
+      stopped = false;
+      onResume('pageshow');
+    };
+    window.addEventListener('pageshow', onPageShow);
+
+    /**
+     * The beacon, and the guard that stops it ending a live broadcast.
+     *
+     * WHAT WAS WRONG (PR #67). This fired on every `pagehide`, unconditionally,
+     * and set `stopped`. On iOS, backgrounding Safari puts the page into the
+     * bfcache and fires exactly that event — so a creator who checked a
+     * notification mid-broadcast posted an END REQUEST for their own live, and
+     * even where the request did not land the heartbeat was stopped for good
+     * and the watchdog closed them 90 seconds later. "The creator stepped out
+     * for twenty seconds" is not "end live", and this was the code that
+     * disagreed.
+     *
+     * `event.persisted` is the browser telling us which one it is: true means
+     * the page is being FROZEN and is expected back, false means it is being
+     * unloaded — a navigation, a closed tab, a discarded page — which is the
+     * case this beacon was written for and still handles.
+     *
+     * The watchdog remains the correctness argument either way: a page that is
+     * frozen and never comes back stops beating, and is closed 90 seconds
+     * later (see live-watchdog). The beacon only ever made the common case
+     * quick.
+     */
+    const onPageHide = (event: PageTransitionEvent) => {
+      if (event.persisted) {
+        console.info('[whip] page frozen into the bfcache; not ending the session');
+        return;
+      }
       if (beaconSent) return;
       beaconSent = true;
       stopped = true;
@@ -148,6 +228,9 @@ export function useLiveHeartbeat({
       stopped = true;
       clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('pageshow', onPageShow);
       window.removeEventListener('pagehide', onPageHide);
     };
   }, [sessionId]);
