@@ -29,6 +29,15 @@
  * egress filtered, so they reach Bunny filtered.
  */
 
+import {
+  CAMERA_SLOT,
+  COMPOSITE_HEIGHT,
+  COMPOSITE_WIDTH,
+  SCREEN_SLOT,
+  containRect,
+  coverSourceRect,
+} from './compositeCanvas';
+
 export const CAMERA_FILTERS = {
   none: { label: 'ปกติ', filter: 'none' },
   warm: { label: 'อบอุ่น', filter: 'sepia(0.3) saturate(1.4) hue-rotate(-10deg) brightness(1.05)' },
@@ -432,6 +441,31 @@ export interface FilteredStream {
    */
   setZoom: (zoom: number) => void;
   /**
+   * Composite a SCREEN SHARE above the camera, or stop compositing.
+   *
+   * This is the TikTok-Live layout, and it is a mode of the same canvas rather
+   * than a second pipeline: pass a display stream and the next frame is drawn
+   * 720x1280 with the screen contained in the top 55% and the camera covering
+   * the bottom 45%; pass null and the frame after that is the camera-only
+   * frame this pipeline has always produced. See ./compositeCanvas for the
+   * layout and the reasoning behind those numbers.
+   *
+   * NOTHING DOWNSTREAM LEARNS ABOUT IT. `publishStream` is the same object,
+   * carrying the same track, from the same canvas — so there is no
+   * replaceTrack, no renegotiation, no ICE restart and no reconnect for the
+   * audience. The canvas changes SIZE when the mode changes, which a canvas
+   * capture track reports as a resolution change; WebRTC adapts to those
+   * in-band, the way it already does when a creator flips to a camera with a
+   * different sensor ratio.
+   *
+   * The preview canvas composites too, deliberately: a creator arranging a
+   * chart and their own face needs to see the frame the audience gets, and a
+   * self-view showing only the camera would leave them guessing where the
+   * split lands. This is the one thing the padded publish frame does NOT do —
+   * see `publishScale` — because there the two pictures differ only in size.
+   */
+  setScreenSource: (next: MediaStream | null) => Promise<void>;
+  /**
    * What the pipeline is actually doing, for the ?debug=camera chip.
    *
    * `lookMode` says which of the two look implementations this stream picked,
@@ -444,7 +478,13 @@ export interface FilteredStream {
    * that worth showing: they are cheap, but "cheap" is a claim, and this is
    * the number that settles it on the phone in the creator's hand.
    */
-  getStats: () => { fps: number; lookMode: LookMode; publishScale: number };
+  getStats: () => {
+    fps: number;
+    lookMode: LookMode;
+    publishScale: number;
+    /** True while a screen share is being composited in. See setScreenSource. */
+    compositing: boolean;
+  };
   /** Stops the draw loop and the canvas track. Does NOT stop the source. */
   stop: () => void;
 }
@@ -555,6 +595,18 @@ export async function createFilteredStream(
   let currentFilter = initialFilter;
   let currentFlipped = initialFlipped;
   let currentZoom = 1;
+  /**
+   * The screen share, when there is one, and whether to draw it.
+   *
+   * A SECOND detached <video>, built lazily and only where a creator actually
+   * shares something — the overwhelming majority of broadcasts never allocate
+   * it. `compositing` is a separate flag rather than a null check on the
+   * element, because the element is kept across a stop/start cycle (see
+   * setScreenSource) and "there is an element" and "draw the composite" stop
+   * being the same question the moment it is.
+   */
+  let screenVideo: HTMLVideoElement | null = null;
+  let compositing = false;
   let running = true;
   let rafId: number | null = null;
   let frameCallbackId: number | null = null;
@@ -726,13 +778,138 @@ export async function createFilteredStream(
     }
   };
 
+  /**
+   * One target, one frame, in COMPOSITE mode.
+   *
+   * The sibling of paintFrame above, and the split is deliberate: every line
+   * of the camera-only path — the dimension watch that follows the camera, the
+   * padded destination box, the full-canvas look — is about publishing ONE
+   * source at its own ratio, and none of it survives contact with a frame that
+   * has two sources and a shape of its own. Branching inside paintFrame would
+   * have meant a conditional on nearly every line of it; two functions with
+   * one branch between them is the smaller thing to read and the smaller thing
+   * to get wrong.
+   *
+   * `scale` is ignored here, and that is the design: DESKTOP_PUBLISH_SCALE
+   * exists to put room around a creator who fills a landscape frame, and a
+   * composite already places them in a slot of a known size. So the preview
+   * and the padded publish canvas paint IDENTICAL pictures while this runs —
+   * which is what makes the studio WYSIWYG in this mode.
+   */
+  const paintComposite = (target: PaintTarget) => {
+    const { canvas, ctx } = target;
+
+    /*
+      THE CANVAS IS THE COMPOSITE'S OWN SIZE, not the camera's.
+
+      Same guard as the camera-only path and for the same reason — writing to
+      canvas.width resets the 2D context — but a fixed target rather than a
+      followed one. This assignment is what resizes the published track when a
+      share starts, and the assignment in paintFrame is what puts it back when
+      one stops; neither needs to know the other exists.
+    */
+    if (canvas.width !== COMPOSITE_WIDTH || canvas.height !== COMPOSITE_HEIGHT) {
+      canvas.width = COMPOSITE_WIDTH;
+      canvas.height = COMPOSITE_HEIGHT;
+      target.vignette = null;
+    }
+
+    /*
+      Black, every frame, before anything is drawn.
+
+      Not the belt-and-braces the padded path's fill is: here it is load-
+      bearing. A contained screen share leaves real margin inside the top slot
+      whenever the shared surface is not 9:14 — which is always — and a tab
+      resized mid-share changes where that margin falls. Without this, the
+      previous frame's picture stays in the strip the new one no longer covers.
+    */
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    /*
+      THE TOP SLOT: the screen, whole, and untouched.
+
+      No look, no mirror, no zoom, and each omission is a decision rather than
+      an oversight. A look is a portrait grade — a warm wash over a candlestick
+      chart is a chart with the wrong colours, and ขาวดำ over one is a chart a
+      viewer cannot read at all. A mirror would reverse text. Zoom is a camera
+      framing control and the creator already chose their framing when they
+      picked what to share.
+    */
+    const screen = screenVideo;
+    if (screen && screen.videoWidth > 0 && screen.videoHeight > 0) {
+      const box = containRect(screen.videoWidth, screen.videoHeight, SCREEN_SLOT);
+      if (box.width > 0 && box.height > 0) {
+        ctx.drawImage(screen, box.x, box.y, box.width, box.height);
+      }
+    }
+
+    /*
+      THE BOTTOM SLOT: the creator, filling it, with everything that applies to
+      a camera still applying.
+
+      Clipped first, then transformed, then drawn — the clip is set while the
+      transform is still identity so it stays in canvas coordinates, and a
+      mirror inside it maps the slot onto itself instead of sliding the
+      picture sideways.
+    */
+    if (video.videoWidth > 0 && video.videoHeight > 0) {
+      const src = coverSourceRect(video.videoWidth, video.videoHeight, CAMERA_SLOT, currentZoom);
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(CAMERA_SLOT.x, CAMERA_SLOT.y, CAMERA_SLOT.width, CAMERA_SLOT.height);
+      ctx.clip();
+      if (lookMode === 'filter') ctx.filter = filterCssFor(currentFilter);
+      if (currentFlipped) {
+        // Reflect about the slot's own vertical centre line. The slot spans
+        // the full canvas width today, so this is the same translate the
+        // camera-only path uses — written against the slot anyway, because a
+        // layout constant is not a promise.
+        ctx.translate(CAMERA_SLOT.x * 2 + CAMERA_SLOT.width, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.drawImage(
+        video,
+        src.x,
+        src.y,
+        src.width,
+        src.height,
+        CAMERA_SLOT.x,
+        CAMERA_SLOT.y,
+        CAMERA_SLOT.width,
+        CAMERA_SLOT.height,
+      );
+      ctx.restore();
+
+      // The look, on the browsers that cannot filter — clipped to the camera
+      // slot for the same reason the padded path clips it to the picture, only
+      // more so: unclipped, a วินเทจ vignette would darken the corners of the
+      // chart. Reachable only where `ctx.filter` is missing, which is a phone,
+      // which has no getDisplayMedia — so this is correctness kept honest
+      // rather than a path anyone runs today.
+      if (lookMode === 'composite') {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(CAMERA_SLOT.x, CAMERA_SLOT.y, CAMERA_SLOT.width, CAMERA_SLOT.height);
+        ctx.clip();
+        target.vignette = applyLookPasses(ctx, currentFilter, target.vignette);
+        ctx.restore();
+      }
+    }
+  };
+
   const draw = () => {
     if (!running) return;
 
     // Both canvases from the SAME callback, in the same tick, off the same
     // decoded frame — so the creator's preview and the audience's picture can
     // never be a frame apart from each other.
-    for (const target of targets) paintFrame(target);
+    // One decoded camera frame, read once, painted into every target — and in
+    // composite mode the screen's <video> is read in the same tick, so the two
+    // sources in a published frame are never a frame apart from each other.
+    const paint = compositing ? paintComposite : paintFrame;
+    for (const target of targets) paint(target);
 
     framesThisWindow += 1;
     const at = now();
@@ -776,12 +953,69 @@ export async function createFilteredStream(
     setFlipped: (flipped) => {
       currentFlipped = flipped;
     },
-    getStats: () => ({ fps: measuredFps, lookMode, publishScale: padded ? padded.scale : 1 }),
+    getStats: () => ({
+      fps: measuredFps,
+      lookMode,
+      publishScale: padded ? padded.scale : 1,
+      compositing,
+    }),
     setZoom: (zoom) => {
       // Floored at 1: there is no such thing as digital zoom OUT. Widening the
       // field of view needs a different camera, which is the 0.5x ultra-wide
       // device switch and not this.
       currentZoom = Number.isFinite(zoom) && zoom > 1 ? zoom : 1;
+    },
+    setScreenSource: async (next) => {
+      if (!next) {
+        // The flag first: the very next frame goes back to paintFrame, which
+        // resizes the canvas to the camera and draws it, so the picture is
+        // already correct before anything below has run.
+        compositing = false;
+        if (screenVideo) {
+          // Detached from the dead track, but the ELEMENT is kept. Creating
+          // one costs a decode pipeline set-up, and a creator toggling a share
+          // on and off between segments would pay it every time. Not cleared
+          // to a blank source either — `srcObject = null` is enough to stop it
+          // decoding, and paintComposite is no longer being called.
+          screenVideo.pause();
+          screenVideo.srcObject = null;
+        }
+        console.info('[composite] off — publishing the camera frame');
+        return;
+      }
+
+      const [screenTrack] = next.getVideoTracks();
+      if (!screenTrack) {
+        console.warn('[composite] display stream has no video track; staying camera-only');
+        return;
+      }
+
+      if (!screenVideo) {
+        // Same three properties as the camera's element and for the same
+        // reasons: never in the document, muted and playsInline so no
+        // autoplay policy anywhere refuses to decode it.
+        screenVideo = document.createElement('video');
+        screenVideo.muted = true;
+        screenVideo.playsInline = true;
+      }
+      screenVideo.srcObject = new MediaStream([screenTrack]);
+      // Awaited, not fired and forgotten: a paused element decodes nothing, so
+      // flipping `compositing` before this resolved would publish a frame with
+      // an empty top slot. Caught, because Safari rejects play() for reasons
+      // that do not stop it playing, and a rejected promise here must not cost
+      // the creator their broadcast.
+      await screenVideo.play().catch((err) => {
+        console.warn('[composite] screen video play() rejected', err);
+      });
+
+      compositing = true;
+      const settings = screenTrack.getSettings();
+      console.info(
+        `[composite] on — ${COMPOSITE_WIDTH}x${COMPOSITE_HEIGHT}: screen ` +
+          `${settings.width ?? '?'}x${settings.height ?? '?'} contained in ` +
+          `${SCREEN_SLOT.width}x${SCREEN_SLOT.height}, camera covering ` +
+          `${CAMERA_SLOT.width}x${CAMERA_SLOT.height} at y=${CAMERA_SLOT.y}`,
+      );
     },
     setSource: async (next) => {
       const [nextTrack] = next.getVideoTracks();
@@ -809,6 +1043,17 @@ export async function createFilteredStream(
       previewStream.getVideoTracks().forEach((track) => track.stop());
       publishStream.getVideoTracks().forEach((track) => track.stop());
       video.srcObject = null;
+      // The screen share's element, detached for the same reason as the
+      // camera's. The display TRACK is not stopped here — it belongs to
+      // whoever opened it (see lib/live/screenShareCapture), and stopping it
+      // from in here would take Chrome's "Stop sharing" bar down without the
+      // studio ever knowing its own toggle had moved.
+      compositing = false;
+      if (screenVideo) {
+        screenVideo.pause();
+        screenVideo.srcObject = null;
+        screenVideo = null;
+      }
     },
   };
 }
