@@ -109,6 +109,30 @@ export interface WhipSession {
    * learns anything happened.
    */
   restartIce(signal?: AbortSignal): Promise<boolean>;
+  /**
+   * Re-cap the encoder's framerate on a session that is already publishing.
+   *
+   * WHY THIS EXISTS AT ALL. A composite — a screen share and a face in one
+   * frame — is painted at 24fps rather than 30 (see COMPOSITE_FRAME_RATE), and
+   * a share is started and stopped mid-broadcast. The cap has to follow it,
+   * and it cannot be a re-publish: a new WHIP session on the same MediaMTX
+   * path restarts the HLS muxer and breaks the playlist every viewer is
+   * mid-segment on, which is a reconnect for the whole audience to change one
+   * number in the encoder.
+   *
+   * WHAT IT BUYS. `maxFramerate` is what turns "the encoder cannot keep up"
+   * into a dropped frame rather than a queued one. A queue is latency that
+   * accumulates — the chart arriving seconds after the creator moved it, then
+   * jumping to catch up — and no bitrate ceiling can spend its way out of it.
+   * Capping at the rate the canvas is actually painted tells the encoder the
+   * truth about its input and leaves it nothing to fall behind on.
+   *
+   * `setParameters`-based and therefore in-band: no renegotiation, no track
+   * replacement, nothing a viewer can see. Never throws — a browser that
+   * refuses leaves the previous cap standing, which is the behaviour before
+   * this existed.
+   */
+  setMaxFramerate(fps: number): Promise<void>;
   /** DELETE the resource and close the peer connection. Never throws. */
   close(): Promise<void>;
 }
@@ -194,7 +218,7 @@ export async function publishWhip(options: WhipPublishOptions): Promise<WhipSess
      * the belt to that braces: setParameters after negotiation is the path
      * every browser honours.
      */
-    await applyEncoderCeiling(videoTransceiver.sender, options);
+    await applyEncoderCeiling(videoTransceiver.sender, options.quality, options.maxFramerate);
 
     await waitForIceGathering(pc, options.signal);
     throwIfAborted(options.signal);
@@ -230,6 +254,14 @@ export async function publishWhip(options: WhipPublishOptions): Promise<WhipSess
         if (!updated) return false;
         remoteSdp = updated;
         return true;
+      },
+      setMaxFramerate: async (fps) => {
+        // The bitrate ceiling is re-applied alongside it, because
+        // `setParameters` reads the whole object: a call that carried only the
+        // framerate would be writing back whatever the browser currently
+        // holds for the bitrate, which after a clamp is not what was asked
+        // for. One writer for both numbers, always.
+        await applyEncoderCeiling(videoTransceiver.sender, options.quality, fps);
       },
       close: () => closeWhipSession(pc, resourceUrl),
     };
@@ -599,16 +631,17 @@ async function closeWhipSession(
  */
 async function applyEncoderCeiling(
   sender: RTCRtpSender,
-  options: WhipPublishOptions,
+  quality: BroadcastQuality,
+  maxFramerate: number | undefined,
 ): Promise<void> {
   try {
     const params = sender.getParameters();
     if (!params.encodings || params.encodings.length === 0) {
       params.encodings = [{}];
     }
-    const requested = publishBitrateFor(options.quality);
+    const requested = publishBitrateFor(quality);
     params.encodings[0].maxBitrate = requested;
-    if (options.maxFramerate) params.encodings[0].maxFramerate = options.maxFramerate;
+    if (maxFramerate) params.encodings[0].maxFramerate = maxFramerate;
 
     /**
      * WHAT TO GIVE UP FIRST when the ceiling is not enough.
@@ -653,21 +686,34 @@ async function applyEncoderCeiling(
      */
     const applied = sender.getParameters();
     const resolved = applied.encodings?.[0]?.maxBitrate;
+    /**
+     * The framerate cap, read back for the same reason the bitrate is.
+     *
+     * This is the number that decides whether an encoder under pressure drops
+     * a frame or queues it, and the difference between those two is the whole
+     * of the reported stutter: a drop is a momentary dip nobody names, a queue
+     * is latency that grows until the picture catches up in a lurch. A browser
+     * that quietly kept its own default here would look identical in every log
+     * except this one.
+     */
+    const resolvedFramerate = applied.encodings?.[0]?.maxFramerate ?? null;
     // Read back alongside the ceiling and for the same reason: a browser is
     // free to accept the promise and keep its own preference, and the
     // difference is invisible in the picture until someone is moving.
     const degradation = applied.degradationPreference ?? null;
     if (resolved === requested) {
       console.info('[whipClient] encoder ceiling applied', {
-        quality: options.quality,
+        quality,
         maxBitrate: resolved,
+        maxFramerate: resolvedFramerate,
         degradationPreference: degradation,
       });
     } else {
       console.warn('[whipClient] encoder ceiling did not stick', {
-        quality: options.quality,
+        quality,
         requested,
         resolved: resolved ?? null,
+        maxFramerate: resolvedFramerate,
         degradationPreference: degradation,
       });
     }

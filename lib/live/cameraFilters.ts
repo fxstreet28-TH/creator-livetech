@@ -30,6 +30,7 @@
  */
 
 import {
+  COMPOSITE_FRAME_RATE,
   COMPOSITE_HEIGHT,
   COMPOSITE_WIDTH,
   DEFAULT_COMPOSITE_LAYOUT,
@@ -161,6 +162,17 @@ type LookPass =
  * alpha decides how much. That is the whole trick behind ขาวดำ and วินเทจ.
  */
 const NEUTRAL_GREY = '#808080';
+
+/**
+ * How long after a share starts the paint-cost summary is logged.
+ *
+ * Long enough that the samples describe a settled loop rather than its first
+ * second: the screen's decode pipeline is still warming up, the composite
+ * canvas resizes on the first frame, and a creator has usually not yet switched
+ * to the thing they shared. Short enough that it is on screen before anyone
+ * has finished reading the picture.
+ */
+const PAINT_SUMMARY_DELAY_MS = 5_000;
 
 const LOOK_PASSES: Record<FilterId, LookPass[]> = {
   // The camera, untouched. Not an empty effect — no effect.
@@ -493,6 +505,25 @@ export interface FilteredStream {
    */
   getStats: () => {
     fps: number;
+    /**
+     * How long a paint actually takes, in ms, over the last few seconds.
+     *
+     * THE NUMBER THAT SETTLES THE STUTTER ARGUMENT. Frames per second says a
+     * loop kept up; it cannot say by how much, and a loop painting at 30 with
+     * 32ms of work per frame is one browser hiccup away from not painting at
+     * 30 at all — with a composite that is what the audience feels as a chart
+     * arriving late. p95 against `frameBudgetMs` is the honest read: under
+     * budget is headroom, at budget is a broadcast about to fall over.
+     *
+     * Measured across every target painted in a tick (preview AND publish),
+     * because that whole span is what the loop owes the next frame.
+     */
+    paintP50: number;
+    paintP95: number;
+    /** 1000 / the rate this mode paints at. 33.3ms at 30, 41.7ms at 24. */
+    frameBudgetMs: number;
+    /** What the loop is currently aiming for: 30 camera-only, 24 compositing. */
+    paintRate: number;
     lookMode: LookMode;
     /** True where the publish canvas is the fixed 9:16 frame. Desktop only. */
     portrait: boolean;
@@ -695,6 +726,63 @@ export async function createFilteredStream(
   let framesThisWindow = 0;
   let windowStartedAt = now();
   let measuredFps = 0;
+
+  /**
+   * ==================================================================
+   * THE RATE THIS LOOP PAINTS AT, WHICH IS A FUNCTION OF THE MODE.
+   * ==================================================================
+   *
+   * Camera-only is `frameRate` — 30, the camera's own rate, unchanged in every
+   * respect by any of this. Compositing is COMPOSITE_FRAME_RATE, 24, for the
+   * reasons written where that constant is declared: two decodes, a two-source
+   * paint and an encode of a detailed frame do not fit in 33ms on a laptop,
+   * and the cost of them not fitting is not a softer picture but a queue —
+   * seconds of latency and then a catch-up jump.
+   *
+   * A VARIABLE, not a parameter, because the mode changes mid-broadcast: a
+   * creator starts a share and stops it without the pipeline being rebuilt, so
+   * the rate has to follow `compositing` rather than being decided once when
+   * the camera opened.
+   *
+   * WHAT IS *NOT* CHANGED HERE IS THE CAPTURE RATE. `captureStream(frameRate)`
+   * stays at 30 in both modes, and that is not an oversight: the argument is a
+   * CEILING on how often the canvas may emit, not a cadence it must produce.
+   * A canvas emits a frame when it is painted, so 24 paints a second is 24
+   * frames a second out of a track captured at 30 — the honest signal, with no
+   * duplicate frames invented and none dropped. Re-capturing at 24 on a share
+   * toggle would mean a NEW MediaStreamTrack, which means replaceTrack and a
+   * renegotiation on a live WHIP session, which is a real cost (viewers ride
+   * out a track change) to tell the encoder something it is told directly and
+   * for free by `maxFramerate` on the sender — see lib/live/whipClient.
+   */
+  let paintRate = frameRate;
+  let paintIntervalMs = 1000 / paintRate;
+
+  /**
+   * Per-paint durations, newest last, capped at a few seconds' worth.
+   *
+   * A ring rather than a running average: the whole question is the TAIL. A
+   * mean of 12ms hides a p95 of 60ms, and it is the 60ms frames — the ones
+   * that miss the budget — that the audience sees as a hitch. Samples are ms
+   * as `performance.now()` reports them, and the array is capped so a
+   * three-hour broadcast holds a bounded amount of memory.
+   */
+  const paintSamples: number[] = [];
+  const PAINT_SAMPLE_LIMIT = 240;
+
+  /**
+   * A percentile of the samples held right now, or 0 before there are any.
+   *
+   * Sorts a copy on demand — called from getStats (a 1Hz debug chip) and from
+   * the one summary log line, never from the paint loop, so an O(n log n) over
+   * 240 numbers costs nothing that matters.
+   */
+  const paintPercentile = (p: number): number => {
+    if (paintSamples.length === 0) return 0;
+    const sorted = [...paintSamples].sort((a, b) => a - b);
+    const index = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
+    return Math.round(sorted[index] * 10) / 10;
+  };
 
   console.info(`[camera] look mode: ${lookMode}`);
   if (portraitPublish) {
@@ -993,6 +1081,7 @@ export async function createFilteredStream(
   const paintAllTargets = () => {
     if (!running || painting) return;
     painting = true;
+    const startedAt = now();
     try {
       // Both canvases from the SAME call, in the same tick, off the same
       // decoded frame — so the creator's preview and the audience's picture can
@@ -1010,6 +1099,17 @@ export async function createFilteredStream(
     }
 
     lastPaintAt = now();
+    /**
+     * The cost of the paint that just ran, kept for its percentiles.
+     *
+     * Two `performance.now()` reads per frame — nanoseconds against a paint
+     * measured in milliseconds — and no logging on this path at all. The
+     * per-frame numbers exist to be summarised (see the log line in
+     * setScreenSource and getStats); a console call per frame would be its own
+     * source of jank and would drown the one line anyone reads.
+     */
+    paintSamples.push(lastPaintAt - startedAt);
+    if (paintSamples.length > PAINT_SAMPLE_LIMIT) paintSamples.shift();
     framesThisWindow += 1;
     const at = lastPaintAt;
     if (at - windowStartedAt >= 1000) {
@@ -1023,6 +1123,52 @@ export async function createFilteredStream(
     typeof document !== 'undefined' && document.visibilityState === 'hidden';
 
   /**
+   * WHO HOLDS THE CLOCK WHILE A SHARE IS RUNNING: the worker, always.
+   *
+   * Camera-only is unchanged — rVFC paints, aligned to decoded camera frames,
+   * and the ticker is the background-tab safety net PR #62 made it.
+   *
+   * Compositing inverts that, for two reasons. The cadence has to be 24 and
+   * rVFC arrives at the CAMERA's 30: throttling a 30Hz signal down to 24 can
+   * only be done by dropping every fifth callback, which is a 24fps average
+   * made of 33ms and 66ms gaps — an uneven cadence is exactly what "stutter"
+   * describes, so an average is not good enough. And a creator who shares a
+   * chart is about to go and look at the chart, which means the broadcaster
+   * tab is hidden and rVFC is not being delivered at all: the worker is the
+   * painter in the common case regardless. Its interval is retuned to 41.7ms
+   * (see setPaintRate), so it produces an EVEN 24 whether the tab is in front
+   * or behind, and rVFC stands down to a no-op that keeps its chain armed for
+   * the moment the share stops.
+   *
+   * Where a Worker cannot be built at all — a CSP without `worker-src blob:` —
+   * there is nobody else, so rVFC keeps painting and `dueForPaint` throttles
+   * it. That path gets the 24fps average with the uneven gaps, which is worse
+   * than this one and much better than 30fps of work the machine cannot do.
+   */
+  const tickerOwnsClock = () => compositing && ticker !== null;
+
+  /**
+   * The rVFC fallback's throttle. Camera-only never asks.
+   *
+   * A DEADLINE that accumulates rather than a "has an interval passed since
+   * the last paint?" test, which is the same trap the ticker's staleness check
+   * documents: with a 30Hz source and a 41.7ms interval, a since-last-paint
+   * test skips every other callback and lands on 15fps. Advancing a deadline
+   * by one interval per paint keeps the long-run average at 24 instead.
+   */
+  let nextCompositeDueAt = 0;
+  const dueForPaint = (): boolean => {
+    if (!compositing) return true;
+    const at = now();
+    if (at < nextCompositeDueAt) return false;
+    // Re-anchored when the deadline is more than an interval in the past — a
+    // tab that was hidden for a minute must not come back owing 1,400 paints.
+    nextCompositeDueAt =
+      at - nextCompositeDueAt > paintIntervalMs ? at + paintIntervalMs : nextCompositeDueAt + paintIntervalMs;
+    return true;
+  };
+
+  /**
    * The frame callback chain: paint, then ask for the next one.
    *
    * This is the OPTIMISATION, not the guarantee. It aligns paints to decoded
@@ -1033,7 +1179,10 @@ export async function createFilteredStream(
     frameCallbackId = null;
     rafId = null;
     if (!running) return;
-    paintAllTargets();
+    // Camera-only: every decoded frame, exactly as before. Compositing: the
+    // worker is painting and this chain stays armed but silent — see
+    // tickerOwnsClock — or, with no worker, `dueForPaint` throttles it to 24.
+    if (!tickerOwnsClock() && dueForPaint()) paintAllTargets();
     scheduleVideoFrame();
   };
 
@@ -1114,8 +1263,11 @@ export async function createFilteredStream(
 
     // The interval is baked into the source rather than posted in afterwards:
     // the worker has no protocol, no state and no message handler, so there
-    // is nothing to get out of step with the main thread.
-    const source = `let n=0;setInterval(()=>postMessage(++n),${1000 / frameRate});`;
+    // is nothing to get out of step with the main thread. Which also means a
+    // rate change is a new worker — see setPaintRate, and note that the only
+    // thing that changes the rate is a creator toggling a share, so this is
+    // twice a broadcast and not twice a second.
+    const source = `let n=0;setInterval(()=>postMessage(++n),${paintIntervalMs});`;
 
     try {
       const blob = new Blob([source], { type: 'text/javascript' });
@@ -1146,7 +1298,14 @@ export async function createFilteredStream(
           loop up within two frames instead of leaving the audience on a
           still.
         */
-        if (!documentHidden() && now() - lastPaintAt < 2000 / frameRate) return;
+        // Compositing: this IS the clock, at 41.7ms, hidden or not. rVFC is
+        // standing down (see tickerOwnsClock) so there is nobody to defer to
+        // and nothing to de-duplicate against.
+        if (tickerOwnsClock()) {
+          paintAllTargets();
+          return;
+        }
+        if (!documentHidden() && now() - lastPaintAt < 2 * paintIntervalMs) return;
         paintAllTargets();
       };
     } catch (err) {
@@ -1173,6 +1332,65 @@ export async function createFilteredStream(
   }
 
   /**
+   * Move the whole loop to a new rate. Called on a share starting or stopping.
+   *
+   * The worker is restarted rather than told, because its interval is baked
+   * into its source and it has no message handler to tell (see startTicker).
+   * That costs a Blob, a URL and a thread once per toggle, which is a price
+   * paid twice in a broadcast — the alternative, a protocol between the two
+   * threads, is more moving parts than the thing it would save.
+   *
+   * The samples are dropped with the rate they were measured under: a p95 that
+   * mixes 30fps composite frames with 24fps ones describes neither.
+   */
+  const setPaintRate = (rate: number) => {
+    if (rate === paintRate) return;
+    paintRate = rate;
+    paintIntervalMs = 1000 / rate;
+    nextCompositeDueAt = 0;
+    paintSamples.length = 0;
+    // Only if there is one. A browser that could not build a worker before
+    // cannot build one now, and re-running startTicker would only re-log the
+    // warning it already logged.
+    if (ticker) {
+      stopTicker();
+      startTicker();
+    }
+  };
+
+  /**
+   * The ONE line that says whether the composite is actually keeping up.
+   *
+   * Deferred a few seconds rather than logged on the spot, because the numbers
+   * do not exist yet when a share starts — the first paints include the
+   * screen's first decodes and a canvas resize, and a p95 over four frames is
+   * noise. A single timer, cleared whenever the share ends, in the same spirit
+   * as PR #62 and #63's one startup line each: enough to answer "did it fit in
+   * the budget?" from a creator's console, and nothing per frame.
+   */
+  let paintSummaryTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearPaintSummary = () => {
+    if (paintSummaryTimer !== null) {
+      clearTimeout(paintSummaryTimer);
+      paintSummaryTimer = null;
+    }
+  };
+  const schedulePaintSummary = () => {
+    clearPaintSummary();
+    paintSummaryTimer = setTimeout(() => {
+      paintSummaryTimer = null;
+      if (!running || !compositing) return;
+      const budget = Math.round(paintIntervalMs * 10) / 10;
+      const p95 = paintPercentile(95);
+      console.info(
+        `[composite] paint p50=${paintPercentile(50)}ms p95=${p95}ms over ` +
+          `${paintSamples.length} frames — budget ${budget}ms @${paintRate}fps ` +
+          `(${p95 <= budget ? 'fits' : 'OVER BUDGET'}), measured ${measuredFps}fps`,
+      );
+    }, PAINT_SUMMARY_DELAY_MS);
+  };
+
+  /**
    * Which painter is doing the work, announced once per transition.
    *
    * Nothing branches on this — the dedup above needs no mode — so it is
@@ -1187,7 +1405,11 @@ export async function createFilteredStream(
       cancelVideoFrame();
       console.info('[camera] ticker: worker');
     } else {
-      console.info('[camera] ticker: rvfc');
+      // While compositing the worker keeps the clock whether the tab is in
+      // front or behind (see tickerOwnsClock), so coming back into view does
+      // not hand the loop over — the chain is re-armed for the moment the
+      // share stops, and it says which painter is actually running.
+      console.info(`[camera] ticker: ${tickerOwnsClock() ? 'worker (composite)' : 'rvfc'}`);
       scheduleVideoFrame();
     }
   };
@@ -1248,6 +1470,10 @@ export async function createFilteredStream(
     },
     getStats: () => ({
       fps: measuredFps,
+      paintP50: paintPercentile(50),
+      paintP95: paintPercentile(95),
+      frameBudgetMs: Math.round(paintIntervalMs * 10) / 10,
+      paintRate,
       lookMode,
       portrait: portraitPublish !== null,
       compositing,
@@ -1279,6 +1505,10 @@ export async function createFilteredStream(
         // resizes the canvas to the camera and draws it, so the picture is
         // already correct before anything below has run.
         compositing = false;
+        // Back to the camera's own rate, and back to rVFC as the painter. The
+        // camera-only path is 30fps in every respect the moment this lands.
+        setPaintRate(frameRate);
+        clearPaintSummary();
         if (screenVideo) {
           // Detached from the dead track, but the ELEMENT is kept. Creating
           // one costs a decode pipeline set-up, and a creator toggling a share
@@ -1317,10 +1547,16 @@ export async function createFilteredStream(
       });
 
       compositing = true;
+      // The rate follows the mode, and it moves BEFORE the first composite
+      // frame is painted: a share that started at 30 and dropped to 24 a
+      // moment later would spend that moment doing the work this change
+      // exists to avoid.
+      setPaintRate(COMPOSITE_FRAME_RATE);
+      schedulePaintSummary();
       const settings = screenTrack.getSettings();
       const rects = layoutRects(currentLayout, currentPipCorner);
       console.info(
-        `[composite] on — ${COMPOSITE_WIDTH}x${COMPOSITE_HEIGHT} ${currentLayout}: screen ` +
+        `[composite] on @${paintRate}fps — ${COMPOSITE_WIDTH}x${COMPOSITE_HEIGHT} ${currentLayout}: screen ` +
           `${settings.width ?? '?'}x${settings.height ?? '?'} contained in ` +
           `${rects.screen.width}x${rects.screen.height} at y=${rects.screen.y}, camera ` +
           (rects.face
@@ -1341,6 +1577,7 @@ export async function createFilteredStream(
     stop: () => {
       running = false;
       cancelVideoFrame();
+      clearPaintSummary();
       // The worker holds an interval on a thread of its own: nothing about
       // this canvas going away stops it, and a creator who ends a broadcast
       // and starts another would accumulate one live worker per broadcast,
