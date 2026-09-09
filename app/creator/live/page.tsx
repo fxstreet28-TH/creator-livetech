@@ -535,6 +535,9 @@ function LiveStudio({ creatorId, creatorName }: { creatorId: string; creatorName
       cameraReady={cameraReady}
       submitError={submitError}
       submitPlacement={mobile ? 'sticky' : 'inline'}
+      // 1080p is offered on the desktop studio only. See the option's
+      // `desktopOnly` note in lib/live/constants.
+      desktop={!mobile}
     />
   );
 

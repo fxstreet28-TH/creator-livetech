@@ -25,11 +25,9 @@
  * something that can only fail.
  */
 
-import {
-  SCREEN_CAPTURE_MAX_FRAME_RATE,
-  SCREEN_CAPTURE_MAX_HEIGHT,
-  SCREEN_CAPTURE_MAX_WIDTH,
-} from './compositeCanvas';
+import { SCREEN_CAPTURE_MAX_FRAME_RATE, screenCaptureCapFor } from './compositeCanvas';
+import { DEFAULT_QUALITY } from './constants';
+import type { BroadcastQuality } from './types';
 
 /** A screen capture that is running, and the one way to end it. */
 export interface ScreenShareSession {
@@ -72,8 +70,26 @@ export function isScreenShareSupported(): boolean {
  */
 export async function startScreenShare(
   onEnded?: () => void,
+  /**
+   * The rung the broadcast is publishing at. Decides the capture cap.
+   *
+   * Defaulted rather than required so the 720p behaviour is what a caller that
+   * says nothing gets — the cap is a performance decision this module owns, and
+   * a caller forgetting to pass it must not silently uncap a 4K monitor.
+   */
+  quality: BroadcastQuality = DEFAULT_QUALITY,
 ): Promise<ScreenShareSession | null> {
   if (!isScreenShareSupported()) return null;
+
+  /**
+   * How large a capture this rung can actually use.
+   *
+   * 1280x720 at 720p and 1920x1080 at 1080p — the slot the share is drawn into
+   * scales with the frame, so the cap has to as well or a 1080p composite is a
+   * 720p chart stretched across more pixels, which costs bitrate and buys
+   * nothing. See screenCaptureCapFor for the cost side of that.
+   */
+  const cap = screenCaptureCapFor(quality);
 
   let stream: MediaStream;
   try {
@@ -110,8 +126,8 @@ export async function startScreenShare(
        * source is free where dropping frames later is not.
        */
       video: {
-        width: { max: SCREEN_CAPTURE_MAX_WIDTH },
-        height: { max: SCREEN_CAPTURE_MAX_HEIGHT },
+        width: { max: cap.width },
+        height: { max: cap.height },
         frameRate: { max: SCREEN_CAPTURE_MAX_FRAME_RATE },
       },
       audio: false,
@@ -172,11 +188,11 @@ export async function startScreenShare(
    * window.
    */
   const native = track.getSettings();
-  if ((native.width ?? 0) > SCREEN_CAPTURE_MAX_WIDTH || (native.height ?? 0) > SCREEN_CAPTURE_MAX_HEIGHT) {
+  if ((native.width ?? 0) > cap.width || (native.height ?? 0) > cap.height) {
     try {
       await track.applyConstraints({
-        width: { max: SCREEN_CAPTURE_MAX_WIDTH },
-        height: { max: SCREEN_CAPTURE_MAX_HEIGHT },
+        width: { max: cap.width },
+        height: { max: cap.height },
         frameRate: { max: SCREEN_CAPTURE_MAX_FRAME_RATE },
       });
     } catch (err) {
@@ -201,7 +217,8 @@ export async function startScreenShare(
   console.info(
     `[screen] sharing ${settings.width ?? '?'}x${settings.height ?? '?'} @${settings.frameRate ?? '?'}fps` +
       (settings.displaySurface ? ` (${settings.displaySurface})` : '') +
-      capped,
+      capped +
+      ` | cap ${cap.width}x${cap.height} for ${quality}`,
   );
 
   /**

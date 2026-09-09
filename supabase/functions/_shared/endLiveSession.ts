@@ -29,7 +29,7 @@ import {
   estimateLiveCost,
   stopEgress,
 } from './live.ts';
-import type { LiveDeliveryMode } from './live.ts';
+import type { BroadcastQuality, LiveDeliveryMode } from './live.ts';
 
 /** The `live_sessions` row, as this module reads it. */
 export interface LiveSessionRow {
@@ -45,6 +45,8 @@ export interface LiveSessionRow {
   livekit_egress_id: string | null;
   /** Set only on a session carried by our own MediaMTX. See estimateLiveCost. */
   origin_room_id?: string | null;
+  /** The rung this session published at. Null on rows written before it existed. */
+  broadcast_quality?: string | null;
   metadata: unknown;
   [key: string]: unknown;
 }
@@ -206,7 +208,19 @@ export async function closeLiveSession(
    * set at create and never changes, so it is the honest record.
    */
   const delivery: LiveDeliveryMode = session.origin_room_id ? 'origin' : 'llhls';
-  const cost = estimateLiveCost(durationMinutes, peakViewers, delivery);
+  /**
+   * What the audience line is priced at, read from the row for the same reason
+   * `delivery` is: it is what this session ACTUALLY published at, not what the
+   * form would offer today. A 1080p session carries 1.5x the bytes of a 720p
+   * one, and pricing every session at one rung was fine only while there was
+   * effectively one rung.
+   *
+   * An unrecognised or absent value falls back to 720p inside
+   * bunnyThbPerViewerMinute — the rate every session was charged before the
+   * rung was selectable, so no historical row reprices itself.
+   */
+  const quality = (session.broadcast_quality ?? '720p') as BroadcastQuality;
+  const cost = estimateLiveCost(durationMinutes, peakViewers, delivery, quality);
   const nowIso = new Date().toISOString();
 
   const { error: updateErr } = await supabase

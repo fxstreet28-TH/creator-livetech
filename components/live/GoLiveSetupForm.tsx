@@ -140,6 +140,15 @@ interface GoLiveSetupFormProps {
    * phone ends up able to press a button the desktop would have refused.
    */
   submitPlacement?: 'inline' | 'sticky';
+  /**
+   * Whether this is the desktop studio. Decides if 1080p is on offer.
+   *
+   * Passed rather than measured here: the page has already resolved the media
+   * query to choose between two whole layouts (see useIsMobileViewport), and a
+   * second `matchMedia` in this component could disagree with it for a frame
+   * and offer a rung the studio around it cannot serve.
+   */
+  desktop?: boolean;
 }
 
 const INPUT_CLASS =
@@ -157,6 +166,7 @@ export function GoLiveSetupForm({
   cameraReady = false,
   submitError,
   submitPlacement = 'inline',
+  desktop = true,
 }: GoLiveSetupFormProps) {
   const titleId = useId();
   const titleErrorId = useId();
@@ -252,7 +262,15 @@ export function GoLiveSetupForm({
           onChange={(event) => set('quality', event.target.value as BroadcastQuality)}
           className={`mt-2 h-12 ${INPUT_CLASS} py-0`}
         >
-          {QUALITY_OPTIONS.map((option) => {
+          {QUALITY_OPTIONS.filter(
+            // 1080p is a desktop rung — see `desktopOnly` on the option. Kept
+            // in the list where it is the value already chosen, which a
+            // creator can reach by shrinking a desktop window past the
+            // breakpoint: dropping the option out from under a live selection
+            // would leave the select rendering blank while still holding
+            // '1080p', and the studio would publish a rung the form denies.
+            (option) => !option.desktopOnly || desktop || option.value === value.quality,
+          ).map((option) => {
             // Options above the tier cap stay in the list, disabled, with the
             // tier that would unlock them — the same reasoning as the PPV
             // option in VisibilityToggle. Hiding them would leave a creator
