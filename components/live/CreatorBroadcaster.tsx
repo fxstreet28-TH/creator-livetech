@@ -93,7 +93,14 @@ import {
   type ScreenShareSession,
 } from '@/lib/live/screenShareCapture';
 import {
+  cachedDualCameraTier,
+  countVideoInputs,
+  probeDualCamera,
+  type DualCameraTier,
+} from '@/lib/live/dualCameraCapture';
+import {
   COMPOSITE_FRAME_RATE,
+  COMPOSITE_SIZE_720,
   COMPOSITE_LAYOUT_LABELS,
   COMPOSITE_LAYOUT_ORDER,
   DEFAULT_COMPOSITE_LAYOUT,
@@ -301,6 +308,43 @@ export interface BroadcastControls {
   pipCorner: PipCorner;
   setCompositeLayout: (layout: CompositeLayout) => void;
   setPipCorner: (corner: PipCorner) => void;
+
+  /* ------------------------------------------------- the phone's composite */
+
+  /**
+   * Whether to offer a dual-camera control at all.
+   *
+   * The phone's answer to `screenShareAvailable`, and false for the mirror
+   * image of its reasons: a desktop has getDisplayMedia and one webcam, a
+   * phone has two cameras and no getDisplayMedia. False on every desktop, and
+   * false on a phone reporting fewer than two cameras — where, exactly like
+   * the share button, the control is ABSENT rather than disabled.
+   */
+  dualCameraAvailable: boolean;
+  /** True while the back camera is being composited above the front one. */
+  dualCameraOn: boolean;
+  /**
+   * Probe the device and mount the second camera, or unmount it.
+   *
+   * Not instant: a first tap opens a camera and then spends up to a second and
+   * a half watching BOTH cameras deliver frames before it will publish a
+   * stacked frame. `dualCameraBusy` is that window.
+   */
+  toggleDualCamera: () => void;
+  dualCameraBusy: boolean;
+  /**
+   * What this device turned out to be able to do, once it has been asked.
+   * Null before the first tap — see lib/live/dualCameraCapture.
+   */
+  dualCameraTier: DualCameraTier | null;
+  /**
+   * Thai, renderable, and the reason a failed tap is not a dead button: the
+   * creator asked a question, the phone answered it, and they are owed the
+   * answer in words. Null while there is nothing to say.
+   */
+  dualCameraNotice: string | null;
+  /** Dismiss the notice above. */
+  clearDualCameraNotice: () => void;
 }
 
 /**
@@ -504,6 +548,64 @@ export function CreatorBroadcaster({
     serverHasNoScreenShare,
   );
   const [screenSharing, setScreenSharing] = useState(false);
+
+  /*
+    ============================================================================
+    THE PHONE'S ANSWER TO A SCREEN SHARE: THE BACK CAMERA IN THE TOP SLOT.
+    ============================================================================
+
+    iOS has no getDisplayMedia in any browser, so the block above is dead code
+    on a phone and always will be. What a phone DOES have is a second camera,
+    and a creator pointing it at a trading terminal gets the same broadcast
+    shape the desktop composite gives: something to look at on top, the person
+    talking about it below, one 9:16 frame.
+
+    WHETHER THE DEVICE WILL ACTUALLY DO IT IS NOT KNOWABLE FROM HERE. Most
+    iPhones hand out one active camera at a time through getUserMedia whatever
+    their hardware can do, so this is a runtime question asked at the moment
+    the creator taps — see lib/live/dualCameraCapture. Three outcomes, and the
+    studio has to be honest about all three rather than assuming the good one.
+  */
+
+  /**
+   * The second camera, while one is mounted. Ours to stop, and only ours.
+   *
+   * A ref rather than state because nothing renders from it and because the
+   * teardown path has to be able to reach it from a closure that has no
+   * render's worth of context.
+   */
+  const secondCameraRef = useRef<MediaStream | null>(null);
+  /**
+   * Whether to render the dual-camera control at all — the Tier 3 gate.
+   *
+   * Null until the count is read, which happens once the broadcast's own
+   * camera is open: before a granted permission `enumerateDevices` hides
+   * labels and can under-report, so a count taken any earlier is a different
+   * count. False on a device reporting fewer than two cameras, and on every
+   * desktop — a desktop creator has getDisplayMedia and a real screen to
+   * share, which is strictly the better source.
+   */
+  const [dualCameraOffered, setDualCameraOffered] = useState(false);
+  /** The verdict, once this device has been asked. Null until then. */
+  const [dualCameraTier, setDualCameraTier] = useState<DualCameraTier | null>(() =>
+    // Lazily, from the module-level cache: a device that already refused
+    // during an earlier broadcast on this page has not changed its mind, and
+    // the cache is null on the server and on a first mount, so there is no
+    // hydration mismatch to have. See lib/live/dualCameraCapture.
+    cachedDualCameraTier(),
+  );
+  const [dualCameraOn, setDualCameraOn] = useState(false);
+  const [dualCameraBusy, setDualCameraBusy] = useState(false);
+  /**
+   * What to tell the creator when the device said no. Thai, renderable, null
+   * while there is nothing to say.
+   *
+   * It exists because the alternative — a button that does nothing — is the
+   * worst possible answer to "can this phone do it?". The creator tapped, the
+   * phone spent a second and a half deciding, and they are owed the outcome in
+   * words rather than a control that silently stays off.
+   */
+  const [dualCameraNotice, setDualCameraNotice] = useState<string | null>(null);
   /**
    * How the composite is arranged, and where the จอลอย face sits.
    *
@@ -889,7 +991,18 @@ export function CreatorBroadcaster({
               exactly the same picture, which is worse than not offering the
               option at all.
             */
-            compositeSizeFor(quality),
+            /*
+              720x1280 ON A PHONE, WHATEVER THE RUNG SAYS.
+
+              1080p is desktopOnly on the go-live form, so this is a guard
+              rather than a branch anyone reaches today — but the mobile
+              composite is TWO CAMERA DECODES plus a paint plus an encode on a
+              device with a battery and no fan, and 1080x1920 at 24fps is where
+              a phone thermally throttles and starts dropping frames the
+              audience sees. 720p is the honest mobile ceiling; 1080p stays
+              what PR #65 made it, a desktop rung.
+            */
+            portraitRef.current ? COMPOSITE_SIZE_720 : compositeSizeFor(quality),
           );
           filteredRef.current = filtered;
           // The arrangement the creator last chose, carried across a
@@ -1064,6 +1177,15 @@ export function CreatorBroadcaster({
       screenShareRef.current?.stop();
       screenShareRef.current = null;
       setScreenSharing(false);
+      /*
+        And neither does a second camera. Video tracks only — the stream in
+        this ref may be the one carrying the published microphone (see
+        endDualCamera), and the audio is released a few lines below with the
+        rest of the original camera stream.
+      */
+      secondCameraRef.current?.getVideoTracks().forEach((track) => track.stop());
+      secondCameraRef.current = null;
+      setDualCameraOn(false);
       // The arrangement is per-broadcast and this is where a broadcast ends.
       // Deliberately NOT reset when a share merely stops — see the state above.
       compositeLayoutRef.current = DEFAULT_COMPOSITE_LAYOUT;
@@ -1272,6 +1394,17 @@ export function CreatorBroadcaster({
   const flipCamera = useCallback(async () => {
     const filtered = filteredRef.current;
     if (!filtered || flippingCamera) return;
+    /*
+      Nothing to flip to while both cameras are already on screen.
+
+      The dual-cam composite is holding the front camera in the face slot and
+      the back camera in the chart slot; flipping the primary here would point
+      the face slot at the camera the top slot is already drawing, and publish
+      the same picture twice. The button is disabled in the studio for the same
+      reason — this is the guard that makes that true rather than merely
+      rendered.
+    */
+    if (secondCameraRef.current) return;
 
     const next: CameraFacing = facingRef.current === 'user' ? 'environment' : 'user';
     setFlippingCamera(true);
@@ -1436,6 +1569,214 @@ export function CreatorBroadcaster({
     };
   }, []);
 
+  /*
+    ==========================================================================
+    THE DUAL-CAMERA CONTROL: WHETHER IT EXISTS, AND WHAT IT DOES.
+    ==========================================================================
+  */
+
+  /**
+   * Read the camera count ONCE the broadcast's own camera is open.
+   *
+   * Not on mount and not on tap. Not on mount because `enumerateDevices`
+   * without a granted camera permission returns entries with empty labels and
+   * has been observed to under-report on Safari, so the answer would be wrong
+   * in exactly the direction that hides a working feature. Not on tap because
+   * this decides whether the BUTTON RENDERS, and a control that appears the
+   * instant before it is pressed is a control that gets pressed by accident.
+   *
+   * Phone broadcasts only. A desktop creator has getDisplayMedia and a real
+   * screen to share, which is a strictly better second source than a webcam
+   * pointed at their own monitor.
+   */
+  useEffect(() => {
+    if (phase !== 'live') return;
+    if (portrait !== true || desktopBroadcastRef.current !== false) return;
+    let cancelled = false;
+    void countVideoInputs().then((count) => {
+      if (cancelled) return;
+      const offered = count >= 2;
+      setDualCameraOffered(offered);
+      // Tier 3 recorded as a tier rather than as an absence, so the dev bench
+      // and the log line agree with what the studio decided to render.
+      if (!offered) setDualCameraTier('unavailable');
+      console.info(`[dualcam] ${count} camera(s) — control ${offered ? 'offered' : 'hidden'}`);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [phase, portrait]);
+
+  /**
+   * Put the studio back to one camera.
+   *
+   * VIDEO TRACKS ONLY, and that is load-bearing rather than tidy. The second
+   * source may BE the stream the broadcast opened at connect time — when a
+   * creator turns dual-cam on while already on the back camera, the two
+   * cameras swap slots (see toggleDualCamera) and the original stream, which
+   * is the one carrying the published MICROPHONE, ends up in the top slot.
+   * `getTracks().forEach(stop)` there would end the broadcast's audio.
+   */
+  const clearDualCameraNotice = useCallback(() => setDualCameraNotice(null), []);
+
+  const endDualCamera = useCallback(
+    (reason: string) => {
+      const second = secondCameraRef.current;
+      secondCameraRef.current = null;
+      second?.getVideoTracks().forEach((track) => track.stop());
+      void filteredRef.current?.setSecondSource(null);
+      // The encoder's cap follows the canvas back up to 30, in-band, exactly
+      // as it does when a desktop share stops.
+      void whipRef.current?.setMaxFramerate(resolutionFor(quality).frameRate);
+      setDualCameraOn(false);
+      console.info(`[dualcam] off — ${reason}`);
+    },
+    [quality],
+  );
+
+  /**
+   * Turn the back camera into the top slot, if this phone will allow it.
+   *
+   * THE ORDER OF THE TWO CAMERAS IS NOT THE ORDER THEY WERE OPENED IN. The
+   * layout Por asked for is the desktop `split` geometry with the CHART on top
+   * and the FACE below, and the pipeline draws its primary source into the
+   * bottom slot and its second source into the top one. So the front camera
+   * has to be the primary whichever camera the broadcast happened to be on:
+   * a creator who taps this while already on the back camera gets the two
+   * SWAPPED — the front camera the probe just opened becomes the face, and the
+   * back camera they were publishing moves up into the chart slot. No
+   * republish, no renegotiation; both are `srcObject` assignments on detached
+   * elements.
+   *
+   * Everything that can fail has already failed inside probeDualCamera by the
+   * time this reads `result.tier` — including the case where asking the
+   * question killed the live camera, which the probe reopens and reports as
+   * `recoveredPrimary` for the swap below.
+   */
+  const toggleDualCamera = useCallback(async () => {
+    if (dualCameraBusy) return;
+    if (secondCameraRef.current) {
+      endDualCamera('creator turned it off');
+      return;
+    }
+
+    const filtered = filteredRef.current;
+    const primary = sourceVideoRef.current;
+    if (!filtered || !primary) return;
+
+    const primaryFacing = facingRef.current;
+    setDualCameraBusy(true);
+    setDualCameraNotice(null);
+
+    /** Point the pipeline's FACE slot at a camera, and re-read what it can do. */
+    const adoptPrimary = async (opened: CameraOpenResult) => {
+      await filtered.setSource(opened.stream);
+      sourceVideoRef.current = opened.stream;
+      setCamera(opened);
+      // A different camera has a different zoom range, and carrying the old
+      // level over would be a crop nobody asked for — the same reset a flip
+      // does, for the same reason.
+      setZoomRange(hardwareZoomRange(opened.stream.getVideoTracks()[0]));
+      setZoomState(1);
+      filtered.setZoom(1);
+    };
+
+    try {
+      const result = await probeDualCamera({
+        quality,
+        portrait: portraitRef.current,
+        primary,
+        primaryFacing,
+      });
+      setDualCameraTier(result.tier);
+
+      // The probe took the live camera down and reopened it. This has to
+      // happen whatever the tier: the pipeline is currently drawing a track
+      // that no longer produces frames.
+      if (result.recoveredPrimary) await adoptPrimary(result.recoveredPrimary);
+
+      if (result.tier !== 'dual' || !result.second) {
+        /*
+          TIER 2 AND TIER 3: SAY SO, AND OFFER THE CONTROL THAT DOES WORK.
+
+          What is deliberately NOT done here is mount one camera into a
+          two-slot frame. A stacked layout with a frozen half is the failure
+          mode this whole change is built to avoid — the creator cannot see it
+          from behind their own phone, so the first person to notice would be
+          a viewer. One live camera and the flip button beside this one is a
+          worse broadcast than two cameras and a strictly better one than a
+          half-dead composite.
+        */
+        setDualCameraNotice(
+          result.tier === 'unavailable'
+            ? 'อุปกรณ์นี้มีกล้องตัวเดียว จึงใช้กล้องคู่ไม่ได้'
+            : 'โทรศัพท์เครื่องนี้เปิดกล้องหน้า-หลังพร้อมกันไม่ได้ ใช้ปุ่มสลับกล้องแทนได้',
+        );
+        return;
+      }
+
+      // The pipeline may have been torn down while the probe was opening a
+      // camera — a reconnect, or the creator ending the live. The camera is
+      // released rather than left holding the device behind a studio that is
+      // gone.
+      if (filteredRef.current !== filtered) {
+        result.second.stream.getVideoTracks().forEach((track) => track.stop());
+        return;
+      }
+
+      let back = result.second.stream;
+      if (primaryFacing !== 'user') {
+        // Already on the back camera: the probe opened the FRONT one, so it is
+        // the face and the camera we were publishing moves to the top slot.
+        back = sourceVideoRef.current ?? primary;
+        await adoptPrimary(result.second);
+        facingRef.current = 'user';
+        setFacing('user');
+        onFacingModeChange?.('user');
+      }
+
+      secondCameraRef.current = back;
+      await filtered.setSecondSource(back, { fit: 'cover', kind: 'camera' });
+      /*
+        24fps at the encoder as well as at the canvas.
+
+        Two camera decodes, a paint that draws both and an encode of a frame
+        with a chart in half of it is the same budget as a screen share and a
+        face — on a device with a battery and no fan. Capping the encoder is
+        what makes a frame it cannot finish in time a DROPPED frame rather than
+        a queued one, and a queue is the multi-second lag PR #64 chased down.
+      */
+      void whipRef.current?.setMaxFramerate(COMPOSITE_FRAME_RATE);
+      setDualCameraOn(true);
+    } catch (err) {
+      // Reachable only where the probe could not put the phone back — it
+      // reopened nothing and the broadcast has no camera. Surfaced rather than
+      // logged, because unlike every other failure in this flow the creator
+      // cannot carry on regardless.
+      console.error('[dualcam] could not mount the second camera', err);
+      setDualCameraNotice('เปิดกล้องคู่ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง');
+      setDualCameraTier('single');
+      secondCameraRef.current = null;
+      setDualCameraOn(false);
+    } finally {
+      setDualCameraBusy(false);
+    }
+  }, [dualCameraBusy, endDualCamera, quality, onFacingModeChange]);
+
+  /**
+   * Never leave a second camera running behind a studio that is gone.
+   *
+   * The same rule as the screen share above, and the same reason: a phone with
+   * its back camera light on and nothing broadcasting it is a privacy problem,
+   * not an untidy one. Video tracks only — see endDualCamera.
+   */
+  useEffect(() => {
+    return () => {
+      secondCameraRef.current?.getVideoTracks().forEach((track) => track.stop());
+      secondCameraRef.current = null;
+    };
+  }, []);
+
   // The self-view is the canvas, so the output flip is already in these
   // frames — which is exactly why the creator's own preference cannot be read
   // off `mirrorPreview` alone.
@@ -1565,6 +1906,13 @@ export function CreatorBroadcaster({
           lookMode,
           captureFps,
           screenShareAvailable: screenShareReady,
+          dualCameraAvailable: dualCameraOffered,
+          dualCameraOn,
+          toggleDualCamera: () => void toggleDualCamera(),
+          dualCameraBusy,
+          dualCameraTier,
+          dualCameraNotice,
+          clearDualCameraNotice,
           screenSharing,
           toggleScreenShare: () => void toggleScreenShare(),
           compositeLayout,

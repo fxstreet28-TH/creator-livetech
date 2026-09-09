@@ -87,7 +87,7 @@
  * finishes in the time it takes two cameras to deliver two frames.
  */
 
-import { openCamera } from './cameraCapture';
+import { openCamera, type CameraOpenResult } from './cameraCapture';
 import type { CameraFacing } from './livekitClient';
 import type { BroadcastQuality } from './types';
 
@@ -101,8 +101,12 @@ export interface DualCameraProbeResult {
    * frames. Handed over rather than closed and reopened by the caller — the
    * probe already paid for the open, and a second one is another chance for
    * the device to change its mind.
+   *
+   * The whole `openCamera` result rather than just the stream, so the studio
+   * can report what this camera actually gave (`describeCamera`) and read its
+   * hardware zoom range, exactly as it does for a flip.
    */
-  second: MediaStream | null;
+  second: CameraOpenResult | null;
   /** Which way `second` faces. The opposite of the primary. */
   secondFacing: CameraFacing | null;
   /**
@@ -113,7 +117,7 @@ export interface DualCameraProbeResult {
    * Null in the happy path and null when the primary survived a failed probe,
    * which are the two common cases.
    */
-  recoveredPrimary: MediaStream | null;
+  recoveredPrimary: CameraOpenResult | null;
   /** How many videoinput devices `enumerateDevices` reported. */
   cameraCount: number;
   /** One line, diagnostic, English. Logged and shown in the dev bench. */
@@ -337,11 +341,9 @@ export async function probeDualCamera(
     return refuse('single', 'the broadcast has no video track to keep');
   }
 
-  let second: MediaStream | null = null;
+  let second: CameraOpenResult | null = null;
   try {
-    second = (
-      await openCamera({ quality, portrait, facingMode: secondFacing, audio: false })
-    ).stream;
+    second = await openCamera({ quality, portrait, facingMode: secondFacing, audio: false });
   } catch (err) {
     const name = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
     // The device said no outright — the cleanest of the three failures, and
@@ -349,7 +351,7 @@ export async function probeDualCamera(
     return refuse('single', `second camera (${secondFacing}) refused: ${name}`);
   }
 
-  const [secondTrack] = second.getVideoTracks();
+  const [secondTrack] = second.stream.getVideoTracks();
 
   /*
     BOTH PROOFS, IN PARALLEL AND ON THE SAME WALL CLOCK.
@@ -382,7 +384,7 @@ export async function probeDualCamera(
     is in, the one thing that is certainly not wanted is a camera nobody is
     drawing holding a sensor the primary may be waiting for.
   */
-  second.getTracks().forEach((track) => track.stop());
+  second.stream.getTracks().forEach((track) => track.stop());
   second = null;
 
   const why = !secondLive
@@ -404,11 +406,14 @@ export async function probeDualCamera(
   console.warn(`[dualcam] ${why} — reopening the ${primaryFacing} camera`);
   primary.getVideoTracks().forEach((track) => track.stop());
 
-  let recoveredPrimary: MediaStream;
+  let recoveredPrimary: CameraOpenResult;
   try {
-    recoveredPrimary = (
-      await openCamera({ quality, portrait, facingMode: primaryFacing, audio: false })
-    ).stream;
+    recoveredPrimary = await openCamera({
+      quality,
+      portrait,
+      facingMode: primaryFacing,
+      audio: false,
+    });
   } catch (err) {
     // Recovery failed, which is the one outcome this module cannot paper over:
     // the broadcast has no camera. Thrown so the studio's error path runs
