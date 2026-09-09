@@ -34,8 +34,19 @@
  * worth interrupting a broadcast for.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Camera, Loader2, Mic, MicOff, Sparkles, Video, VideoOff, WifiOff } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import {
+  Camera,
+  Loader2,
+  Mic,
+  MicOff,
+  ScreenShare,
+  ScreenShareOff,
+  Sparkles,
+  Video,
+  VideoOff,
+  WifiOff,
+} from 'lucide-react';
 import { getBrowserSupabase } from '@/lib/supabase-browser';
 import { markSessionLive, persistViewerCounts, startLiveEgress } from '@/lib/live/api';
 import {
@@ -77,6 +88,11 @@ import {
   type FilterId,
   type LookMode,
 } from '@/lib/live/cameraFilters';
+import {
+  isScreenShareSupported,
+  startScreenShare,
+  type ScreenShareSession,
+} from '@/lib/live/screenShareCapture';
 import {
   isDefaultOrientation,
   shouldFlipPreview,
@@ -254,6 +270,16 @@ export interface BroadcastControls {
    * see the prop.
    */
   captureFps: number;
+  /**
+   * Whether to offer a screen share at all: `getDisplayMedia` exists AND this
+   * is a desktop viewport. False on every phone, and false is a STATE rather
+   * than a disabled button — see the note on screenShareReady.
+   */
+  screenShareAvailable: boolean;
+  /** True while a screen share is being composited above the camera. */
+  screenSharing: boolean;
+  /** Start a share (the browser puts up its picker), or end the running one. */
+  toggleScreenShare: () => void;
 }
 
 /**
@@ -314,6 +340,11 @@ function blankPreview(
     track.enabled = enabled;
   });
 }
+
+/** See screenShareReady. There is no store behind this, so nothing to unsubscribe. */
+const subscribeToNothing = () => () => {};
+/** The server renders no screen-share button, because there is no browser there. */
+const serverHasNoScreenShare = () => false;
 
 export function CreatorBroadcaster({
   liveSessionId,
@@ -410,6 +441,54 @@ export function CreatorBroadcaster({
    * still a desktop creator to the camera and a phone one to this.
    */
   const desktopBroadcastRef = useRef<boolean | null>(null);
+
+  /**
+   * Whether this studio offers a "แชร์หน้าจอ" button at all.
+   *
+   * Two questions, both of which have to be yes, and NEITHER of them can be
+   * answered while rendering on the server — `navigator` does not exist there
+   * and `matchMedia` does not either, so this starts false and is filled in
+   * after mount. A button that appeared during hydration would be a mismatch;
+   * a button that appears a tick later is a button that appears.
+   *
+   *  - DOES THE BROWSER HAVE getDisplayMedia? Absent on iOS entirely and on
+   *    macOS Safari below 13. Where it is missing there is nothing to disable:
+   *    a greyed-out control is a promise that it might work later, and this
+   *    one never will on that device.
+   *  - IS THIS A DESKTOP VIEWPORT? The same 768px threshold the host layouts
+   *    use (PRs #49, #50, #61). A phone broadcaster is holding the camera they
+   *    are pointing at themselves; there is no second screen to share.
+   */
+  const screenShareOfferRef = useRef<boolean | null>(null);
+  const readScreenShareOffer = useCallback(() => {
+    // Cached on first read, because both halves of the answer are constants
+    // for the life of this studio: an API is present or it is not, and a
+    // creator who drags their window narrower mid-broadcast keeps the mode
+    // they started in — the same rule DESKTOP_PUBLISH_SCALE follows.
+    if (screenShareOfferRef.current === null) {
+      screenShareOfferRef.current = isScreenShareSupported() && isDesktopBroadcastViewport();
+    }
+    return screenShareOfferRef.current;
+  }, []);
+  /**
+   * `useSyncExternalStore` rather than state filled in by an effect, because
+   * the two renders differ and React has to be told so: the server has no
+   * `navigator` and must emit a row with no button, the client reads the real
+   * answer, and this is the hook that lets those disagree without it being a
+   * hydration mismatch. Nothing to subscribe to — the value never changes.
+   */
+  const screenShareReady = useSyncExternalStore(
+    subscribeToNothing,
+    readScreenShareOffer,
+    serverHasNoScreenShare,
+  );
+  const [screenSharing, setScreenSharing] = useState(false);
+  /**
+   * The running capture, held outside React so the teardown paths — the
+   * browser's own "Stop sharing" bar, the toggle, a reconnect, unmount — can
+   * all reach it without any of them being a render.
+   */
+  const screenShareRef = useRef<ScreenShareSession | null>(null);
 
   const [openMenu, setOpenMenu] = useState<'look' | 'camera' | null>(null);
   const [phase, setPhase] = useState<BroadcastPhase>('connecting');
@@ -870,6 +949,18 @@ export function CreatorBroadcaster({
       // strand on the origin box.
       whipAbort.abort();
       void whip?.close();
+      /*
+        A screen share does not survive the pipeline it was composited into.
+
+        This teardown runs when the broadcast is rebuilt from scratch — a
+        manual retry, a delivery change, unmount — and the new pipeline starts
+        camera-only with no source mounted. Leaving the capture running would
+        put the studio's toggle and the browser's stop bar into disagreement
+        about what is being broadcast, with the browser telling the truth.
+      */
+      screenShareRef.current?.stop();
+      screenShareRef.current = null;
+      setScreenSharing(false);
       // Order matters: the filter stops its draw loop and its canvas track,
       // then the camera itself is released. Stopping the camera first leaves
       // the loop drawing a dead <video>.
@@ -1112,6 +1203,103 @@ export function CreatorBroadcaster({
   }, [flippingCamera, quality, onFacingModeChange]);
 
 
+  /**
+   * Put the studio back to camera-only, whoever asked for it.
+   *
+   * The ONE fallback path, because there are three ways into it and they must
+   * not disagree: the creator presses the toggle again, the creator presses
+   * Chrome's floating "Stop sharing" bar, or the broadcast tears down and
+   * rebuilds. `stopCapture` is false for the second of those — the browser has
+   * already ended the source and calling stop() on it would be a no-op with a
+   * misleading log line.
+   *
+   * The broadcast does not move. Composite off is a flag inside the draw loop
+   * (see setScreenSource), so the canvas keeps painting, the track keeps
+   * flowing, the peer connection is untouched and no viewer reconnects — the
+   * picture simply becomes the camera again on the next frame.
+   */
+  const endScreenShare = useCallback((stopCapture: boolean) => {
+    const session = screenShareRef.current;
+    screenShareRef.current = null;
+    if (stopCapture) session?.stop();
+    void filteredRef.current?.setScreenSource(null);
+    setScreenSharing(false);
+  }, []);
+
+  /**
+   * Share a screen, or stop sharing one.
+   *
+   * DELIBERATELY NOT RECOVERABLE. If the source goes away — the tab is closed,
+   * the window is quit, the creator presses the browser's stop bar — this
+   * falls back to the camera and stays there until someone asks again.
+   * Re-opening the picker on the creator's behalf would be an app deciding to
+   * broadcast a screen that nobody chose, and re-opening it without the picker
+   * is not something the platform allows for exactly that reason.
+   *
+   * Nor is the choice remembered: every broadcast starts camera-only. A
+   * creator who shared a chart last Tuesday and has forgotten about it is one
+   * click from streaming whatever is on their screen now.
+   */
+  const toggleScreenShare = useCallback(async () => {
+    if (screenShareRef.current) {
+      endScreenShare(true);
+      return;
+    }
+
+    const filtered = filteredRef.current;
+    if (!filtered) return;
+
+    let session: ScreenShareSession | null = null;
+    try {
+      // The picker is the browser's, and dismissing it resolves to null —
+      // which must leave the studio exactly as it was: no error, no state
+      // change, no button stuck looking pressed.
+      session = await startScreenShare(() => endScreenShare(false));
+    } catch (err) {
+      // A policy or an extension refused. The broadcast is unaffected, so this
+      // is logged rather than raised as a broadcast error the way a camera
+      // failure is — the creator is still live, just not sharing.
+      console.error('[screen] could not start a share', err);
+      return;
+    }
+    if (!session) return;
+
+    // The pipeline may have been torn down during the seconds the picker was
+    // open — a reconnect, or the creator ending the live. Publishing into a
+    // dead canvas is not possible, so the capture is released instead of left
+    // running with Chrome's bar on screen and nothing behind it.
+    const target = filteredRef.current;
+    if (!target) {
+      session.stop();
+      return;
+    }
+
+    screenShareRef.current = session;
+    try {
+      await target.setScreenSource(session.stream);
+    } catch (err) {
+      console.error('[composite] could not mount the screen source', err);
+      endScreenShare(true);
+      return;
+    }
+    setScreenSharing(true);
+  }, [endScreenShare]);
+
+  /**
+   * Never leave a capture running behind a studio that is gone.
+   *
+   * Chrome's "Stop sharing" bar outlives the page that opened it if the track
+   * is not stopped, and a creator who ended their live and is looking at a
+   * summary screen while the browser insists they are still sharing their
+   * desktop is a privacy problem, not an untidy one.
+   */
+  useEffect(() => {
+    return () => {
+      screenShareRef.current?.stop();
+      screenShareRef.current = null;
+    };
+  }, []);
+
   // The self-view is the canvas, so the output flip is already in these
   // frames — which is exactly why the creator's own preference cannot be read
   // off `mirrorPreview` alone.
@@ -1240,6 +1428,9 @@ export function CreatorBroadcaster({
           portraitRefused: camera?.portraitRefused === true,
           lookMode,
           captureFps,
+          screenShareAvailable: screenShareReady,
+          screenSharing,
+          toggleScreenShare: () => void toggleScreenShare(),
         })}
       </>
     );
@@ -1389,6 +1580,26 @@ export function CreatorBroadcaster({
           label="เลือกลุค"
           value={filterLabelFor(filterId)}
         />
+        {/*
+          "แชร์หน้าจอ", and it is ABSENT rather than disabled where it cannot
+          work — see screenShareReady. On a phone, and on any browser without
+          getDisplayMedia, this row is exactly what it was before this feature.
+        */}
+        {screenShareReady && (
+          <ToggleButton
+            onClick={() => void toggleScreenShare()}
+            active={screenSharing}
+            icon={
+              screenSharing ? (
+                <ScreenShareOff size={16} aria-hidden />
+              ) : (
+                <ScreenShare size={16} aria-hidden />
+              )
+            }
+            label={screenSharing ? 'หยุดแชร์หน้าจอ' : 'แชร์หน้าจอ'}
+          />
+        )}
+
         <MenuButton
           ref={cameraButtonRef}
           open={openMenu === 'camera'}
@@ -1451,6 +1662,44 @@ function MenuButton({
       {label}
       {value && <span className="text-white/40">{value}</span>}
       {badge && <OrientationChangedBadge />}
+    </button>
+  );
+}
+
+/**
+ * A labelled on/off control in the bottom bar.
+ *
+ * Shaped like MenuButton rather than like the icon-only ControlButton beside
+ * it, because it needs a word: mic and camera are universal glyphs and a
+ * screen-share icon is not, and a creator hunting for this while live should
+ * not have to hover anything to find it. `aria-pressed` rather than
+ * `aria-expanded` — this toggles a thing, it does not open one.
+ */
+function ToggleButton({
+  onClick,
+  active,
+  icon,
+  label,
+}: {
+  onClick: () => void;
+  active: boolean;
+  icon: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={[
+        'relative z-50 inline-flex min-h-11 items-center gap-2 rounded-xl border px-3 text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400',
+        active
+          ? 'border-cyan-400/40 bg-cyan-400/15 text-cyan-100 hover:bg-cyan-400/20'
+          : 'border-white/10 bg-white/[0.04] text-white/80 hover:bg-white/[0.08]',
+      ].join(' ')}
+    >
+      {icon}
+      {label}
     </button>
   );
 }
