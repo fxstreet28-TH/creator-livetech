@@ -155,7 +155,20 @@ export function qualityOption(quality: BroadcastQuality): QualityOption {
  * graceful rather than stuttery — `degradationPreference` on the sender, and a
  * `contentHint` on each track — and the three are only a fix together.
  */
-export function publishBitrateFor(quality: BroadcastQuality): number {
+export function publishBitrateFor(
+  quality: BroadcastQuality,
+  /**
+   * True while a screen share is composited in — โหมดกราฟ. Raises the rung by
+   * CHART_MODE_BITRATE_MULTIPLIER. Defaulted to false so every caller that
+   * does not know about chart mode keeps the ladder it has always had.
+   */
+  chartMode = false,
+): number {
+  const base = baseBitrateFor(quality);
+  return chartMode ? Math.round(base * CHART_MODE_BITRATE_MULTIPLIER) : base;
+}
+
+function baseBitrateFor(quality: BroadcastQuality): number {
   switch (quality) {
     case '1080p':
       return 9_000_000;
@@ -167,6 +180,37 @@ export function publishBitrateFor(quality: BroadcastQuality): number {
       return 1_600_000;
   }
 }
+
+/**
+ * WHAT A CHART COSTS ON TOP OF THE LADDER, AND WHY IT IS NOT FREE.
+ *
+ * The ladder above was measured on a face: a subject in the middle of a frame,
+ * moving slowly, with most of the picture flat. A chart is the opposite in
+ * every dimension an encoder cares about — thin lines and small text corner to
+ * corner, hard edges everywhere, and a scroll that moves ALL of it at once.
+ * Handed 9 Mbps for 1080x1920 at 24fps, an H.264 encoder spends its budget on
+ * the large moving areas and starts blocking the fine ones, which is exactly
+ * where a candle wick and a price label live: the wick dissolves into its
+ * neighbours' blocks and the label turns to mush. That is a bitrate artefact,
+ * not a resolution one, and no amount of `maintain-resolution` fixes it.
+ *
+ * 1.5x is the smallest multiplier that clears it in the published-frame maths:
+ * 1080p goes 9 -> 13.5 Mbps and 720p 6 -> 9 Mbps, which puts a full-frame
+ * high-detail 1080x1920@24 in the 12-14 Mbps band where thin-line ringing
+ * stops being visible on a phone.
+ *
+ * WHAT IT COSTS: nothing at this scale, on the ingest side. The origin VPS
+ * includes 4 TB/month; a 13.5 Mbps ingest is ~6 GB/hour, so even a daily
+ * three-hour broadcast is under 0.5 TB/month and the bill stays 0 THB.
+ *
+ * WHERE THE COST MODEL HAS TO AGREE: bunnyThbPerViewerMinute in
+ * supabase/functions/_shared/live.ts prices a session from its RUNG, and it
+ * cannot see this multiplier — a share is started and stopped mid-broadcast,
+ * so there is no single number for the session. Its figure is therefore an
+ * ingest-side LOWER bound while a share is running; the upper bound is 1.5x
+ * it. See the note over there, which says the same thing from the other side.
+ */
+export const CHART_MODE_BITRATE_MULTIPLIER = 1.5;
 
 /**
  * How close to the live edge the viewer's player sits.
