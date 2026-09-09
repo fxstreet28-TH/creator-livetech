@@ -1204,6 +1204,34 @@ export async function createFilteredStream(
   const publishStream = portraitPublish
     ? portraitPublish.canvas.captureStream(frameRate)
     : previewStream;
+
+  /**
+   * THE HINT THAT ACTUALLY REACHES THE ENCODER.
+   *
+   * This is the published track — a canvas capture — and a canvas track
+   * inherits nothing from the sources painted onto it. The camera's 'motion'
+   * and the screen share's 'detail' describe tracks that are read by
+   * drawImage and never published, so without this line the one track anybody
+   * encodes carries no hint at all.
+   *
+   * 'motion' EVEN THOUGH THIS CANVAS SOMETIMES CARRIES A CHART. The canvas is
+   * a face most of the time and a face-plus-chart the rest of the time, so
+   * whichever hint is set is wrong for part of the picture some of the time,
+   * and the question is only which way to be wrong. 'detail' preserves
+   * sharpness by dropping frames, and dropped frames on a face are judder —
+   * the exact stutter this change exists to remove. A chart under motion
+   * tuning is a little softer while it scrolls and perfectly legible while it
+   * sits still, which is what a chart does most of the time. So the face wins:
+   * it is the thing a viewer is watching, and it is the thing that looks
+   * broken rather than merely soft when the hint is wrong.
+   *
+   * Switching the hint when a share starts was the obvious alternative and is
+   * the wrong shape: the composite is BOTH sources at once, so there is no
+   * moment at which 'detail' describes the whole frame either.
+   */
+  for (const videoTrack of publishStream.getVideoTracks()) {
+    videoTrack.contentHint = 'motion';
+  }
   // Audio is not optional here — see the note above. It goes on the PUBLISHED
   // stream: the self-view is muted by definition (an unmuted one is a feedback
   // loop), and where there is no padding these are the same object anyway.

@@ -170,6 +170,24 @@ export async function openCamera(options: OpenCameraOptions): Promise<CameraOpen
   }
 
   const [track] = stream.getVideoTracks();
+  /**
+   * Tell the encoder this is a PERSON, not a document.
+   *
+   * `contentHint` is the standard way to say what a track carries, and the
+   * encoder tunes for it: 'motion' spends bits on temporal smoothness and
+   * tolerates a softer frame, which is the right trade for a face that moves.
+   * The alternative, 'detail', preserves sharpness by letting frames go — on a
+   * face that reads as judder.
+   *
+   * One assignment, and ignored outright by browsers that do not implement it,
+   * so there is nothing to feature-detect and nothing to fall back to.
+   *
+   * NOTE this is the camera SOURCE. What actually gets published is a canvas
+   * that this track is drawn onto (see lib/live/cameraFilters.ts), and a
+   * canvas track inherits nothing from its sources — so the published track is
+   * hinted separately, in that module.
+   */
+  if (track) track.contentHint = 'motion';
   const settings = track?.getSettings() ?? {};
   attempts.push({ label, constraints, settings, error: null });
   logReport(label, attempts, settings, track);
