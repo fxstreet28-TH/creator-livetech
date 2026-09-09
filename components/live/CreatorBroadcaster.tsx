@@ -96,6 +96,7 @@ import {
   cachedDualCameraTier,
   countVideoInputs,
   probeDualCamera,
+  trackDeliversFrames,
   type DualCameraTier,
 } from '@/lib/live/dualCameraCapture';
 import {
@@ -116,10 +117,24 @@ import {
   type CameraOrientation,
 } from '@/lib/live/cameraOrientation';
 import type { FloatingReaction } from '@/lib/live/reactions';
+import { useResumeTriggers, type ResumeEvent } from '@/lib/live/useResumeTriggers';
 import { CameraControlsMenu, OrientationChangedBadge } from './CameraControlsMenu';
 import { CameraFilterSelector } from './CameraFilterSelector';
 import { FloatingReactionsLayer } from './FloatingReactionsLayer';
 import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
+
+/**
+ * How long a camera track gets to prove it survived the background.
+ *
+ * Shorter than dualCameraCapture's own 1500ms proof window, and deliberately:
+ * that one is deciding whether a phone CAN run two cameras and can afford to be
+ * generous, while this one is standing between a creator and a frozen
+ * broadcast. Three seconds of black is what Por asked for as the threshold;
+ * a live camera answers in two frames, well inside a third of that, so the
+ * budget here is what a struggling-but-alive camera gets before it is replaced
+ * — and replacing a camera that was merely slow costs one getUserMedia.
+ */
+const CAMERA_FRAME_PROOF_MS = 3_000;
 
 export type BroadcastPhase = 'connecting' | 'live' | 'reconnecting' | 'failed';
 
@@ -448,6 +463,24 @@ export function CreatorBroadcaster({
    * ref happens to be populated.
    */
   const whipRef = useRef<WhipSession | null>(null);
+  /**
+   * The connect effect's own recovery ladder, reachable from outside it.
+   *
+   * PR #55 built two rungs — an ICE restart, then a full re-handshake — and
+   * wired them to `connectionstatechange` and `iceconnectionstatechange` and
+   * to nothing else. That is the right trigger for a candidate pair that broke
+   * while the creator was watching, and it is not enough for a phone that was
+   * backgrounded: iOS can hand a page back holding a peer connection that has
+   * already fired its last state event, or one whose event fired into a frozen
+   * tab that never ran the handler. So the resume handler needs a way in, and
+   * both rungs live inside a closure it cannot see. This is that way in.
+   *
+   * Null whenever no broadcast is connected, which is what the handler checks.
+   */
+  const whipRecoveryRef = useRef<{
+    recover: () => void;
+    reconnect: () => void;
+  } | null>(null);
   const filteredRef = useRef<FilteredStream | null>(null);
   /**
    * The orientation the connect effect should start the canvas with.
@@ -912,9 +945,66 @@ export function CreatorBroadcaster({
       pc.addEventListener('iceconnectionstatechange', onStateChange);
     };
 
+    // The two rungs above, published for the resume handler — see
+    // whipRecoveryRef. Cleared in this effect's teardown, so a handler that
+    // fires during an unmount finds nothing rather than a dead closure.
+    whipRecoveryRef.current = {
+      recover: () => void recoverWhip(),
+      reconnect: () => onDisconnected(),
+    };
+
     async function connect() {
       setError(null);
       setPhaseAndReport(retries === 0 ? 'connecting' : 'reconnecting');
+
+      /**
+       * A pipeline that did not survive the background cannot be reconnected
+       * INTO — it has to be rebuilt.
+       *
+       * The reuse below is deliberate and predates this: re-opening a camera on
+       * every rung is how you hit "camera is in use by another application" on
+       * Windows Chrome, which holds a device briefly after release. It assumes
+       * the camera it is reusing is alive, which was true when every reconnect
+       * came from a network blip.
+       *
+       * It is not true after a background. iOS ends camera and microphone
+       * tracks (see the resume handler), and a re-handshake that reused them
+       * would republish an ended video track — a broadcast that negotiates
+       * perfectly and delivers a black frame — or an ended audio track, which
+       * is the same thing for the microphone. Both are worse than the failure
+       * they were reached from, because everything downstream reports success.
+       *
+       * Checked on what is actually being drawn and published rather than on
+       * `camera` itself, because the front/back flip and the resume handler
+       * both swap the source out from under it.
+       */
+      const sourceAlive =
+        sourceVideoRef.current?.getVideoTracks().some((track) => track.readyState === 'live') ??
+        false;
+      // `every` on no audio tracks is true, which is the right answer for a
+      // session published without a microphone.
+      const publishAlive =
+        !filtered ||
+        (filtered.publishStream.getVideoTracks().some((track) => track.readyState === 'live') &&
+          filtered.publishStream.getAudioTracks().every((track) => track.readyState === 'live'));
+
+      if ((camera || filtered) && !(sourceAlive && publishAlive)) {
+        console.warn('[camera] the pipeline did not survive; rebuilding it from a fresh camera', {
+          source_alive: sourceAlive,
+          publish_alive: publishAlive,
+        });
+        // Order matters, as in the teardown below: the filter stops its draw
+        // loop and its canvas track first, then the devices are released.
+        filtered?.stop();
+        filtered = null;
+        filteredRef.current = null;
+        const swapped = sourceVideoRef.current;
+        if (swapped && swapped !== camera) swapped.getTracks().forEach((track) => track.stop());
+        camera?.getTracks().forEach((track) => track.stop());
+        camera = null;
+        cameraRef.current = null;
+        sourceVideoRef.current = null;
+      }
 
       // The camera is opened once and reused across reconnects. Re-opening it
       // per attempt is how you hit "camera is in use by another application"
@@ -1158,6 +1248,7 @@ export function CreatorBroadcaster({
       room?.off(RoomEvent.Disconnected, onDisconnected);
       roomRef.current = null;
       whipRef.current = null;
+      whipRecoveryRef.current = null;
       filteredRef.current = null;
       if (room) void leaveRoom(room);
       // Aborts a negotiation still in flight; closes one that completed. Both
@@ -1776,6 +1867,218 @@ export function CreatorBroadcaster({
       secondCameraRef.current = null;
     };
   }, []);
+
+  /**
+   * THE CREATOR CAME BACK — the publisher's half of PR #67.
+   *
+   * WHAT iOS DOES TO A BROADCASTING PHONE. Backgrounding the page ENDS the
+   * camera and microphone tracks: `readyState` goes to 'ended' and the OS is
+   * not going to hand the device back on its own. A creator who glanced at a
+   * notification for twenty seconds returned to a studio that looked live —
+   * peer connection connected, canvas still being painted, heartbeat still
+   * beating — and was broadcasting a frozen frame, or silence, or both.
+   *
+   * PR #55's ladder cannot fix that and is not meant to. An ICE restart re-keys
+   * a transport; a re-handshake builds a new one. Neither revives a track the
+   * operating system ended, because the problem is not on the wire. What is
+   * needed is a fresh getUserMedia and the new track put where the old one was.
+   *
+   * WHY THE VIDEO PATH IS NOT `replaceTrack`. What this publisher sends is the
+   * FILTER CANVAS, not the camera (see cameraFilters.createFilteredStream), so
+   * replacing the video sender's track with a raw camera track would publish
+   * the camera and throw away the look, the flip, the zoom and the composite in
+   * the same move. The correct swap one layer down is `setSource`: point the
+   * canvas at the new camera and the very next painted frame carries it. The
+   * peer connection is untouched, MediaMTX never learns anything happened, and
+   * no viewer sees a stall — which is the same reason the front/back flip works
+   * this way. `replaceTrack` IS used for the microphone, which really is
+   * published raw.
+   *
+   * ORDER MATTERS. The transport is checked first, because a dead peer
+   * connection makes every other repair pointless; then the camera, then the
+   * mic, then the second camera. Each is independent — a phone can end the mic
+   * and keep the camera — so none of them is conditional on another.
+   */
+  const resumeBusyRef = useRef(false);
+  const handleResume = useCallback(
+    async (event: ResumeEvent) => {
+      // Nothing to recover before the first connect finishes or after the
+      // broadcast has failed; the connect path owns those states.
+      if (phase !== 'live' && phase !== 'reconnecting') return;
+      // A burst is already collapsed by useResumeTriggers; this is the guard
+      // against a SECOND resume arriving while getUserMedia is still open, which
+      // on a phone is a second camera request against a device that has not
+      // finished handing back the first.
+      if (resumeBusyRef.current) return;
+      resumeBusyRef.current = true;
+
+      const whip = whipRef.current;
+      console.info('[camera] resume', {
+        trigger: event.trigger,
+        triggers: event.triggers,
+        hidden_ms: event.hiddenMs,
+        persisted: event.persisted,
+        connection: whip?.pc.connectionState ?? 'n/a',
+      });
+
+      try {
+        /**
+         * 1. THE TRANSPORT.
+         *
+         * `closed` is terminal — there is nothing left to restart — so it goes
+         * straight to the re-handshake rung. `failed` and `disconnected` go to
+         * the ICE restart first, which is the cheap one and keeps the MediaMTX
+         * session and its HLS muxer alive under every viewer.
+         *
+         * This is the wiring PR #55 did not have: its ladder fires on the peer
+         * connection's own state events, and a tab that was frozen when the
+         * event fired never ran the handler.
+         */
+        if (delivery === 'origin' && whip) {
+          const state = whip.pc.connectionState;
+          if (state === 'closed') {
+            console.warn('[whip] connection closed across the background; re-handshaking');
+            whipRecoveryRef.current?.reconnect();
+          } else if (state === 'failed' || state === 'disconnected') {
+            console.warn('[whip] connection unwell after resume; running the ladder', { state });
+            whipRecoveryRef.current?.recover();
+          }
+
+          /**
+           * The canvas's own output track, which is a different question.
+           *
+           * A `captureStream` track that has ended cannot be re-made without
+           * rebuilding the filter pipeline, and the pipeline is built inside the
+           * connect effect — so this is the one case that legitimately needs the
+           * whole thing rebuilt rather than a track swapped.
+           */
+          const publishTrack = filteredRef.current?.publishStream.getVideoTracks()[0];
+          if (publishTrack && publishTrack.readyState === 'ended') {
+            console.warn('[whip] the published canvas track ended; rebuilding the pipeline');
+            whipRecoveryRef.current?.reconnect();
+          }
+        }
+
+        /**
+         * 2. THE CAMERA.
+         *
+         * `readyState` is checked first and is necessary rather than sufficient
+         * — a camera can survive a background reporting 'live' and quietly stop
+         * delivering, which is case 3 in dualCameraCapture's header and exactly
+         * the same failure seen from the studio instead of the probe. So the
+         * real test is the frame count, using that module's primitive.
+         */
+        const filtered = filteredRef.current;
+        const sourceTrack = sourceVideoRef.current?.getVideoTracks()[0];
+        const cameraEnded = !sourceTrack || sourceTrack.readyState === 'ended';
+        const cameraDelivering =
+          !cameraEnded && (await trackDeliversFrames(sourceTrack, CAMERA_FRAME_PROOF_MS));
+
+        if (filtered && !cameraDelivering) {
+          console.warn('[camera] the camera did not survive the background; re-acquiring', {
+            ready_state: sourceTrack?.readyState ?? 'gone',
+          });
+          try {
+            // The SAME camera the creator was on: the explicit device where one
+            // was chosen, otherwise whichever way they had flipped to. Coming
+            // back from a notification pointed at the other camera would be a
+            // different bug wearing this fix's clothes.
+            const opened = await openCamera({
+              quality,
+              portrait: portraitRef.current,
+              deviceId: videoDeviceId,
+              facingMode: videoDeviceId ? null : facingRef.current,
+              // The microphone is published separately and handled below;
+              // asking for a second one here would either fail or leave two
+              // open. Same rule as the front/back flip.
+              audio: false,
+            });
+
+            const previous = sourceVideoRef.current;
+            await filtered.setSource(opened.stream);
+            sourceVideoRef.current = opened.stream;
+            setCamera(opened);
+            // A re-opened camera starts at 1x with its own capability set, so
+            // the studio's zoom must be told the truth rather than keep showing
+            // the level the previous track was at.
+            setZoomRange(hardwareZoomRange(opened.stream.getVideoTracks()[0]));
+            setZoomState(1);
+            filtered.setZoom(1);
+            // Only once the new one is drawing, and video only: the original
+            // stream's audio track is the published microphone.
+            previous?.getVideoTracks().forEach((track) => track.stop());
+            console.info('[camera] re-acquired and swapped into the canvas');
+          } catch (err) {
+            // A permission the creator revoked while they were away, or a
+            // device another app grabbed. The broadcast is still up and still
+            // painting; this is logged rather than raised, exactly as the flip
+            // does, because ending a live over it would be worse.
+            console.error('[camera] could not re-acquire the camera', err);
+          }
+        }
+
+        /**
+         * 3. THE MICROPHONE.
+         *
+         * Published raw rather than through the canvas, so this one really is a
+         * `replaceTrack` — in-band, no renegotiation, nothing a viewer sees.
+         *
+         * Origin only: on the LiveKit path the SDK owns the published track and
+         * republishes it itself, and reaching into its sender from here would be
+         * fighting it.
+         */
+        if (delivery === 'origin' && whipRef.current) {
+          const micTrack = cameraRef.current?.getAudioTracks()[0];
+          if (micTrack && micTrack.readyState === 'ended') {
+            console.warn('[camera] the microphone ended in the background; re-acquiring');
+            try {
+              const replacement = await navigator.mediaDevices.getUserMedia({ audio: true });
+              const nextTrack = replacement.getAudioTracks()[0];
+              // The mute state travels with it — see replaceSenderTrack, which
+              // carries `enabled` across so a creator who was muted does not
+              // come back broadcasting the room.
+              const swapped = await whipRef.current.replaceAudioTrack(nextTrack);
+              if (swapped) {
+                // Kept in the stream the teardown releases, so the new track is
+                // not left holding the device after the broadcast ends.
+                cameraRef.current?.removeTrack(micTrack);
+                cameraRef.current?.addTrack(nextTrack);
+                micTrack.stop();
+              } else {
+                nextTrack.stop();
+              }
+            } catch (err) {
+              console.error('[camera] could not re-acquire the microphone', err);
+            }
+          }
+        }
+
+        /**
+         * 4. THE SECOND CAMERA, if one was mounted.
+         *
+         * NOT re-acquired. Opening two cameras at once is a device capability
+         * the probe spends 1.5 seconds establishing (see probeDualCamera), and
+         * doing that inside a resume — on a phone that has just handed one
+         * camera back and may not yet be ready to hand over two — is how a
+         * recovery turns into a broadcast with no camera at all. The composite
+         * drops back to the single camera instead, through the same path the
+         * creator's own toggle uses, and they can turn it on again.
+         */
+        const secondTrack = secondCameraRef.current?.getVideoTracks()[0];
+        if (secondTrack && secondTrack.readyState === 'ended') {
+          endDualCamera('the OS ended the second camera in the background');
+        }
+      } finally {
+        resumeBusyRef.current = false;
+      }
+    },
+    [phase, delivery, quality, videoDeviceId, endDualCamera],
+  );
+
+  useResumeTriggers({
+    enabled: phase === 'live' || phase === 'reconnecting',
+    onResume: useCallback((event: ResumeEvent) => void handleResume(event), [handleResume]),
+  });
 
   // The self-view is the canvas, so the output flip is already in these
   // frames — which is exactly why the creator's own preference cannot be read

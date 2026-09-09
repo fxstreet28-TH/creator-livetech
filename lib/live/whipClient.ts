@@ -133,6 +133,39 @@ export interface WhipSession {
    * this existed.
    */
   setMaxFramerate(fps: number): Promise<void>;
+  /**
+   * Swap the track a sender is publishing, WITHOUT renegotiating.
+   *
+   * WHY THIS EXISTS (PR #67). iOS ends camera and microphone tracks when the
+   * page goes to the background. `readyState` becomes 'ended' and it never
+   * comes back: the OS took the device away, and a track in that state cannot
+   * be revived by anything — not by the ICE restart, not by the re-handshake
+   * ladder, not by waiting. The only fix is a FRESH getUserMedia and a new
+   * track put where the old one was. So a creator who checked a notification
+   * mid-broadcast came back publishing silence, or a frozen picture, with a
+   * peer connection that reported itself perfectly healthy throughout.
+   *
+   * `replaceTrack` is the standard way to do that and it is in-band: the m-line
+   * does not move, no offer/answer is exchanged, MediaMTX never learns anything
+   * happened, and no viewer sees a stall. A renegotiation would make a NEW
+   * MediaMTX session on the path, which restarts the HLS muxer and breaks the
+   * playlist every viewer is mid-segment on — the whole audience reconnecting
+   * so that one creator's microphone could come back.
+   *
+   * Returns false when there is no sender of that kind (a session published
+   * without a microphone) or the browser refused. Never throws: the caller's
+   * fallback is the full re-handshake, and a broadcast must not end because a
+   * recovery attempt did.
+   *
+   * NOTE ON THE VIDEO SENDER. What this publisher sends is the FILTER CANVAS,
+   * not the camera — see cameraFilters.createFilteredStream — so re-acquiring a
+   * camera does not go through here at all: the canvas is pointed at the new
+   * source and keeps painting. `replaceVideoTrack` is for the case where the
+   * canvas track ITSELF was ended.
+   */
+  replaceVideoTrack(track: MediaStreamTrack | null): Promise<boolean>;
+  /** The same, for the microphone. See replaceVideoTrack. */
+  replaceAudioTrack(track: MediaStreamTrack | null): Promise<boolean>;
   /** DELETE the resource and close the peer connection. Never throws. */
   close(): Promise<void>;
 }
@@ -254,6 +287,15 @@ export async function publishWhip(options: WhipPublishOptions): Promise<WhipSess
         if (!updated) return false;
         remoteSdp = updated;
         return true;
+      },
+      replaceVideoTrack: (track) => replaceSenderTrack(videoTransceiver.sender, track, 'video'),
+      replaceAudioTrack: (track) => {
+        const sender = pc.getSenders().find((candidate) => candidate.track?.kind === 'audio');
+        // A sender is found by the kind of the track it HOLDS, so a session
+        // whose microphone track has already ended still has one — an ended
+        // track keeps its kind. The `?? null` case is a session published with
+        // no microphone at all, which has no audio sender to replace into.
+        return replaceSenderTrack(sender ?? null, track, 'audio');
       },
       setMaxFramerate: async (fps) => {
         // The bitrate ceiling is re-applied alongside it, because
@@ -590,6 +632,36 @@ function splitSdpSections(sdp: string): { session: string[]; media: string[][] }
 function firstValue(lines: string[], prefix: string): string | null {
   const line = lines.find((candidate) => candidate.startsWith(prefix));
   return line ? line.slice(prefix.length).trim() : null;
+}
+
+/**
+ * Put a new track into a sender, and say plainly whether it went in.
+ *
+ * The `enabled` flag is carried across, because it is what the mic button
+ * toggles: a creator who was muted when iOS took their microphone away must not
+ * come back from the background unmuted, broadcasting a room they think is off.
+ */
+async function replaceSenderTrack(
+  sender: RTCRtpSender | null,
+  track: MediaStreamTrack | null,
+  kind: 'video' | 'audio',
+): Promise<boolean> {
+  if (!sender) {
+    console.warn(`[whip] no ${kind} sender to replace into`);
+    return false;
+  }
+  if (track && sender.track) track.enabled = sender.track.enabled;
+  try {
+    await sender.replaceTrack(track);
+    console.info(`[whip] ${kind} track replaced`, {
+      ready_state: track?.readyState ?? 'null',
+      enabled: track?.enabled ?? null,
+    });
+    return true;
+  } catch (err) {
+    console.warn(`[whip] ${kind} replaceTrack refused`, err);
+    return false;
+  }
 }
 
 /**
