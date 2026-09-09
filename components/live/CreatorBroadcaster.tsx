@@ -81,7 +81,6 @@ import { publishWhip, thaiForWhipError, type WhipSession } from '@/lib/live/whip
 import type { BroadcastQuality, LiveDelivery } from '@/lib/live/types';
 import {
   createFilteredStream,
-  DESKTOP_PUBLISH_SCALE,
   filterLabelFor,
   isDesktopBroadcastViewport,
   type FilteredStream,
@@ -464,7 +463,7 @@ export function CreatorBroadcaster({
     // Cached on first read, because both halves of the answer are constants
     // for the life of this studio: an API is present or it is not, and a
     // creator who drags their window narrower mid-broadcast keeps the mode
-    // they started in — the same rule DESKTOP_PUBLISH_SCALE follows.
+    // they started in — the same rule the portrait publish frame follows.
     if (screenShareOfferRef.current === null) {
       screenShareOfferRef.current = isScreenShareSupported() && isDesktopBroadcastViewport();
     }
@@ -808,11 +807,11 @@ export function CreatorBroadcaster({
             // must still publish 1920x1080.
             portraitRef.current ? PHONE_MAX_LONG_EDGE : undefined,
             // Desktop only, and it changes what the AUDIENCE gets, not what
-            // the creator sees: the published canvas draws the same frame at
-            // 75% with black around it, so a phone viewer that letterboxes a
-            // landscape source ends up with the creator centred and further
-            // away instead of filling the width. The preview stays full-frame.
-            desktopBroadcastRef.current ? DESKTOP_PUBLISH_SCALE : undefined,
+            // the creator sees: the published canvas is a fixed 720x1280 that
+            // the 16:9 webcam COVERS, so a phone viewer gets a face edge to
+            // edge instead of a small one in a field of black. The preview
+            // stays the full un-cropped webcam frame.
+            desktopBroadcastRef.current === true,
           );
           filteredRef.current = filtered;
           setLookMode(filtered.getStats().lookMode);

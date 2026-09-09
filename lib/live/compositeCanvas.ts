@@ -42,6 +42,15 @@ export interface Rect {
 export const COMPOSITE_WIDTH = 720;
 export const COMPOSITE_HEIGHT = 1280;
 
+/** The whole frame. With no screen share at all, the camera-only publish
+ *  frame the webcam covers — see cameraFilters. */
+export const FULL_FRAME: Rect = {
+  x: 0,
+  y: 0,
+  width: COMPOSITE_WIDTH,
+  height: COMPOSITE_HEIGHT,
+};
+
 /** How much of the height the screen share gets. See the header. */
 export const SCREEN_SLOT_FRACTION = 0.55;
 
@@ -120,6 +129,10 @@ export function containRect(sourceWidth: number, sourceHeight: number, slot: Rec
  * the middle, and black bars around a creator are what the whole layout exists
  * to avoid. A 16:9 webcam covering a 720x576 (5:4) slot keeps its full height
  * and loses the outer edges of its width — which is background.
+ *
+ * It is also what the camera-only publish frame uses, covering the whole
+ * 720x1280 — see cameraFilters. That is a harder crop, and deliberately so:
+ * see the note there.
  *
  * Returns a SOURCE rectangle, in source pixels, to be drawn across the whole
  * slot. That is the same shape the camera-only path uses for digital zoom, and

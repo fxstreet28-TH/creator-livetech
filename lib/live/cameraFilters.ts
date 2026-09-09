@@ -33,10 +33,12 @@ import {
   CAMERA_SLOT,
   COMPOSITE_HEIGHT,
   COMPOSITE_WIDTH,
+  FULL_FRAME,
   SCREEN_SLOT,
   containRect,
   coverSourceRect,
 } from './compositeCanvas';
+import type { Rect } from './compositeCanvas';
 
 export const CAMERA_FILTERS = {
   none: { label: 'ปกติ', filter: 'none' },
@@ -77,21 +79,7 @@ export function filterLabelFor(id: FilterId | null | undefined): string {
 export const BROADCAST_NOTICE = 'ผู้ชมจะเห็นฟิลเตอร์นี้ด้วย';
 
 /**
- * How much of the published frame a DESKTOP creator's picture fills.
- *
- * 0.75 draws the camera at three quarters of the canvas, centred, with black
- * around it — so a phone viewer, which contains a landscape source into its own
- * 9:19.5 (see LiveViewerMobile), ends up with the creator smaller and with room
- * on all four sides instead of filling the width edge to edge. It is the
- * "stand further back from the camera" effect, done in software.
- *
- * One number, one place. Lower it and the creator gets smaller; 1 turns the
- * whole feature off without any other line changing.
- */
-export const DESKTOP_PUBLISH_SCALE = 0.75;
-
-/**
- * The app's `md` breakpoint, which is what decides a padded publish frame.
+ * The app's `md` breakpoint, which is what decides a portrait publish frame.
  *
  * VIEWPORT WIDTH, NOT SOURCE ORIENTATION, and the difference is the whole
  * point: a laptop with a 16:9 webcam and a phone held sideways produce the
@@ -370,7 +358,7 @@ export function applyLookPasses(
  * the whole reason the look is changeable from the broadcast bottom bar.
  *
  * COST: one draw per camera frame for the length of the broadcast — two where
- * a padded publish frame is being produced, which is desktop only, on the
+ * a portrait publish frame is being produced, which is desktop only, on the
  * machine that has the headroom. That is real, and it is why /creator/live
  * tells creators to broadcast from a computer. `requestVideoFrameCallback` is
  * used where available so the loop runs at the CAMERA's rate (30fps) rather
@@ -379,7 +367,7 @@ export function applyLookPasses(
  */
 export interface FilteredStream {
   /**
-   * Show this to the CREATOR. The full frame, at 100%, never padded.
+   * Show this to the CREATOR. The camera's own frame, whole, never cropped.
    *
    * Video only where it is a canvas of its own — a self-view is muted anyway,
    * and an unmuted one is a feedback loop.
@@ -388,10 +376,10 @@ export interface FilteredStream {
   /**
    * PUBLISH this. Video from the canvas, audio from the source.
    *
-   * The same object as `previewStream` unless the caller asked for a padded
-   * publish frame (see `publishScale`), in which case it is a second canvas of
-   * the same dimensions with the picture drawn smaller inside it. Callers do
-   * not branch on which: they publish this one and preview the other.
+   * The same object as `previewStream` unless the caller asked for a portrait
+   * publish frame (see `portrait`), in which case it is a second canvas, fixed
+   * at 720x1280, that the camera covers. Callers do not branch on which: they
+   * publish this one and preview the other.
    */
   publishStream: MediaStream;
   setFilter: (id: FilterId) => void;
@@ -461,8 +449,9 @@ export interface FilteredStream {
    * The preview canvas composites too, deliberately: a creator arranging a
    * chart and their own face needs to see the frame the audience gets, and a
    * self-view showing only the camera would leave them guessing where the
-   * split lands. This is the one thing the padded publish frame does NOT do —
-   * see `publishScale` — because there the two pictures differ only in size.
+   * split lands. This is the one thing the camera-only publish
+   * frame does NOT mirror to the preview — see `portrait` — because there the
+   * two differ only in how much of the width survives.
    */
   setScreenSource: (next: MediaStream | null) => Promise<void>;
   /**
@@ -481,7 +470,8 @@ export interface FilteredStream {
   getStats: () => {
     fps: number;
     lookMode: LookMode;
-    publishScale: number;
+    /** True where the publish canvas is the fixed 9:16 frame. Desktop only. */
+    portrait: boolean;
     /** True while a screen share is being composited in. See setScreenSource. */
     compositing: boolean;
   };
@@ -510,15 +500,15 @@ export async function createFilteredStream(
   /** Longest published edge, in px. Omitted on desktop, which is unchanged. */
   maxLongEdge?: number,
   /**
-   * How much of the published canvas the picture fills, 0-1.
+   * Publish a fixed 9:16 frame that the camera COVERS. Desktop only.
    *
-   * Omitted (or 1) is the single-canvas pass-through this pipeline has always
-   * been — one canvas, published and previewed. Anything below 1 builds a
-   * SECOND canvas of the same size for the publisher, with the picture drawn
-   * that much smaller in the middle of it and black around it, and leaves the
-   * creator's preview at full frame. See DESKTOP_PUBLISH_SCALE.
+   * Omitted (or false) is the single-canvas pass-through this pipeline has
+   * always been — one canvas, published and previewed, at the camera's own
+   * ratio. True builds a SECOND canvas, 720x1280, with the webcam's full
+   * height kept and its outer width cropped away, and leaves the creator's
+   * preview at the full un-cropped frame.
    */
-  publishScale?: number,
+  portrait?: boolean,
 ): Promise<FilteredStream> {
   const [sourceVideoTrack] = source.getVideoTracks();
   if (!sourceVideoTrack) throw new Error('No video track to filter');
@@ -548,49 +538,57 @@ export async function createFilteredStream(
   interface PaintTarget {
     canvas: HTMLCanvasElement;
     ctx: CanvasRenderingContext2D;
-    /** 1 is full-frame; below 1 is the padded publish frame. */
-    scale: number;
+    /**
+     * False follows the CAMERA's own ratio — the preview, and every phone.
+     * True is the fixed 9:16 publish frame the camera covers.
+     */
+    portrait: boolean;
     /** Per target: a vignette gradient is built for one canvas, and a clipped one differs. */
     vignette: VignetteCache | null;
   }
 
-  const createTarget = (scale: number): PaintTarget => {
+  const createTarget = (portrait: boolean): PaintTarget => {
     const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
+    canvas.width = portrait ? COMPOSITE_WIDTH : width;
+    canvas.height = portrait ? COMPOSITE_HEIGHT : height;
     // `alpha: false` — the camera has no transparency, and telling the browser
     // so lets it skip compositing work on every single frame.
     const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) throw new Error('Canvas 2D is unavailable');
-    return { canvas, ctx, scale, vignette: null };
+    return { canvas, ctx, portrait, vignette: null };
   };
 
   /**
    * What the creator watches. Full-frame, always.
    *
-   * This is the whole reason there are two canvases rather than one padded
+   * This is the whole reason there are two canvases rather than one cropped
    * canvas shown in both places: the creator's self-view must keep looking
-   * exactly like their camera, at the size it always was. Shrinking it is a
-   * change nobody asked for and it makes framing a shot harder, not easier.
+   * exactly like their camera, showing everything it can see. Cropping it is
+   * a change nobody asked for and it makes framing a shot harder, not easier
+   * — a creator cannot tell they are drifting out of the published frame if
+   * their preview is cropped the same way. It was the lesson of the closed
+   * PR #56 and it still holds.
    */
-  const preview = createTarget(1);
+  const preview = createTarget(false);
 
   /**
    * What the audience gets on a desktop broadcast, and null everywhere else.
    *
-   * The SAME dimensions as the preview — this is not a resolution change and
-   * the encoder is handed exactly what it was handed before — with the picture
-   * drawn at `publishScale` in the middle and black around it. On a phone this
-   * is null, the published track IS the preview canvas, and PR #50's
-   * "publish the sensor's own frame" path is untouched.
+   * A fixed 720x1280 that the webcam COVERS — full height, outer width cropped,
+   * centred — so a phone viewer gets a face edge to edge instead of a small
+   * one in a field of black. On a phone this is null, the published track IS
+   * the preview canvas, and PR #50's "publish the sensor's own frame" path is
+   * untouched: a phone sensor already gives an upright frame and has nothing
+   * to crop.
+   *
+   * 720x1280 is the COMPOSITE's size on purpose. A creator toggling a share on
+   * and off no longer resizes the published canvas at all — there is not even
+   * an in-band resolution change for the audience to ride out.
    */
-  const padded =
-    publishScale !== undefined && publishScale > 0 && publishScale < 1
-      ? createTarget(publishScale)
-      : null;
+  const portraitPublish = portrait === true ? createTarget(true) : null;
 
-  /** Painted in order, from one frame callback. Preview first — see draw(). */
-  const targets: PaintTarget[] = padded ? [preview, padded] : [preview];
+  /** Painted in order, from one paint. Preview first — see paintAllTargets(). */
+  const targets: PaintTarget[] = portraitPublish ? [preview, portraitPublish] : [preview];
 
   let currentFilter = initialFilter;
   let currentFlipped = initialFlipped;
@@ -658,7 +656,9 @@ export async function createFilteredStream(
   let measuredFps = 0;
 
   console.info(`[camera] look mode: ${lookMode}`);
-  if (padded) console.info(`[camera] publishing a padded frame at ${padded.scale}`);
+  if (portraitPublish) {
+    console.info(`[camera] publishing ${COMPOSITE_WIDTH}x${COMPOSITE_HEIGHT}, camera covering`);
+  }
 
   /**
    * One target, one frame.
@@ -669,72 +669,100 @@ export async function createFilteredStream(
    * paint and a publish paint is the destination rectangle computed below.
    */
   const paintFrame = (target: PaintTarget) => {
-    const { canvas, ctx, scale } = target;
+    const { canvas, ctx, portrait: isPortrait } = target;
 
-    /*
-      THE CANVAS IS THE SIZE OF THE CAMERA, ALWAYS, AND IT IS CHECKED EVERY
-      FRAME.
+    if (isPortrait) {
+      /*
+        THE PORTRAIT PUBLISH FRAME: a fixed 9:16 the camera fills.
 
-      This is what makes a phone publish PORTRAIT. `getSettings()` above is
-      read once, before the track has necessarily settled, and on iOS Safari
-      it is frequently the landscape figure that was ASKED for rather than the
-      portrait one the camera actually produces. A canvas fixed at that first
-      answer then gets `drawImage(video, 0, 0, 1280, 720)` — which does not
-      letterbox, it STRETCHES — so a 720x1280 portrait camera was being
-      squashed into a landscape frame and published that way.
+        Fixed rather than followed, which is the opposite of the branch below
+        and the whole of Fix 2. A desktop webcam is 16:9 and the audience is on
+        a phone; publishing the webcam's own ratio meant a viewer got a band of
+        picture across the middle of their screen and black everywhere else.
+        PR #61 made that worse before it made it better — it drew the camera at
+        75% inside the landscape frame, so the face ended up small AND boxed.
 
-      `videoWidth`/`videoHeight` are the decoded frame's real dimensions, so
-      following them fixes that and three other things for free: a camera that
-      settles a moment after `play()`, a phone rotated mid-broadcast, and the
-      front/back flip in setSource handing over a different aspect ratio.
-
-      Writing to canvas.width resets the whole 2D context, so it is guarded on
-      an actual change — doing it every frame would clear the filter and the
-      transform below on every frame.
-    */
-    if (video.videoWidth > 0 && video.videoHeight > 0) {
-      // The camera's own ratio, capped in SIZE only where the caller asked for
-      // a cap. Rounded to even numbers because some encoders reject odd ones.
-      const longest = Math.max(video.videoWidth, video.videoHeight);
-      const capScale = maxLongEdge && longest > maxLongEdge ? maxLongEdge / longest : 1;
-      const nextWidth = Math.round((video.videoWidth * capScale) / 2) * 2;
-      const nextHeight = Math.round((video.videoHeight * capScale) / 2) * 2;
-      if (canvas.width !== nextWidth || canvas.height !== nextHeight) {
-        canvas.width = nextWidth;
-        canvas.height = nextHeight;
-        // The vignette gradient is built for one canvas size. applyLookPasses
-        // checks this too; dropping it here means the check never has to fail.
+        The same size as a composite, so toggling a share on and off does not
+        resize the published canvas at all.
+      */
+      if (canvas.width !== COMPOSITE_WIDTH || canvas.height !== COMPOSITE_HEIGHT) {
+        canvas.width = COMPOSITE_WIDTH;
+        canvas.height = COMPOSITE_HEIGHT;
         target.vignette = null;
+      }
+    } else {
+      /*
+        THE CANVAS IS THE SIZE OF THE CAMERA, ALWAYS, AND IT IS CHECKED EVERY
+        FRAME.
+
+        This is what makes a phone publish PORTRAIT, and what keeps the
+        creator's own preview showing their camera exactly as it is.
+        `getSettings()` above is read once, before the track has necessarily
+        settled, and on iOS Safari it is frequently the landscape figure that
+        was ASKED for rather than the portrait one the camera actually
+        produces. A canvas fixed at that first answer then gets
+        `drawImage(video, 0, 0, 1280, 720)` — which does not letterbox, it
+        STRETCHES — so a 720x1280 portrait camera was being squashed into a
+        landscape frame and published that way.
+
+        `videoWidth`/`videoHeight` are the decoded frame's real dimensions, so
+        following them fixes that and three other things for free: a camera
+        that settles a moment after `play()`, a phone rotated mid-broadcast,
+        and the front/back flip in setSource handing over a different aspect
+        ratio.
+
+        Writing to canvas.width resets the whole 2D context, so it is guarded
+        on an actual change — doing it every frame would clear the filter and
+        the transform below on every frame.
+      */
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        // The camera's own ratio, capped in SIZE only where the caller asked
+        // for a cap. Rounded to even numbers because some encoders reject odd.
+        const longest = Math.max(video.videoWidth, video.videoHeight);
+        const capScale = maxLongEdge && longest > maxLongEdge ? maxLongEdge / longest : 1;
+        const nextWidth = Math.round((video.videoWidth * capScale) / 2) * 2;
+        const nextHeight = Math.round((video.videoHeight * capScale) / 2) * 2;
+        if (canvas.width !== nextWidth || canvas.height !== nextHeight) {
+          canvas.width = nextWidth;
+          canvas.height = nextHeight;
+          // The vignette gradient is built for one canvas size. applyLookPasses
+          // checks this too; dropping it here means the check never has to fail.
+          target.vignette = null;
+        }
       }
     }
 
     /*
-      WHERE THE PICTURE LANDS ON THIS CANVAS.
+      WHICH PART OF THE CAMERA IS DRAWN, in SOURCE pixels.
 
-      At scale 1 that is the whole thing, and every number below collapses to
-      the full-canvas draw this loop has always done. Below 1 it is a centred
-      box with the same ratio as the canvas, which is what puts room on all
-      four sides of a desktop creator once the phone viewer contains the
-      result. Even numbers for the same reason the canvas uses them.
+      Both branches produce a source rectangle that is then drawn across the
+      WHOLE canvas — which is why neither needs a destination box, a padding
+      fill or a clip any more. The picture reaches all four edges in both
+      modes; there is no longer anywhere on either canvas for a bar to be.
+
+      Preview: the whole frame at zoom 1 — the full field of view, scaled but
+      never cropped — and a centred sub-rect above it.
+
+      Portrait publish: `cover`, the same rule and the same function the
+      composite's camera slot uses, so the two modes crop a face identically
+      and toggling a share does not reframe the creator. Zoom composes on top
+      of the cover crop rather than replacing it, exactly as it does there.
+
+      THE TRADE, stated plainly: a 16:9 webcam covered into 9:16 keeps only
+      the centre ~32% of its width. A creator sitting well off to one side
+      will be partly out of frame. That is what the mirror and digital-zoom
+      controls are for today and what a pan control would be for later, and it
+      is the same trade every vertical-live platform makes with a desktop
+      webcam — the alternative is the field of black this replaces.
     */
-    const dw = scale < 1 ? Math.round((canvas.width * scale) / 2) * 2 : canvas.width;
-    const dh = scale < 1 ? Math.round((canvas.height * scale) / 2) * 2 : canvas.height;
-    const dx = Math.round((canvas.width - dw) / 2);
-    const dy = Math.round((canvas.height - dh) / 2);
-
-    /*
-      The padding, repainted every frame rather than trusted to stay put.
-
-      An `alpha: false` canvas starts opaque black and the padding is never
-      drawn over, so in principle this is redundant — but "in principle" is
-      doing a lot of work there: a mirrored draw, a look pass and a resize all
-      touch this canvas, and a single frame of stale picture smeared into the
-      bars is the kind of artefact nobody can reproduce on demand. One opaque
-      fill per frame is cheaper than that conversation.
-    */
-    if (scale < 1) {
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    let src: Rect;
+    if (isPortrait) {
+      src = coverSourceRect(video.videoWidth, video.videoHeight, FULL_FRAME, currentZoom);
+    } else {
+      const zoom = currentZoom > 1 ? currentZoom : 1;
+      const sw = video.videoWidth / zoom;
+      const sh = video.videoHeight / zoom;
+      src = { x: (video.videoWidth - sw) / 2, y: (video.videoHeight - sh) / 2, width: sw, height: sh };
     }
 
     // save/restore around the whole paint: both the filter and the transform
@@ -748,31 +776,18 @@ export async function createFilteredStream(
     if (lookMode === 'filter') ctx.filter = filterCssFor(currentFilter);
     if (currentFlipped) {
       // Move the origin to the right edge, then draw leftwards. Scaling
-      // without the translate would put the picture off-canvas. The
-      // destination box is centred, so mirroring maps it onto itself.
+      // without the translate would put the picture off-canvas.
       ctx.translate(canvas.width, 0);
       ctx.scale(-1, 1);
     }
-    /*
-      The source rectangle, in SOURCE pixels — which are no longer the same as
-      the canvas's once a cap is downscaling the frame.
-
-      At zoom 1 this is the whole camera frame drawn across the whole
-      destination box: the full field of view, scaled but never cropped. Above
-      1 it is a centred sub-rect of the source, scaled up to fill the same box,
-      so the output resolution never changes with zoom.
-    */
-    const zoom = currentZoom > 1 ? currentZoom : 1;
-    const sw = video.videoWidth / zoom;
-    const sh = video.videoHeight / zoom;
-    const sx = (video.videoWidth - sw) / 2;
-    const sy = (video.videoHeight - sh) / 2;
     // Guarded on the element having decoded something. drawImage throws
     // IndexSizeError on a zero-sized source rect, and the worker ticker makes
     // that reachable for the first time: it starts on a timer and can fire
     // before the camera has produced a frame, where a frame callback by
     // definition could not. The canvas is opaque black until then.
-    if (sw > 0 && sh > 0) ctx.drawImage(video, sx, sy, sw, sh, dx, dy, dw, dh);
+    if (src.width > 0 && src.height > 0) {
+      ctx.drawImage(video, src.x, src.y, src.width, src.height, 0, 0, canvas.width, canvas.height);
+    }
     ctx.restore();
 
     /*
@@ -789,23 +804,12 @@ export async function createFilteredStream(
       the time these run, so a look survives all three without knowing they
       exist.
 
-      Clipped to the picture on a padded target, so a warm wash tints the
-      creator and not the bars around them. The vignette inside that clip is
-      the full-canvas gradient cropped, which is a slightly gentler falloff
-      than the preview's — and only ever reachable on a browser with no
-      `ctx.filter`, which is a phone, which never gets a padded target.
+      No clip on either target now. The picture fills the canvas in both modes,
+      so "the picture" and "the canvas" are the same region, and the clip the
+      padded frame used to need has nothing left to exclude.
     */
     if (lookMode === 'composite') {
-      if (scale < 1) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(dx, dy, dw, dh);
-        ctx.clip();
-        target.vignette = applyLookPasses(ctx, currentFilter, target.vignette);
-        ctx.restore();
-      } else {
-        target.vignette = applyLookPasses(ctx, currentFilter, target.vignette);
-      }
+      target.vignette = applyLookPasses(ctx, currentFilter, target.vignette);
     }
   };
 
@@ -821,11 +825,10 @@ export async function createFilteredStream(
    * one branch between them is the smaller thing to read and the smaller thing
    * to get wrong.
    *
-   * `scale` is ignored here, and that is the design: DESKTOP_PUBLISH_SCALE
-   * exists to put room around a creator who fills a landscape frame, and a
-   * composite already places them in a slot of a known size. So the preview
-   * and the padded publish canvas paint IDENTICAL pictures while this runs —
-   * which is what makes the studio WYSIWYG in this mode.
+   * `target.portrait` is ignored here, and that is the design: this frame is
+   * 720x1280 for BOTH targets, so the preview and the publish canvas paint
+   * IDENTICAL pictures while this runs — which is what makes the studio
+   * WYSIWYG in this mode.
    */
   const paintComposite = (target: PaintTarget) => {
     const { canvas, ctx } = target;
@@ -834,10 +837,10 @@ export async function createFilteredStream(
       THE CANVAS IS THE COMPOSITE'S OWN SIZE, not the camera's.
 
       Same guard as the camera-only path and for the same reason — writing to
-      canvas.width resets the 2D context — but a fixed target rather than a
-      followed one. This assignment is what resizes the published track when a
-      share starts, and the assignment in paintFrame is what puts it back when
-      one stops; neither needs to know the other exists.
+      canvas.width resets the 2D context. On the publish canvas this is now a
+      no-op: that canvas is already 720x1280 in camera-only mode, so starting
+      and stopping a share changes NOTHING about the published track's
+      dimensions. Only the preview, which follows the camera, resizes here.
     */
     if (canvas.width !== COMPOSITE_WIDTH || canvas.height !== COMPOSITE_HEIGHT) {
       canvas.width = COMPOSITE_WIDTH;
@@ -1149,7 +1152,9 @@ export async function createFilteredStream(
   scheduleVideoFrame();
 
   const previewStream = preview.canvas.captureStream(frameRate);
-  const publishStream = padded ? padded.canvas.captureStream(frameRate) : previewStream;
+  const publishStream = portraitPublish
+    ? portraitPublish.canvas.captureStream(frameRate)
+    : previewStream;
   // Audio is not optional here — see the note above. It goes on the PUBLISHED
   // stream: the self-view is muted by definition (an unmuted one is a feedback
   // loop), and where there is no padding these are the same object anyway.
@@ -1167,7 +1172,7 @@ export async function createFilteredStream(
     getStats: () => ({
       fps: measuredFps,
       lookMode,
-      publishScale: padded ? padded.scale : 1,
+      portrait: portraitPublish !== null,
       compositing,
     }),
     setZoom: (zoom) => {
