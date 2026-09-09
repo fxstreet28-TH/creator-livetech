@@ -155,49 +155,92 @@ export function fullFrame(size: CompositeSize = COMPOSITE_SIZE_720): Rect {
 export const COMPOSITE_FRAME_RATE = 24;
 
 /**
- * The largest screen capture worth asking a browser for.
+ * THE OLD 1280x720 CAP IS GONE, and this is where it was.
  *
- * The screen's slot in every layout is at most COMPOSITE_WIDTH across, so a
- * 2560x1440 or 3840x2160 capture is pixels fetched, decoded and then thrown
- * away by `drawImage` on the main thread, every single frame. Constraining
- * `getDisplayMedia` moves that downscale into the browser's own capture path,
- * where it is done off the main thread and once — see lib/live/screenShareCapture.
- *
- * 1280x720 rather than 720x1280-shaped: shared surfaces are landscape (a
- * monitor, a window, a tab) and the constraint is a MAXIMUM on each axis, so a
- * portrait or square surface is capped just as well by the larger of the two.
- * Larger than the slot on purpose — a 720-wide capture drawn into a 720-wide
- * slot would leave nothing for a creator who picks เฉพาะหน้าจอ, where the
- * screen is drawn full width and a little oversampling keeps text crisp.
+ * PR #64 capped `getDisplayMedia` at 1280x720 because a 4K frame downscaled by
+ * `drawImage` on the main thread thirty times a second was the stutter. That
+ * reasoning was right about the cost and wrong about the fix, and กราฟเต็ม is
+ * why: the expensive part is the NUMBER OF SOURCE PIXELS READ PER FRAME, not
+ * the size of the surface they came from, and a `cover` crop reads a fraction
+ * of the frame. So the cap moves up rather than down — see
+ * SCREEN_CAPTURE_MAX_WIDTH_1080 below — and the pixels a wick needs stop being
+ * thrown away in the compositor before the composite ever gets a look at them.
  */
-export const SCREEN_CAPTURE_MAX_WIDTH = 1280;
-export const SCREEN_CAPTURE_MAX_HEIGHT = 720;
 
-/** The same cap at the 1080p rung: 1.5x each axis, as the frame itself is. */
+/**
+ * The FALLBACK cap: 1920x1080, and the largest a 720p composite can use.
+ *
+ * It was the 1080p rung's cap in PR #65 and is now the floor rather than the
+ * ceiling — 1080p asks for the monitor's native frame (see
+ * screenCapturePlanFor) and falls back to exactly this when the paint budget
+ * says a native capture is too expensive on the machine it is running on.
+ *
+ * AND IT IS NOW WHAT 720p ASKS FOR TOO, raised from 1280x720. That looks like
+ * more work for the cheaper rung and is less: the กราฟเต็ม slot is 720x832, so
+ * a `cover` crop reads a 936x1080 REGION of this frame rather than the whole
+ * of it, which is fewer source pixels than the 1280x720 whole frame it
+ * replaces — and it is a 1.3x downscale into the slot instead of the 1.15x
+ * UPSCALE a 1280x720 capture would have been forced into. Fewer pixels read,
+ * and none of them invented.
+ */
 export const SCREEN_CAPTURE_MAX_WIDTH_1080 = 1920;
 export const SCREEN_CAPTURE_MAX_HEIGHT_1080 = 1080;
 
 /**
- * The capture cap for a quality rung — and the reason 1080p is not free.
+ * The capped capture, for every rung that takes one and for the fallback.
  *
- * The cap above exists because pixels captured and then thrown away by
- * `drawImage` on the main thread are what the PR #64 stutter was made of. It
- * has to RISE at 1080p, for the mirror-image reason: a 1280x720 capture drawn
- * into a 1080-wide slot is a 720p chart upscaled, which is the label-only 1080p
- * this change exists to not ship. The chart source must carry the detail the
- * frame is now large enough to hold.
+ * No longer a function of the rung — the rung decides whether there is a cap
+ * AT ALL (see screenCapturePlanFor), and where there is one it is this. Kept
+ * as a function rather than inlined because the two callers that want the
+ * numbers, the studio's fallback and the bench, both want them as a pair.
  *
- * That is a real cost and it is measured rather than assumed — see the paint
- * budget note on COMPOSITE_FRAME_RATE and the [composite] summary line that
- * reports p50/p95 against it five seconds into every share.
+ * That the cost of this is measured rather than assumed is the whole of PR #64
+ * and PR #65's inheritance here: see the paint budget note on
+ * COMPOSITE_FRAME_RATE, the [composite] summary five seconds into every share,
+ * and /dev/live-chart, which measures it against a 2560x1440 source.
  */
-export function screenCaptureCapFor(quality: BroadcastQuality): {
-  width: number;
-  height: number;
-} {
-  return quality === '1080p'
-    ? { width: SCREEN_CAPTURE_MAX_WIDTH_1080, height: SCREEN_CAPTURE_MAX_HEIGHT_1080 }
-    : { width: SCREEN_CAPTURE_MAX_WIDTH, height: SCREEN_CAPTURE_MAX_HEIGHT };
+export function screenCaptureCapFor(): { width: number; height: number } {
+  return { width: SCREEN_CAPTURE_MAX_WIDTH_1080, height: SCREEN_CAPTURE_MAX_HEIGHT_1080 };
+}
+
+/**
+ * THE CAPTURE CHAIN, AND WHY IT HAD TWO RESAMPLES IN IT.
+ *
+ * What a creator's monitor hands a browser, and what reaches the encoder,
+ * were separated by two independent downscales before this:
+ *
+ *   2560x1440 monitor
+ *     -> getDisplayMedia capped at 1920x1080   (1.33x, in the compositor)
+ *     -> drawImage `contain` into a 1080x608 box (1.78x, bilinear, main thread)
+ *
+ * Each one is a resample, and a 1px candle wick survives neither: at 1.33x it
+ * becomes a grey smear across two pixels, and the second pass smears that
+ * again into nothing. 11px axis text goes the same way. No bitrate fixes it —
+ * the detail was destroyed before the encoder ever saw a frame.
+ *
+ * What replaces it in กราฟเต็ม is ONE resample, from a source that still has
+ * the pixels:
+ *
+ *   2560x1440 monitor
+ *     -> getDisplayMedia at NATIVE resolution   (no resample at all)
+ *     -> drawImage of a 1246x1440 source RECT into the 1080x1248 slot
+ *        (1.15x, once — against 2.37x for a `contain` of the same frame, and
+ *         0.87x on a 1920x1080 monitor, where the crop is UPSCALED and so
+ *         nothing at all is thrown away)
+ *
+ * `screenCapturePlanFor` is which of those a rung asks for. Native at 1080p
+ * and above, because that is the rung whose slot is large enough to use the
+ * pixels; capped at 1920x1080 at 720p and below, because a 720x832 slot cannot
+ * use a 4K frame and reading one costs the paint budget PR #64 was spent
+ * buying back.
+ *
+ * `null` means "ask for nothing" — a MAXIMUM constraint is what a cap is, and
+ * the absence of one is how you say native. See lib/live/screenShareCapture.
+ */
+export type ScreenCapturePlan = { width: number; height: number } | null;
+
+export function screenCapturePlanFor(quality: BroadcastQuality): ScreenCapturePlan {
+  return quality === '1080p' ? null : screenCaptureCapFor();
 }
 
 /**
@@ -223,15 +266,81 @@ export const FULL_FRAME: Rect = {
 };
 
 /** The arrangements a creator can pick between while sharing. */
-export type CompositeLayout = 'split' | 'pip' | 'screen';
+export type CompositeLayout = 'split' | 'pip' | 'screen' | 'chartfull';
+
+/**
+ * WHERE THE CROP WINDOW SITS, HORIZONTALLY, IN กราฟเต็ม.
+ *
+ * `cover` on a 16:9 source in a 9:16-ish slot throws width away, and WHICH
+ * width it throws away is the whole difference between a usable chart and a
+ * useless one. TradingView and MT5 both put the PRICE AXIS on the right and
+ * the oldest candles on the left, so cropping from the right — the default
+ * everywhere else, because `cover` centres — would cut off the one column of
+ * numbers a trader is reading out loud.
+ *
+ * Right-anchored is therefore the default: keep the axis and the most recent
+ * price action, lose the oldest candles, which is the least important part of
+ * the picture and the part a viewer on a phone could not read anyway.
+ *
+ * The other two exist because "rare" is not "never": some platforms and some
+ * layouts put the axis on the left, and a creator drawing on the middle of a
+ * chart wants the middle. Three buttons answers all of it; a draggable crop
+ * window is a different feature.
+ */
+export type ChartPan = 'left' | 'center' | 'right';
+
+export const CHART_PAN_ORDER: ChartPan[] = ['left', 'center', 'right'];
+
+export const CHART_PAN_LABELS: Record<ChartPan, string> = {
+  left: 'ซ้าย',
+  center: 'กลาง',
+  right: 'ขวา',
+};
+
+/** The axis side, which is the right side, on the platforms creators use. */
+export const DEFAULT_CHART_PAN: ChartPan = 'right';
+
+export function isChartPan(value: unknown): value is ChartPan {
+  return value === 'left' || value === 'center' || value === 'right';
+}
+
+/**
+ * The share of the frame's HEIGHT the chart gets in กราฟเต็ม.
+ *
+ * 65/35, and the number came off the TikTok trading lives Por put next to
+ * ours. They are all the same shape: the chart edge to edge across roughly two
+ * thirds of the height with NO letterbox inside it, the creator's face in the
+ * band below. What that buys is pixels per candle — a 1080-wide frame gives
+ * the chart 1080x1248 here against 1080x608 of usable picture in ครึ่ง-ครึ่ง,
+ * which is 2.05x the area for the same published frame and the same bitrate.
+ *
+ * 35% is still a real face: 1080x672 is wider than it is tall and larger than
+ * the จอลอย box, so the creator reads as a person rather than a thumbnail.
+ */
+export const CHART_FULL_TOP_RATIO = 0.65;
+
+/** 0 keeps the left edge, 1 the right, 0.5 the middle. See coverSourceRect. */
+export function chartPanAnchor(pan: ChartPan): number {
+  if (pan === 'left') return 0;
+  if (pan === 'center') return 0.5;
+  return 1;
+}
 
 /** Which corner the floating face sits in, in `pip`. */
 export type PipCorner = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
 
 /** The order the segmented control renders in. Object key order is not a contract. */
-export const COMPOSITE_LAYOUT_ORDER: CompositeLayout[] = ['split', 'pip', 'screen'];
+export const COMPOSITE_LAYOUT_ORDER: CompositeLayout[] = [
+  // First, because on a desktop share it is now what a creator starts in and a
+  // segmented control whose selected item is third reads as an override.
+  'chartfull',
+  'split',
+  'pip',
+  'screen',
+];
 
 export const COMPOSITE_LAYOUT_LABELS: Record<CompositeLayout, string> = {
+  chartfull: 'กราฟเต็ม',
   split: 'ครึ่ง-ครึ่ง',
   pip: 'จอลอย',
   screen: 'เฉพาะหน้าจอ',
@@ -272,7 +381,28 @@ export const DEFAULT_COMPOSITE_LAYOUT: CompositeLayout = 'split';
 export const DEFAULT_PIP_CORNER: PipCorner = 'bottom-right';
 
 export function isCompositeLayout(value: unknown): value is CompositeLayout {
-  return value === 'split' || value === 'pip' || value === 'screen';
+  return (
+    value === 'split' || value === 'pip' || value === 'screen' || value === 'chartfull'
+  );
+}
+
+/**
+ * Is this the arrangement that CROPS the share to fill its slot?
+ *
+ * A predicate rather than `=== 'chartfull'` comparisons scattered across the
+ * paint loop, the studio and the bench, because those have to agree about one
+ * thing: this is the preset whose top slot is `cover` with a pan, whatever fit
+ * the source itself declared.
+ *
+ * IT IS NOT THE SWITCH FOR โหมดกราฟ'S ENCODER SETTINGS, and the distinction
+ * matters. `maintain-resolution`, `contentHint: 'detail'` and the raised
+ * ceiling follow the CONTENT — they apply whenever a shared SCREEN is being
+ * composited in, because a chart in a ครึ่ง-ครึ่ง box is still a chart and
+ * still loses its wicks to a silent downscale. This predicate follows the
+ * LAYOUT, and only decides geometry.
+ */
+export function isChartLayout(layout: CompositeLayout): boolean {
+  return layout === 'chartfull';
 }
 
 export function isPipCorner(value: unknown): value is PipCorner {
@@ -390,6 +520,28 @@ export function layoutRects(
     };
   }
 
+  if (layout === 'chartfull') {
+    /*
+      THE TIKTOK GEOMETRY: the chart takes the top 65%, edge to edge.
+
+      Same construction as `split` below — the top is computed, the bottom is
+      "the rest" — so the two meet exactly whatever the rounding does. What
+      differs is the RATIO and, far more importantly, the FIT: the caller draws
+      this slot with `cover` and a pan (see coverSourceRect's `anchorX`), so a
+      16:9 share fills 1080x1248 corner to corner instead of landing 1080x608
+      in the middle of it with black above and below.
+
+      That is where the pixels come from. Nothing here is a bigger canvas or a
+      higher bitrate; it is the same frame, with the part of it that was black
+      given to the chart.
+    */
+    const top = even(size.height * CHART_FULL_TOP_RATIO);
+    return {
+      screen: { x: 0, y: 0, width: size.width, height: top },
+      face: { x: 0, y: top, width: size.width, height: size.height - top },
+    };
+  }
+
   // 'split'. Half each, and the bottom is defined as "the rest" rather than as
   // a second half computed separately — so the two meet exactly, with no gap
   // and no overlap, whatever the top rounds to.
@@ -466,6 +618,23 @@ export function coverSourceRect(
   sourceHeight: number,
   slot: Rect,
   zoom = 1,
+  /**
+   * WHICH PART OF THE WIDTH SURVIVES THE CROP. 0 is the left edge, 1 the
+   * right, 0.5 the centre — which is what `cover` means everywhere else and is
+   * therefore the default, so the camera slots and the mobile composite are
+   * untouched by this parameter existing.
+   *
+   * It is here for กราฟเต็ม and for one reason: the price axis. A centred crop
+   * of a 16:9 chart into a 9:16-ish slot throws away equal width from both
+   * sides, and the right-hand side is where every trading platform puts the
+   * numbers a creator is reading out loud. See ChartPan.
+   *
+   * Vertical is deliberately NOT exposed. A 16:9 source in a taller slot loses
+   * width and keeps all of its height, so there is nothing to choose; a source
+   * TALLER than its slot (a shared phone screen, a portrait window) crops top
+   * and bottom and stays centred, which is right for the same reason a face is.
+   */
+  anchorX = 0.5,
 ): Rect {
   if (!(sourceWidth > 0) || !(sourceHeight > 0) || !(slot.height > 0)) {
     return { x: 0, y: 0, width: 0, height: 0 };
@@ -483,8 +652,12 @@ export function coverSourceRect(
   width /= factor;
   height /= factor;
 
+  // Clamped, because an anchor outside 0..1 would place the crop window off
+  // the source and drawImage would read pixels that are not there.
+  const anchor = Number.isFinite(anchorX) ? Math.min(1, Math.max(0, anchorX)) : 0.5;
+
   return {
-    x: (sourceWidth - width) / 2,
+    x: (sourceWidth - width) * anchor,
     y: (sourceHeight - height) / 2,
     width,
     height,

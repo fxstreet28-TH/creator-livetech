@@ -32,17 +32,28 @@
 import {
   COMPOSITE_FRAME_RATE,
   COMPOSITE_SIZE_720,
+  DEFAULT_CHART_PAN,
   DEFAULT_COMPOSITE_LAYOUT,
   DEFAULT_PIP_CORNER,
+  chartPanAnchor,
   containRect,
   coverSourceRect,
   fullFrame,
+  isChartLayout,
+  isChartPan,
   isCompositeLayout,
   isPipCorner,
   layoutRects,
   pipMetrics,
 } from './compositeCanvas';
-import type { CompositeLayout, CompositeSize, PipCorner, Rect, SlotFit } from './compositeCanvas';
+import type {
+  ChartPan,
+  CompositeLayout,
+  CompositeSize,
+  PipCorner,
+  Rect,
+  SlotFit,
+} from './compositeCanvas';
 
 export const CAMERA_FILTERS = {
   none: { label: 'ปกติ', filter: 'none' },
@@ -527,6 +538,18 @@ export interface FilteredStream {
    */
   setCompositeLayout: (layout: CompositeLayout, pipCorner?: PipCorner) => void;
   /**
+   * Move the กราฟเต็ม crop window: ซ้าย, กลาง or ขวา.
+   *
+   * Free, and free in the same way setCompositeLayout is — one variable the
+   * paint loop reads, so the next frame is drawn from a different part of the
+   * same decoded source. No resize, no replaceTrack, no renegotiation.
+   *
+   * Meaningful only in กราฟเต็ม, where the top slot is `cover`. Setting it in
+   * any other arrangement is remembered and does nothing, which is what lets a
+   * creator flip between presets without losing the pan they chose.
+   */
+  setChartPan: (pan: ChartPan) => void;
+  /**
    * What the pipeline is actually doing, for the ?debug=camera chip.
    *
    * `lookMode` says which of the two look implementations this stream picked,
@@ -578,6 +601,18 @@ export interface FilteredStream {
     /** The creator's chosen arrangement. Only meaningful while compositing. */
     layout: CompositeLayout;
     pipCorner: PipCorner;
+    /** Where the กราฟเต็ม crop window sits. Only meaningful in that preset. */
+    chartPan: ChartPan;
+    /**
+     * True while a shared SCREEN is being composited in — โหมดกราฟ.
+     *
+     * The studio reads this to decide the encoder's mode, so it is the one
+     * place the answer lives: a chip, a log line and an `setEncoderMode` call
+     * that each decided it separately would be three chances to disagree.
+     */
+    chartMode: boolean;
+    /** What the published canvas track is telling the encoder it carries. */
+    publishContentHint: 'motion' | 'detail';
   };
   /** Stops the draw loop and the canvas track. Does NOT stop the source. */
   stop: () => void;
@@ -785,6 +820,28 @@ export async function createFilteredStream(
    */
   let currentLayout: CompositeLayout = DEFAULT_COMPOSITE_LAYOUT;
   let currentPipCorner: PipCorner = DEFAULT_PIP_CORNER;
+  /**
+   * Where the กราฟเต็ม crop window sits horizontally. See ChartPan.
+   *
+   * Read fresh in the paint loop like every other arrangement variable, so
+   * moving it mid-share is one frame drawn from a different part of the same
+   * source — no resize, no republish, nothing a viewer sees but the picture.
+   */
+  let currentChartPan: ChartPan = DEFAULT_CHART_PAN;
+
+  /**
+   * HOW THE TOP SLOT IS FITTED, once the layout has had its say.
+   *
+   * `secondFit` is what the CALLER said the source is — `contain` for a shared
+   * screen, `cover` for a back camera — and it is right about the source. But
+   * กราฟเต็ม is a statement about the FRAME: it exists precisely to stop
+   * containing the chart, because the bars a `contain` leaves are the pixels
+   * the chart needed. So the layout wins in that one preset and the source's
+   * own rule stands everywhere else, which is what keeps ครึ่ง-ครึ่ง, จอลอย
+   * and เฉพาะหน้าจอ pixel-for-pixel what they were.
+   */
+  const effectiveSecondFit = (): SlotFit =>
+    isChartLayout(currentLayout) ? 'cover' : secondFit;
   let running = true;
   let rafId: number | null = null;
   let frameCallbackId: number | null = null;
@@ -1131,8 +1188,53 @@ export async function createFilteredStream(
     const second = secondVideo;
     if (second && second.videoWidth > 0 && second.videoHeight > 0) {
       const slot = rects.screen;
-      if (secondFit === 'cover') {
-        const src = coverSourceRect(second.videoWidth, second.videoHeight, slot);
+      /*
+        THE ONE PLACE THE CANVAS DEFAULT IS NOT GOOD ENOUGH.
+
+        `imageSmoothingQuality` defaults to 'low', which in Chromium is a
+        bilinear filter: four source pixels averaged per destination pixel,
+        whatever the scale factor. That is the right trade for a face and it
+        is the wrong one for a 1px candle wick being resampled by 1.3x — the
+        wick lands between two destination pixels and bilinear turns it into
+        two grey ones, which is exactly the smear this change is about.
+        'high' asks for a windowed filter with a real kernel, which keeps a
+        thin line thin.
+
+        ON THE CHART SLOT ONLY, and restored immediately after. The face below
+        gains nothing from it — a face has no thin lines — and the setting is
+        not free: it is more work per pixel, in the same 41.7ms budget. Set
+        for the draw that needs it, unset for the one that does not.
+      */
+      const wasSmoothing = ctx.imageSmoothingQuality;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      if (effectiveSecondFit() === 'cover') {
+        /*
+          THE CROP WINDOW, AND WHY IT IS WHERE THE SHARPNESS COMES FROM.
+
+          `coverSourceRect` returns a rectangle in SOURCE pixels, and drawImage
+          reads only that rectangle. On a 2560x1440 monitor filling a 1080x1248
+          slot that is a 1246x1440 window: 1.79 million pixels read per frame
+          rather than the whole surface's 3.69 million, and a 1.15x downscale
+          rather than the 2.37x a `contain` of the same frame would be. Fewer
+          pixels touched AND less resampling, from the same frame — which is
+          the whole of F3 in one call. (Measured: /dev/live-chart.)
+
+          `anchorX` is the pan, and it defaults to 0.5 for every OTHER caller
+          of this function (the face slot, the camera-only frame, the mobile
+          back camera), so nothing but กราฟเต็ม can see it. In กราฟเต็ม it
+          defaults to the RIGHT, where the price axis lives.
+        */
+        const anchorX = isChartLayout(currentLayout)
+          ? chartPanAnchor(currentChartPan)
+          : 0.5;
+        const src = coverSourceRect(
+          second.videoWidth,
+          second.videoHeight,
+          slot,
+          1,
+          anchorX,
+        );
         if (src.width > 0 && src.height > 0) {
           ctx.drawImage(
             second,
@@ -1152,6 +1254,7 @@ export async function createFilteredStream(
           ctx.drawImage(second, box.x, box.y, box.width, box.height);
         }
       }
+      ctx.imageSmoothingQuality = wasSmoothing;
     }
 
     /*
@@ -1591,8 +1694,53 @@ export async function createFilteredStream(
    * the wrong shape: the composite is BOTH sources at once, so there is no
    * moment at which 'detail' describes the whole frame either.
    */
+  /**
+   * What the hint IS right now. Read by getStats, written by applyContentHint.
+   *
+   * Held rather than read back off the track because a track's `contentHint`
+   * is a settable property with no guarantee the browser kept what it was
+   * given, and the chip's job is to say what this pipeline decided — a browser
+   * that ignored it is a different bug from a pipeline that never asked.
+   */
+  let publishContentHint: 'motion' | 'detail' = 'motion';
+
+  /**
+   * MOVE THE HINT WITH THE CONTENT. This is the โหมดกราฟ half of PR #63.
+   *
+   * PR #63 set 'motion' and argued it, correctly, like this: the canvas is a
+   * face most of the time and a face-plus-chart the rest, so whichever hint is
+   * set is wrong for part of the picture, and 'detail' preserves sharpness by
+   * DROPPING FRAMES, which on a face is judder — the exact stutter that change
+   * existed to remove. It concluded that switching the hint when a share
+   * starts was the wrong shape because "the composite is BOTH sources at once".
+   *
+   * WHAT MAKES IT THE RIGHT SHAPE NOW is กราฟเต็ม, which changed the ratio the
+   * argument turns on. The composite is no longer half a face: the chart is
+   * 65% of the frame, it is the reason the broadcast exists, and it is the
+   * only part of it carrying detail a phone viewer can lose. The face is the
+   * smaller region, it is a face, and at 24fps a hint-induced judder on it is
+   * a trade worth making — a viewer forgives a slightly less fluid presenter
+   * and cannot forgive an unreadable price.
+   *
+   * So: 'detail' while a SHARED SCREEN is composited in, 'motion' otherwise.
+   * The mobile dual-camera composite keeps 'motion' — its top slot is a back
+   * camera, a moving picture of the world, and it wants the camera's trade.
+   *
+   * The property is settable on a live track and takes effect without
+   * renegotiation, so this is one assignment and nothing downstream learns
+   * about it.
+   */
+  const applyContentHint = (hint: 'motion' | 'detail') => {
+    if (hint === publishContentHint) return;
+    publishContentHint = hint;
+    for (const videoTrack of publishStream.getVideoTracks()) {
+      videoTrack.contentHint = hint;
+    }
+    console.info(`[composite] contentHint: ${hint}`);
+  };
+
   for (const videoTrack of publishStream.getVideoTracks()) {
-    videoTrack.contentHint = 'motion';
+    videoTrack.contentHint = publishContentHint;
   }
   // Audio is not optional here — see the note above. It goes on the PUBLISHED
   // stream: the self-view is muted by definition (an unmuted one is a feedback
@@ -1618,9 +1766,17 @@ export async function createFilteredStream(
       portrait: portraitPublish !== null,
       compositing,
       secondSource: compositing ? secondKind : null,
-      secondFit,
+      // The EFFECTIVE fit, not the caller's — a chip that said `contain` while
+      // the frame was being cropped would be reporting the argument rather
+      // than the picture, which is the one thing this readout is for.
+      secondFit: effectiveSecondFit(),
       layout: currentLayout,
       pipCorner: currentPipCorner,
+      chartPan: currentChartPan,
+      // Follows the CONTENT, not the preset: a shared screen is a chart in
+      // every arrangement. See isChartLayout's note on the difference.
+      chartMode: compositing && secondKind === 'screen',
+      publishContentHint: publishContentHint,
     }),
     setZoom: (zoom) => {
       // Floored at 1: there is no such thing as digital zoom OUT. Widening the
@@ -1638,8 +1794,18 @@ export async function createFilteredStream(
       // on the PUBLISHED frame a creator can only confirm by asking a viewer.
       console.info(
         `[composite] layout: ${currentLayout}` +
-          (currentLayout === 'pip' ? ` (${currentPipCorner})` : ''),
+          (currentLayout === 'pip' ? ` (${currentPipCorner})` : '') +
+          (isChartLayout(currentLayout) ? ` (pan ${currentChartPan})` : ''),
       );
+    },
+    setChartPan: (pan) => {
+      const next = isChartPan(pan) ? pan : DEFAULT_CHART_PAN;
+      if (next === currentChartPan) return;
+      currentChartPan = next;
+      // Same shape as the layout log and for the same reason: the crop window
+      // moving is a change to the PUBLISHED frame that the creator's preview
+      // shows them and no other record would.
+      console.info(`[composite] chart pan: ${currentChartPan}`);
     },
     setSecondSource: async (next, options) => {
       if (!next) {
@@ -1664,6 +1830,9 @@ export async function createFilteredStream(
         // next, every mount states it, and a default reasserted here would be
         // a second place for the two to disagree.
         secondKind = null;
+        // Back to the camera's hint with the camera's frame — PR #63's value,
+        // restored the moment the chart is no longer in the picture.
+        applyContentHint('motion');
         console.info('[composite] off — publishing the camera frame');
         return;
       }
@@ -1680,6 +1849,10 @@ export async function createFilteredStream(
       // one frame of a chart cropped like a face.
       secondFit = options?.fit ?? 'contain';
       secondKind = options?.kind ?? 'screen';
+      // A shared screen is a document; a second camera is not. See
+      // applyContentHint. Set before `compositing` flips, so the first
+      // composite frame the encoder sees is already described correctly.
+      applyContentHint(secondKind === 'screen' ? 'detail' : 'motion');
 
       if (!secondVideo) {
         // Same three properties as the camera's element and for the same
