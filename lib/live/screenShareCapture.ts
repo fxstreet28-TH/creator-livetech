@@ -25,7 +25,11 @@
  * something that can only fail.
  */
 
-import { SCREEN_CAPTURE_MAX_FRAME_RATE, screenCaptureCapFor } from './compositeCanvas';
+import {
+  SCREEN_CAPTURE_MAX_FRAME_RATE,
+  screenCaptureCapFor,
+  screenCapturePlanFor,
+} from './compositeCanvas';
 import { DEFAULT_QUALITY } from './constants';
 import type { BroadcastQuality } from './types';
 
@@ -33,6 +37,27 @@ import type { BroadcastQuality } from './types';
 export interface ScreenShareSession {
   /** Video only, one track. Hand it to the composite pipeline. */
   stream: MediaStream;
+  /**
+   * Ask the browser to downscale THIS capture to 1920x1080, mid-share.
+   *
+   * THE ESCAPE HATCH FOR A NATIVE CAPTURE THAT TURNED OUT TOO EXPENSIVE. A
+   * 1080p share asks for the monitor's own frame, because that is where a
+   * candle wick still exists (see screenCapturePlanFor) — but "can this
+   * machine paint it in 41.7ms?" is not answerable before it is running, and
+   * on a 4K monitor with no GPU compositing the answer can be no. The studio
+   * measures the real paint p95 a few seconds in and calls this when it is
+   * over; `applyConstraints` moves the downscale back into the browser's own
+   * capture path, off the main thread, without touching the track, the canvas,
+   * the peer connection or anything a viewer can see.
+   *
+   * Resolves to the size that is actually in effect afterwards, or null where
+   * the browser refused — in which case the picture is still correct and still
+   * costs what it cost, which is the behaviour before this existed.
+   *
+   * Idempotent: a capture already at or under the cap returns its own size
+   * without asking for anything.
+   */
+  capTo1080: () => Promise<{ width: number; height: number } | null>;
   /**
    * Stop the capture and release the source.
    *
@@ -82,52 +107,58 @@ export async function startScreenShare(
   if (!isScreenShareSupported()) return null;
 
   /**
-   * How large a capture this rung can actually use.
+   * WHAT THIS RUNG ASKS THE BROWSER FOR: a cap, or the monitor itself.
    *
-   * 1280x720 at 720p and 1920x1080 at 1080p — the slot the share is drawn into
-   * scales with the frame, so the cap has to as well or a 1080p composite is a
-   * 720p chart stretched across more pixels, which costs bitrate and buys
-   * nothing. See screenCaptureCapFor for the cost side of that.
+   * `null` at 1080p — the rung whose chart slot is 1080x1248 and can therefore
+   * USE a 1440p or 4K source, once the composite reads a cropped region of it
+   * rather than the whole frame. 1920x1080 below that. See screenCapturePlanFor
+   * for the resample arithmetic that decides it.
    */
-  const cap = screenCaptureCapFor(quality);
+  const plan = screenCapturePlanFor(quality);
+  /** Where a native capture falls back to when the paint budget says so. */
+  const fallbackCap = screenCaptureCapFor();
 
   let stream: MediaStream;
   try {
     stream = await navigator.mediaDevices.getDisplayMedia({
       /**
-       * ==============================================================
-       * CAPTURE SMALL. THE COMPOSITE CANNOT USE ANY MORE THAN THIS.
-       * ==============================================================
+       * ==================================================================
+       * CAPTURE WHAT THE SLOT CAN USE. AT 1080p THAT IS THE MONITOR ITSELF.
+       * ==================================================================
        *
-       * `getDisplayMedia({ video: true })` hands back the SOURCE's native
-       * resolution: a 1440p monitor gives 2560x1440, a 4K one 3840x2160, a
-       * Retina tab twice its CSS size. Those frames were then drawn into a
-       * slot at most 720px across by `drawImage`, on the main thread, thirty
-       * times a second — a downscale of eight million pixels per frame, in the
-       * same thread that has to hand the encoder a finished frame every 33ms.
-       * That is where the stutter came from, and it is why raising the bitrate
-       * did nothing for it: no number of bits fixes a frame that was painted
-       * late.
+       * PR #64 capped this at 1280x720 and PR #65 raised it to 1920x1080, both
+       * for the same correct reason: a 4K frame downscaled by `drawImage` on
+       * the main thread thirty times a second is eight million pixels of work
+       * in a thread that owes the encoder a finished frame every 33ms, and
+       * that was the stutter. No bitrate fixes a frame painted late.
        *
-       * Constrained, the browser does the same downscale in its own capture
-       * path — off the main thread, in the compositor, once — and hands us
-       * frames the size we were going to use anyway. The pixels a creator sees
-       * on their monitor are unchanged; only what is CAPTURED shrinks.
+       * WHAT CHANGED IS WHAT THE COMPOSITE READS. In กราฟเต็ม the chart slot
+       * is drawn `cover` with a source RECT — a 1246x1440 window on a
+       * 2560x1440 monitor, not the whole surface — so the main thread reads
+       * 1.79 million pixels per frame rather than 3.69 million. Asking the
+       * browser to downscale first would throw away exactly the detail this
+       * whole change exists to keep, and would save work the composite is no
+       * longer doing.
        *
-       * A MAXIMUM, not an exact size, on every axis. `max` is a constraint any
-       * source can satisfy by staying under it, so a creator sharing a small
-       * window or a 1366x768 laptop screen gets their own resolution untouched
-       * and nothing is ever upscaled to meet a target.
+       * So at 1080p there is NO size constraint: `plan` is null, the browser
+       * hands back the source's own frame, and the one resample in the chain
+       * is the composite's own crop. Below 1080p the cap stays, because a
+       * 720x832 slot cannot use a 1440p source and reading one would cost the
+       * budget for nothing.
        *
-       * The framerate cap is the source's half of the same argument: a 60Hz
-       * monitor captured at 60 is two decoded frames thrown away for every one
-       * painted. 30 is the ceiling the composite could ever consume — it paints
-       * at COMPOSITE_FRAME_RATE, which is lower still — and a ceiling on a
-       * source is free where dropping frames later is not.
+       * A MAXIMUM, not an exact size, wherever there IS one. `max` is a
+       * constraint any source can satisfy by staying under it, so a creator
+       * sharing a small window or a 1366x768 laptop screen gets their own
+       * resolution untouched and nothing is ever upscaled to meet a target.
+       *
+       * The framerate cap is unconditional and unchanged: a 60Hz monitor
+       * captured at 60 is two decoded frames thrown away for every one
+       * painted. 30 is the ceiling the composite could ever consume — it
+       * paints at COMPOSITE_FRAME_RATE, which is lower still — and a ceiling
+       * on a source is free where dropping frames later is not.
        */
       video: {
-        width: { max: cap.width },
-        height: { max: cap.height },
+        ...(plan ? { width: { max: plan.width }, height: { max: plan.height } } : {}),
         frameRate: { max: SCREEN_CAPTURE_MAX_FRAME_RATE },
       },
       audio: false,
@@ -188,11 +219,11 @@ export async function startScreenShare(
    * window.
    */
   const native = track.getSettings();
-  if ((native.width ?? 0) > cap.width || (native.height ?? 0) > cap.height) {
+  if (plan && ((native.width ?? 0) > plan.width || (native.height ?? 0) > plan.height)) {
     try {
       await track.applyConstraints({
-        width: { max: cap.width },
-        height: { max: cap.height },
+        width: { max: plan.width },
+        height: { max: plan.height },
         frameRate: { max: SCREEN_CAPTURE_MAX_FRAME_RATE },
       });
     } catch (err) {
@@ -218,7 +249,7 @@ export async function startScreenShare(
     `[screen] sharing ${settings.width ?? '?'}x${settings.height ?? '?'} @${settings.frameRate ?? '?'}fps` +
       (settings.displaySurface ? ` (${settings.displaySurface})` : '') +
       capped +
-      ` | cap ${cap.width}x${cap.height} for ${quality}`,
+      ` | ${plan ? `cap ${plan.width}x${plan.height}` : 'native (uncapped)'} for ${quality}`,
   );
 
   /**
@@ -244,6 +275,33 @@ export async function startScreenShare(
 
   return {
     stream,
+    capTo1080: async () => {
+      const current = track.getSettings();
+      const width = current.width ?? 0;
+      const height = current.height ?? 0;
+      // Already small enough. Said as a resolved size rather than as null,
+      // because "nothing to do" and "the browser refused" are different
+      // answers and the caller logs them differently.
+      if (width <= fallbackCap.width && height <= fallbackCap.height) {
+        return { width, height };
+      }
+      try {
+        await track.applyConstraints({
+          width: { max: fallbackCap.width },
+          height: { max: fallbackCap.height },
+          frameRate: { max: SCREEN_CAPTURE_MAX_FRAME_RATE },
+        });
+      } catch (err) {
+        console.warn('[screen] could not fall back to a capped capture', err);
+        return null;
+      }
+      const after = track.getSettings();
+      console.info(
+        `[screen] capture capped mid-share: ${width}x${height} -> ` +
+          `${after.width ?? '?'}x${after.height ?? '?'} (paint budget)`,
+      );
+      return { width: after.width ?? 0, height: after.height ?? 0 };
+    },
     stop: () => {
       if (finished) return;
       finished = true;

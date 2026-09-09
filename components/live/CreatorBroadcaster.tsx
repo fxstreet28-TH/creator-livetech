@@ -68,6 +68,7 @@ import {
   RoomEvent,
   Track,
   connectAsPublisher,
+  setLiveKitEncoderMode,
   createRoom,
   leaveRoom,
   localPublication,
@@ -78,6 +79,7 @@ import {
   type Room,
 } from '@/lib/live/livekitClient';
 import { publishWhip, thaiForWhipError, type WhipSession } from '@/lib/live/whipClient';
+import type { PublishVideoStats } from '@/lib/live/encoderParams';
 import type { BroadcastQuality, LiveDelivery } from '@/lib/live/types';
 import {
   createFilteredStream,
@@ -100,17 +102,21 @@ import {
   type DualCameraTier,
 } from '@/lib/live/dualCameraCapture';
 import {
+  CHART_PAN_LABELS,
+  CHART_PAN_ORDER,
   COMPOSITE_FRAME_RATE,
   COMPOSITE_SIZE_720,
   COMPOSITE_LAYOUT_LABELS,
   COMPOSITE_LAYOUT_ORDER,
+  DEFAULT_CHART_PAN,
   DEFAULT_COMPOSITE_LAYOUT,
   DEFAULT_PIP_CORNER,
   PIP_CORNER_LABELS,
   PIP_CORNER_ORDER,
   compositeSizeFor,
+  isChartLayout,
 } from '@/lib/live/compositeCanvas';
-import type { CompositeLayout, PipCorner } from '@/lib/live/compositeCanvas';
+import type { ChartPan, CompositeLayout, PipCorner } from '@/lib/live/compositeCanvas';
 import {
   isDefaultOrientation,
   shouldFlipPreview,
@@ -245,6 +251,24 @@ interface CreatorBroadcasterProps {
 /** See CreatorBroadcasterProps.presentation. */
 export type BroadcastPresentation = 'framed' | 'fullbleed';
 
+/**
+ * How long after a share starts the paint budget is judged.
+ *
+ * Long enough for the percentiles to be about the steady state rather than
+ * about the canvas resize and the screen's first decodes; short enough that a
+ * creator who is over budget spends six seconds there and not a broadcast.
+ */
+const PAINT_BUDGET_CHECK_MS = 6_000;
+
+/**
+ * How much of the frame budget a paint may take before the capture is capped.
+ *
+ * 80% rather than 100%: a p95 sitting AT the budget is a broadcast with no
+ * headroom, which is the state PR #64 found and fixed. The margin is what stops
+ * the fallback from arriving one browser hiccup too late.
+ */
+const PAINT_BUDGET_LIMIT = 0.8;
+
 /** What a layout needs to draw its own controls. See `controls`. */
 export interface BroadcastControls {
   phase: BroadcastPhase;
@@ -323,6 +347,24 @@ export interface BroadcastControls {
   pipCorner: PipCorner;
   setCompositeLayout: (layout: CompositeLayout) => void;
   setPipCorner: (corner: PipCorner) => void;
+  /**
+   * Where the กราฟเต็ม crop window sits: ซ้าย, กลาง or ขวา.
+   *
+   * Only meaningful in that preset — the control renders only there — but
+   * always readable, for the same reason `pipCorner` is: the choice is
+   * remembered across presets and across a share being stopped and started.
+   */
+  chartPan: ChartPan;
+  setChartPan: (pan: ChartPan) => void;
+  /**
+   * What the ENCODER says it is sending, as opposed to what was asked for.
+   *
+   * Null until the first stats read lands (a second or two into a broadcast)
+   * and on the LiveKit path, where the SDK owns the sender. Rendered only
+   * behind ?debug=camera — see the note on reportStats — because it is a
+   * diagnostic, and because polling it re-renders this component.
+   */
+  encoderStats: PublishVideoStats | null;
 
   /* ------------------------------------------------- the phone's composite */
 
@@ -683,6 +725,22 @@ export function CreatorBroadcaster({
   }, []);
 
   /**
+   * Where the กราฟเต็ม crop window sits. Same state/ref pair as the layout,
+   * for the same reason: rendered from one, read by `connect` from the other.
+   */
+  const [chartPan, setChartPanState] = useState<ChartPan>(DEFAULT_CHART_PAN);
+  const chartPanRef = useRef<ChartPan>(DEFAULT_CHART_PAN);
+
+  const chooseChartPan = useCallback((next: ChartPan) => {
+    chartPanRef.current = next;
+    setChartPanState(next);
+    // Straight at the paint loop, like the layout — a creator moving the crop
+    // is watching the preview to decide, and a frame of latency there is a
+    // control that feels broken.
+    filteredRef.current?.setChartPan(next);
+  }, []);
+
+  /**
    * The running capture, held outside React so the teardown paths — the
    * browser's own "Stop sharing" bar, the toggle, a reconnect, unmount — can
    * all reach it without any of them being a render.
@@ -699,6 +757,68 @@ export function CreatorBroadcaster({
    */
   const screenSharePendingRef = useRef(false);
 
+  /**
+   * THE ONE THING A NATIVE CAPTURE CANNOT PROMISE: that it fits in 41.7ms.
+   *
+   * A 1080p share asks the browser for the monitor's own frame, because that
+   * is where a candle wick still exists (see screenCapturePlanFor). Whether
+   * THIS machine can crop and paint one of those in a 24fps budget is not
+   * answerable in advance — it depends on the monitor, the GPU, what else the
+   * creator has open — so it is measured on the real pipeline a few seconds
+   * in, and the answer, if it is no, is to move the downscale back into the
+   * browser's capture path where it is cheap.
+   *
+   * ONE MEASUREMENT PER SHARE, and it only ever tightens. A capped capture is
+   * not re-measured and never re-opened at native resolution: a control that
+   * oscillated between two capture sizes on a moving p95 would be worse than
+   * either of them.
+   */
+  const paintBudgetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearPaintBudgetCheck = useCallback(() => {
+    if (paintBudgetTimerRef.current === null) return;
+    clearTimeout(paintBudgetTimerRef.current);
+    paintBudgetTimerRef.current = null;
+  }, []);
+
+  /**
+   * Six seconds in: is the composite keeping up with the frame it is painting?
+   *
+   * Deferred rather than immediate because the numbers do not exist yet when a
+   * share starts — the first paints include the screen's first decodes and a
+   * canvas resize, and a p95 over four frames is noise. Same delay and same
+   * reasoning as the [composite] paint summary this reads its numbers from.
+   */
+  const schedulePaintBudgetCheck = useCallback(
+    (session: ScreenShareSession) => {
+      clearPaintBudgetCheck();
+      paintBudgetTimerRef.current = setTimeout(() => {
+        paintBudgetTimerRef.current = null;
+        // The share may have ended, or the pipeline been rebuilt, in the
+        // seconds this was waiting. Capping a capture that is no longer being
+        // painted would be a log line about nothing.
+        if (screenShareRef.current !== session) return;
+        const stats = filteredRef.current?.getStats();
+        if (!stats || !stats.compositing || stats.frameBudgetMs <= 0) return;
+        const used = stats.paintP95 / stats.frameBudgetMs;
+        if (used <= PAINT_BUDGET_LIMIT) {
+          console.info(
+            `[composite] paint fits at native capture — p95 ${stats.paintP95}ms of ` +
+              `${stats.frameBudgetMs}ms (${Math.round(used * 100)}%)`,
+          );
+          return;
+        }
+        console.warn(
+          `[composite] paint over ${Math.round(PAINT_BUDGET_LIMIT * 100)}% of budget — ` +
+            `p95 ${stats.paintP95}ms of ${stats.frameBudgetMs}ms ` +
+            `(${Math.round(used * 100)}%); capping the capture`,
+        );
+        void session.capTo1080();
+      }, PAINT_BUDGET_CHECK_MS);
+    },
+    [clearPaintBudgetCheck],
+  );
+
   const [openMenu, setOpenMenu] = useState<'look' | 'camera' | null>(null);
   const [phase, setPhase] = useState<BroadcastPhase>('connecting');
   const [error, setError] = useState<string | null>(null);
@@ -714,6 +834,8 @@ export function CreatorBroadcaster({
   const [audioLevel, setAudioLevel] = useState(0);
   const [lookMode, setLookMode] = useState<LookMode | null>(null);
   const [captureFps, setCaptureFps] = useState(0);
+  /** The encoder's own account of itself. Polled only under ?debug=camera. */
+  const [encoderStats, setEncoderStats] = useState<PublishVideoStats | null>(null);
   const [camOn, setCamOn] = useState(true);
   const [micOn, setMicOn] = useState(micEnabled);
   /** Bumped by the manual "ลองใหม่", which restarts the whole connect effect. */
@@ -1099,6 +1221,11 @@ export function CreatorBroadcaster({
           // reconnect. A fresh pipeline starts at the defaults, so without
           // this a blip would silently put a creator back in ครึ่ง-ครึ่ง.
           filtered.setCompositeLayout(compositeLayoutRef.current, pipCornerRef.current);
+          // The crop window travels with the arrangement, for the same reason:
+          // a reconnect that put a creator's chart back to the middle would
+          // move the price axis out of frame without anybody touching a
+          // control.
+          filtered.setChartPan(chartPanRef.current);
           setLookMode(filtered.getStats().lookMode);
         } catch (err) {
           if (cancelled) return;
@@ -1334,6 +1461,20 @@ export function CreatorBroadcaster({
     if (!reportStats) return;
     const timer = setInterval(() => {
       setCaptureFps(filteredRef.current?.getStats().fps ?? 0);
+      /**
+       * AND WHAT THE ENCODER IS ACTUALLY SENDING.
+       *
+       * The number the chip exists for, since โหมดกราฟ: `frameWidth x
+       * frameHeight` off `outbound-rtp` is the only place the published
+       * resolution is a fact rather than a request, and a 1080p broadcast
+       * quietly encoding 540p looks identical in every other readout on this
+       * screen. The session polls and logs this on its own five-second clock;
+       * this read is for the chip, and it costs a getStats a second only while
+       * somebody has ?debug=camera open.
+       */
+      void whipRef.current?.getVideoStats().then((stats) => {
+        setEncoderStats(stats);
+      });
     }, 1000);
     return () => clearInterval(timer);
   }, [reportStats]);
@@ -1555,19 +1696,35 @@ export function CreatorBroadcaster({
     const session = screenShareRef.current;
     screenShareRef.current = null;
     if (stopCapture) session?.stop();
+    clearPaintBudgetCheck();
     void filteredRef.current?.setSecondSource(null);
     /**
-     * The encoder's cap follows the canvas back up to 30.
+     * The encoder goes back to the camera's terms, both numbers at once.
+     *
+     * The cap follows the canvas back up to 30 — that is PR #64's line — and
+     * chart mode is given up with it: `maintain-framerate` returns,
+     * `scaleResolutionDownBy` is left alone, and the ceiling drops back to the
+     * rung's own figure. A face has no use for any of the three, and leaving
+     * a raised ceiling standing on a camera-only broadcast would be billing
+     * for a picture nobody asked for.
      *
      * In-band on the live session — no renegotiation, nothing a viewer sees
-     * (see WhipSession.setMaxFramerate). Fire-and-forget because it cannot
-     * fail in a way worth handling: the worst case is an encoder still capped
-     * at 24 on a canvas painting 30, which is a slightly smoother picture than
-     * yesterday rather than a broken one.
+     * (see WhipSession.setEncoderMode). Fire-and-forget because it cannot fail
+     * in a way worth handling: the worst case is an encoder still in chart
+     * mode on a camera frame, which is a slightly sharper, slightly less
+     * fluid picture rather than a broken one.
      */
-    void whipRef.current?.setMaxFramerate(resolutionFor(quality).frameRate);
+    void whipRef.current?.setEncoderMode({
+      maxFramerate: resolutionFor(quality).frameRate,
+      chartMode: false,
+    });
+    void setLiveKitEncoderMode(roomRef.current, {
+      quality,
+      maxFramerate: resolutionFor(quality).frameRate,
+      chartMode: false,
+    });
     setScreenSharing(false);
-  }, [quality]);
+  }, [clearPaintBudgetCheck, quality]);
 
   /**
    * Share a screen, or stop sharing one.
@@ -1627,23 +1784,86 @@ export function CreatorBroadcaster({
 
     screenShareRef.current = session;
     try {
-      // `contain`, explicitly: a shared chart cropped to fill the slot loses
-      // its price axis off one side and its time axis off the other. The
-      // mobile back camera passes 'cover' instead — see toggleDualCamera.
+      /**
+       * โหมดกราฟ ENGAGES ON SHARE START, WITHOUT BEING ASKED.
+       *
+       * A creator who has just chosen a TradingView window has told us what
+       * the broadcast is about, and กราฟเต็ม is the arrangement that is right
+       * for it: the chart across the top 65% of the frame, cropped to fill
+       * rather than contained inside bars, with the price axis kept. Landing
+       * in ครึ่ง-ครึ่ง and expecting them to find a preset picker is asking a
+       * creator to know why their chart looks soft.
+       *
+       * They can still pick any of the other three, and their choice stands
+       * for the rest of that share — this only runs on a share STARTING.
+       */
+      chooseCompositeLayout('chartfull');
+      // `contain` is still what a shared screen IS, and it is what the other
+      // three presets do with it. กราฟเต็ม overrides it in the paint loop
+      // rather than here, so that flipping to ครึ่ง-ครึ่ง mid-share puts the
+      // whole chart back without the studio having to restate anything. See
+      // effectiveSecondFit in cameraFilters.
       await target.setSecondSource(session.stream, { fit: 'contain', kind: 'screen' });
-      // The composite paints at 24 from the line above; this is the encoder
-      // being told the same thing. Capping it is what makes a frame the
-      // encoder cannot finish in time a DROPPED frame rather than a queued
-      // one — a queue is the multi-second lag Por recorded, and it is the one
-      // failure mode no amount of bitrate can fix.
-      void whipRef.current?.setMaxFramerate(COMPOSITE_FRAME_RATE);
+      /**
+       * The encoder is told BOTH things about the new frame, in one call.
+       *
+       * The framerate cap is PR #64's: the composite paints at 24, and capping
+       * the encoder there is what makes a frame it cannot finish in time a
+       * DROPPED frame rather than a queued one — a queue is the multi-second
+       * lag Por recorded, and no amount of bitrate fixes it.
+       *
+       * Chart mode is this change's: hold the resolution, spend the framerate,
+       * and raise the ceiling by half. See WhipSession.setEncoderMode for why
+       * each of those is the opposite of the camera-only choice.
+       */
+      void whipRef.current?.setEncoderMode({
+        maxFramerate: COMPOSITE_FRAME_RATE,
+        chartMode: true,
+      });
+      // The other publisher, told the same thing. Exactly one of the two is
+      // ever live — `whipRef` on the origin path, `roomRef` on every other —
+      // so this is not a double write, it is the same write reaching whichever
+      // one this broadcast is using. See setLiveKitEncoderMode.
+      void setLiveKitEncoderMode(roomRef.current, {
+        quality,
+        maxFramerate: COMPOSITE_FRAME_RATE,
+        chartMode: true,
+      });
+      // The paint budget is judged by the effect below rather than here — it
+      // has to re-judge on a LAYOUT change too, and one scheduler is better
+      // than two that could disagree about which capture is in effect.
     } catch (err) {
       console.error('[composite] could not mount the screen source', err);
       endScreenShare(true);
       return;
     }
     setScreenSharing(true);
-  }, [endScreenShare, quality]);
+  }, [chooseCompositeLayout, endScreenShare, quality]);
+
+  /**
+   * RE-JUDGE THE PAINT BUDGET WHENEVER THE ARRANGEMENT CHANGES, not just on
+   * share start.
+   *
+   * A native capture is affordable BECAUSE of the crop: กราฟเต็ม reads a
+   * 1246x1440 window of a 2560x1440 monitor. The other three presets `contain`
+   * the share, which reads the WHOLE surface every frame — measurably more
+   * main-thread work, and on a machine without GPU compositing it is the
+   * difference between fitting the 41.7ms budget and not (measured at 95% vs
+   * 103% of budget on the /dev/live-chart bench). A creator who starts in
+   * กราฟเต็ม and switches to ครึ่ง-ครึ่ง has changed the cost of every frame,
+   * so the question gets asked again.
+   *
+   * It only ever tightens: `capTo1080` is one-way, so switching back to
+   * กราฟเต็ม does not re-open the capture at native resolution. A control that
+   * oscillated between two capture sizes on a moving p95 would be worse than
+   * either of them.
+   */
+  useEffect(() => {
+    const session = screenShareRef.current;
+    if (!session || !screenSharing) return;
+    schedulePaintBudgetCheck(session);
+    return clearPaintBudgetCheck;
+  }, [compositeLayout, screenSharing, schedulePaintBudgetCheck, clearPaintBudgetCheck]);
 
   /**
    * Never leave a capture running behind a studio that is gone.
@@ -1657,8 +1877,11 @@ export function CreatorBroadcaster({
     return () => {
       screenShareRef.current?.stop();
       screenShareRef.current = null;
+      // The timer outlives the component otherwise, and it closes over a
+      // session and a pipeline that are both gone by the time it fires.
+      clearPaintBudgetCheck();
     };
-  }, []);
+  }, [clearPaintBudgetCheck]);
 
   /*
     ==========================================================================
@@ -2221,6 +2444,9 @@ export function CreatorBroadcaster({
           compositeLayout,
           pipCorner,
           setCompositeLayout: chooseCompositeLayout,
+          chartPan,
+          setChartPan: chooseChartPan,
+          encoderStats,
           setPipCorner: choosePipCorner,
         })}
       </>
@@ -2267,6 +2493,56 @@ export function CreatorBroadcaster({
           <ViewerCountPill count={viewerCount} />
           <DurationPill seconds={elapsedSeconds} />
         </div>
+
+        {/*
+          THE ENCODER'S OWN NUMBERS, on the screen the creator is already
+          looking at. ?debug=camera only — see reportStats.
+
+          The phone studio has had a chip like this since PR #50, for the
+          question "what did this iPhone actually hand back?". The desktop's
+          question is the mirror image and is newer: what is the ENCODER
+          actually sending? A creator on 1080p whose sender quietly settled at
+          960x540 under `cpu` sees 1080p on the pill, 1080p in the form, 1080p
+          in every log — and a soft chart. The one place that disagrees is
+          `outbound-rtp`, and this is it, four numbers wide.
+
+          `sending` is the finding. `limit` is why, when it is not 'none'.
+          `mode` says whether โหมดกราฟ is engaged, because a chart that is soft
+          WITH chart mode on and one that is soft because it never turned on
+          are different bugs with the same picture.
+        */}
+        {reportStats && (
+          <div
+            role="status"
+            className="pointer-events-none absolute bottom-3 right-3 z-10 flex flex-col items-end gap-0.5 rounded-lg bg-black/70 px-2.5 py-1.5 text-[11px] leading-tight tabular-nums text-white/75 backdrop-blur-sm"
+          >
+            <span>
+              canvas {compositeSizeFor(quality).width}x{compositeSizeFor(quality).height} ·{' '}
+              {captureFps || '—'}fps · {lookMode ?? '—'}
+            </span>
+            <span
+              className={
+                encoderStats &&
+                encoderStats.qualityLimitationReason &&
+                encoderStats.qualityLimitationReason !== 'none'
+                  ? 'text-amber-300'
+                  : undefined
+              }
+            >
+              sending {encoderStats?.frameWidth ?? '—'}x{encoderStats?.frameHeight ?? '—'} ·{' '}
+              limit {encoderStats?.qualityLimitationReason ?? '—'}
+            </span>
+            <span>
+              {encoderStats?.bitrate ? `${Math.round(encoderStats.bitrate / 1000)}kbps · ` : ''}
+              {encoderStats?.encoderImplementation ?? '—'}
+            </span>
+            <span>
+              mode {screenSharing ? 'chart' : 'camera'}
+              {screenSharing ? ` · ${compositeLayout}` : ''}
+              {screenSharing && isChartLayout(compositeLayout) ? ` · pan ${chartPan}` : ''}
+            </span>
+          </div>
+        )}
 
         {/* Audio level, bottom-left. Sits over the video rather than beside it
             so a creator watching their own framing sees it without looking
@@ -2426,6 +2702,46 @@ export function CreatorBroadcaster({
                 ].join(' ')}
               >
                 {COMPOSITE_LAYOUT_LABELS[layout]}
+              </button>
+            ))}
+          </div>
+        )}
+        {/*
+          WHERE THE กราฟเต็ม CROP WINDOW SITS.
+
+          Three buttons, default ขวา, and only under กราฟเต็ม — the crop is a
+          property of that preset and the other three have nothing to pan.
+
+          IT EXISTS BECAUSE THE DEFAULT IS AN ASSUMPTION. `cover` on a 16:9
+          chart in a 9:16 slot throws width away, and the assumption baked into
+          the default is that the price axis is on the right, which is true of
+          TradingView, MT5 and every platform a Thai forex creator is likely to
+          be on. A creator whose axis is on the left, or who is drawing on the
+          middle of the chart, needs one tap rather than a support thread —
+          and the preview is WYSIWYG, so which one is right is a thing they can
+          see rather than guess.
+        */}
+        {screenShareReady && screenSharing && isChartLayout(compositeLayout) && (
+          <div
+            role="radiogroup"
+            aria-label="ตำแหน่งกราฟในเฟรม"
+            className="inline-flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.04] p-1"
+          >
+            {CHART_PAN_ORDER.map((pan) => (
+              <button
+                key={pan}
+                type="button"
+                role="radio"
+                aria-checked={chartPan === pan}
+                onClick={() => chooseChartPan(pan)}
+                className={[
+                  'relative z-50 inline-flex min-h-9 items-center rounded-lg px-2.5 text-xs font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400',
+                  chartPan === pan
+                    ? 'bg-cyan-400/20 text-cyan-100'
+                    : 'text-white/65 hover:bg-white/[0.06] hover:text-white/85',
+                ].join(' ')}
+              >
+                {CHART_PAN_LABELS[pan]}
               </button>
             ))}
           </div>
