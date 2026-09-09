@@ -610,6 +610,32 @@ export async function createFilteredStream(
   let running = true;
   let rafId: number | null = null;
   let frameCallbackId: number | null = null;
+  /**
+   * The ticker that keeps painting when nothing else will. See startTicker.
+   *
+   * Null where a Worker or a Blob URL cannot be built — an old browser, a
+   * Content-Security-Policy with no `worker-src blob:`. There the loop is
+   * exactly what it was before: rVFC while visible, frozen while hidden. A
+   * missing optimisation, not a broken broadcast.
+   */
+  let ticker: Worker | null = null;
+  let tickerUrl: string | null = null;
+  /**
+   * Re-entrancy guard. Two painters now feed one canvas — rVFC and the worker
+   * — and a tick that lands mid-paint must be dropped rather than queued: the
+   * next one is 33ms away and painting the same decoded frame twice buys
+   * nothing but contention.
+   */
+  let painting = false;
+  /**
+   * When the last frame was painted, by either painter.
+   *
+   * The ticker's SAFETY NET, not its normal signal — see the tick handler.
+   * Visibility decides which painter is in charge; this catches the case
+   * visibility cannot describe, a frame callback that has quietly stopped
+   * arriving in a tab that still calls itself visible.
+   */
+  let lastPaintAt = 0;
 
   /*
     WHICH LOOK IMPLEMENTATION THIS STREAM USES, decided ONCE.
@@ -741,7 +767,12 @@ export async function createFilteredStream(
     const sh = video.videoHeight / zoom;
     const sx = (video.videoWidth - sw) / 2;
     const sy = (video.videoHeight - sh) / 2;
-    ctx.drawImage(video, sx, sy, sw, sh, dx, dy, dw, dh);
+    // Guarded on the element having decoded something. drawImage throws
+    // IndexSizeError on a zero-sized source rect, and the worker ticker makes
+    // that reachable for the first time: it starts on a timer and can fire
+    // before the camera has produced a frame, where a frame callback by
+    // definition could not. The canvas is opaque black until then.
+    if (sw > 0 && sh > 0) ctx.drawImage(video, sx, sy, sw, sh, dx, dy, dw, dh);
     ctx.restore();
 
     /*
@@ -899,43 +930,223 @@ export async function createFilteredStream(
     }
   };
 
-  const draw = () => {
-    if (!running) return;
+  /**
+   * Paint every target once. The only thing that actually draws.
+   *
+   * Called from TWO places now — the frame callback and the worker ticker —
+   * which is why the re-entrancy guard and the timestamp live here rather
+   * than in either caller: whichever painter runs, the other one can see that
+   * it did.
+   */
+  const paintAllTargets = () => {
+    if (!running || painting) return;
+    painting = true;
+    try {
+      // Both canvases from the SAME call, in the same tick, off the same
+      // decoded frame — so the creator's preview and the audience's picture can
+      // never be a frame apart from each other.
+      // One decoded camera frame, read once, painted into every target — and in
+      // composite mode the screen's <video> is read in the same tick, so the two
+      // sources in a published frame are never a frame apart from each other.
+      const paint = compositing ? paintComposite : paintFrame;
+      for (const target of targets) paint(target);
+    } finally {
+      // In a finally so a throw from one target — a canvas whose context was
+      // lost, a drawImage on a video that just went away — cannot wedge the
+      // guard on and stop the broadcast painting for good.
+      painting = false;
+    }
 
-    // Both canvases from the SAME callback, in the same tick, off the same
-    // decoded frame — so the creator's preview and the audience's picture can
-    // never be a frame apart from each other.
-    // One decoded camera frame, read once, painted into every target — and in
-    // composite mode the screen's <video> is read in the same tick, so the two
-    // sources in a published frame are never a frame apart from each other.
-    const paint = compositing ? paintComposite : paintFrame;
-    for (const target of targets) paint(target);
-
+    lastPaintAt = now();
     framesThisWindow += 1;
-    const at = now();
+    const at = lastPaintAt;
     if (at - windowStartedAt >= 1000) {
       measuredFps = Math.round((framesThisWindow * 1000) / (at - windowStartedAt));
       framesThisWindow = 0;
       windowStartedAt = at;
     }
-
-    schedule();
   };
 
-  const schedule = () => {
+  const documentHidden = () =>
+    typeof document !== 'undefined' && document.visibilityState === 'hidden';
+
+  /**
+   * The frame callback chain: paint, then ask for the next one.
+   *
+   * This is the OPTIMISATION, not the guarantee. It aligns paints to decoded
+   * camera frames, so a visible tab does exactly the work it did before this
+   * change and not a frame more. The guarantee is the worker ticker below.
+   */
+  const onVideoFrame = () => {
+    frameCallbackId = null;
+    rafId = null;
     if (!running) return;
+    paintAllTargets();
+    scheduleVideoFrame();
+  };
+
+  function scheduleVideoFrame() {
+    if (!running) return;
+    // Already armed. Reachable when a tab becomes visible again while a
+    // callback from before it was hidden is still outstanding; arming a
+    // second one would run two chains at once for the rest of the broadcast.
+    if (frameCallbackId !== null || rafId !== null) return;
+    // Pointless while hidden: Chrome delivers neither rVFC nor rAF to a
+    // hidden tab. Not arming there is what makes the visible-again path
+    // deterministic rather than dependent on whether the browser chose to
+    // flush a callback it had been sitting on.
+    if (documentHidden()) return;
+
     const withFrameCallback = video as HTMLVideoElement & {
       requestVideoFrameCallback?: (cb: () => void) => number;
       cancelVideoFrameCallback?: (id: number) => void;
     };
     if (typeof withFrameCallback.requestVideoFrameCallback === 'function') {
-      frameCallbackId = withFrameCallback.requestVideoFrameCallback(draw);
+      frameCallbackId = withFrameCallback.requestVideoFrameCallback(onVideoFrame);
       return;
     }
-    rafId = requestAnimationFrame(draw);
+    rafId = requestAnimationFrame(onVideoFrame);
+  }
+
+  const cancelVideoFrame = () => {
+    if (rafId !== null) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+    const withFrameCallback = video as HTMLVideoElement & {
+      cancelVideoFrameCallback?: (id: number) => void;
+    };
+    if (frameCallbackId !== null) {
+      withFrameCallback.cancelVideoFrameCallback?.(frameCallbackId);
+      frameCallbackId = null;
+    }
   };
 
-  draw();
+  /**
+   * ==================================================================
+   * WHY A WEB WORKER OWNS THE CLOCK.
+   * ==================================================================
+   *
+   * A creator who shares their screen is, by definition, about to go and look
+   * at the thing they shared. They click แชร์หน้าจอ, pick their TradingView
+   * tab, switch to it — and the broadcaster tab is now hidden.
+   *
+   * Chrome delivers `requestVideoFrameCallback` and `requestAnimationFrame`
+   * to VISIBLE tabs only. Both stop dead the moment the tab goes to the
+   * background. The canvas therefore stops being painted, and a canvas that
+   * is not painted is a canvas whose `captureStream` track emits no new
+   * frames — so the published track sits on its last painted frame for as
+   * long as the creator is away. The audience sees a photograph. That is
+   * exactly what was reported: a frozen face, and never the chart.
+   *
+   * It was never a composite bug. The camera-only path has had it all along —
+   * alt-tab away to read chat and the broadcast froze too — it just took
+   * screen share, where leaving the tab is the POINT, to make it obvious.
+   *
+   * `setInterval` on `window` is not the fix, it is the same bug with extra
+   * steps: Chrome clamps background window timers to 1Hz, and after five
+   * minutes in the background to once a minute. One frame a minute is not a
+   * broadcast.
+   *
+   * WORKER timers are not throttled that way. A worker has no rendering to
+   * align to and no visibility of its own, so its interval keeps firing at
+   * the rate it was given whatever the tab is doing. It posts a message; the
+   * main thread paints. All the worker knows how to do is say "now" 30 times
+   * a second, which is the smallest possible thing to put on a second thread.
+   */
+  const startTicker = () => {
+    if (typeof Worker !== 'function' || typeof URL?.createObjectURL !== 'function') {
+      console.warn('[camera] no Worker; frames will freeze while the tab is hidden');
+      return;
+    }
+
+    // The interval is baked into the source rather than posted in afterwards:
+    // the worker has no protocol, no state and no message handler, so there
+    // is nothing to get out of step with the main thread.
+    const source = `let n=0;setInterval(()=>postMessage(++n),${1000 / frameRate});`;
+
+    try {
+      const blob = new Blob([source], { type: 'text/javascript' });
+      tickerUrl = URL.createObjectURL(blob);
+      ticker = new Worker(tickerUrl);
+      ticker.onmessage = () => {
+        if (!running) return;
+
+        /*
+          WHICH PAINTER OWNS THIS TICK.
+
+          Hidden: the ticker, every tick, because nothing else is being
+          delivered. That is the fix, and it lands the canvas on the capture
+          rate exactly rather than approximately.
+
+          Visible: rVFC, and the ticker returns after one comparison. Note
+          what this is NOT — an "has it been a frame interval?" test. The two
+          clocks run at the SAME rate, so a tick lands a hair under one
+          interval after the paint it follows, every time; a one-interval
+          threshold would skip every other tick and hold the loop at half
+          rate. That is not hypothetical, it is what the first cut of this did
+          and what the bench measured: 15fps.
+
+          So the threshold is TWO intervals, and it is a staleness check
+          rather than a dedup: while rVFC is healthy it never trips, and if
+          rVFC stops arriving in a tab that still reports itself visible — a
+          case visibilitychange cannot tell us about — the ticker picks the
+          loop up within two frames instead of leaving the audience on a
+          still.
+        */
+        if (!documentHidden() && now() - lastPaintAt < 2000 / frameRate) return;
+        paintAllTargets();
+      };
+    } catch (err) {
+      // A CSP without `worker-src blob:` lands here. Degrade to the old
+      // behaviour rather than failing the broadcast over a background-tab
+      // optimisation.
+      console.warn('[camera] ticker worker unavailable; frames freeze when hidden', err);
+      stopTicker();
+    }
+  };
+
+  function stopTicker() {
+    if (ticker) {
+      ticker.onmessage = null;
+      ticker.terminate();
+      ticker = null;
+    }
+    if (tickerUrl) {
+      // The blob is a document-lifetime allocation until this runs, and a
+      // creator who stops and restarts a broadcast would leak one per go.
+      URL.revokeObjectURL(tickerUrl);
+      tickerUrl = null;
+    }
+  }
+
+  /**
+   * Which painter is doing the work, announced once per transition.
+   *
+   * Nothing branches on this — the dedup above needs no mode — so it is
+   * purely so that "did the ticker take over?" is answerable from a console
+   * log next to the creator's own screen recording, rather than by inference
+   * from a viewer's frozen picture.
+   */
+  const onVisibilityChange = () => {
+    if (!running) return;
+    if (documentHidden()) {
+      // Cancelled rather than left outstanding: see scheduleVideoFrame.
+      cancelVideoFrame();
+      console.info('[camera] ticker: worker');
+    } else {
+      console.info('[camera] ticker: rvfc');
+      scheduleVideoFrame();
+    }
+  };
+
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibilityChange);
+  }
+
+  startTicker();
+  paintAllTargets();
+  scheduleVideoFrame();
 
   const previewStream = preview.canvas.captureStream(frameRate);
   const publishStream = padded ? padded.canvas.captureStream(frameRate) : previewStream;
@@ -1028,12 +1239,16 @@ export async function createFilteredStream(
     },
     stop: () => {
       running = false;
-      if (rafId !== null) cancelAnimationFrame(rafId);
-      const withFrameCallback = video as HTMLVideoElement & {
-        cancelVideoFrameCallback?: (id: number) => void;
-      };
-      if (frameCallbackId !== null && withFrameCallback.cancelVideoFrameCallback) {
-        withFrameCallback.cancelVideoFrameCallback(frameCallbackId);
+      cancelVideoFrame();
+      // The worker holds an interval on a thread of its own: nothing about
+      // this canvas going away stops it, and a creator who ends a broadcast
+      // and starts another would accumulate one live worker per broadcast,
+      // each still posting 30 messages a second at a handler whose canvas is
+      // gone. Terminated here, with its blob URL, is the only place that
+      // cannot be missed.
+      stopTicker();
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibilityChange);
       }
       // Only the canvas tracks: the source belongs to whoever opened the
       // camera, and stopping it here would take the preview with it. Both
