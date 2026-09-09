@@ -42,7 +42,7 @@ import {
   layoutRects,
   pipMetrics,
 } from './compositeCanvas';
-import type { CompositeLayout, CompositeSize, PipCorner, Rect } from './compositeCanvas';
+import type { CompositeLayout, CompositeSize, PipCorner, Rect, SlotFit } from './compositeCanvas';
 
 export const CAMERA_FILTERS = {
   none: { label: 'ปกติ', filter: 'none' },
@@ -380,6 +380,28 @@ export function applyLookPasses(
  * than the display's — on a 120Hz screen a requestAnimationFrame loop would do
  * four times the work for the same output.
  */
+/**
+ * What the second source IS, so the composite can draw it correctly.
+ *
+ * Two fields and both are descriptions of the source rather than instructions
+ * to the layout — the geometry is identical either way (see layoutRects), and
+ * a caller that had to choose a rectangle as well as a source would be a
+ * caller that could put a camera somewhere a screen does not go.
+ */
+export interface SecondSourceOptions {
+  /**
+   * `contain` for a shared screen, `cover` for a camera. Defaults to
+   * `contain`, which is what the desktop share path has always done and what a
+   * caller that says nothing therefore keeps.
+   */
+  fit?: SlotFit;
+  /** What it is, for the log line and the debug chip. Defaults to 'screen'. */
+  kind?: SecondSourceKind;
+}
+
+/** A shared screen, or a second camera. Diagnostic — see getStats. */
+export type SecondSourceKind = 'screen' | 'camera';
+
 export interface FilteredStream {
   /**
    * Show this to the CREATOR. The camera's own frame, whole, never cropped.
@@ -444,14 +466,27 @@ export interface FilteredStream {
    */
   setZoom: (zoom: number) => void;
   /**
-   * Composite a SCREEN SHARE above the camera, or stop compositing.
+   * Composite a SECOND SOURCE above the camera, or stop compositing.
    *
    * This is the TikTok-Live layout, and it is a mode of the same canvas rather
-   * than a second pipeline: pass a display stream and the next frame is drawn
-   * at the publish size — 720x1280, or 1080x1920 at the 1080p rung — in
-   * whichever arrangement the creator has chosen (see setCompositeLayout), and
-   * pass null and the frame after that is the camera-only frame. See
-   * ./compositeCanvas for the layouts themselves.
+   * than a second pipeline: pass a stream and the next frame is drawn at the
+   * publish size — 720x1280, or 1080x1920 at the 1080p rung — in whichever
+   * arrangement the creator has chosen (see setCompositeLayout), and pass null
+   * and the frame after that is the camera-only frame. See ./compositeCanvas
+   * for the layouts themselves.
+   *
+   * IT IS NOT A SCREEN SHARE ANY MORE, and that is the only thing that changed
+   * here. A desktop creator's second source is `getDisplayMedia`; a phone
+   * creator's is their BACK CAMERA, because iOS has no getDisplayMedia at all
+   * and the broadcast Por wants from a phone is the same shape — something to
+   * look at on top, the person talking about it below. Both are "a second
+   * <video> to draw into the top slot", so both go through here rather than
+   * through two paint loops that would have to be kept in step.
+   *
+   * WHAT DIFFERS BETWEEN THEM IS THE FIT, and it is the caller's to state: a
+   * screen is `contain` because a cropped chart loses its axes, a camera is
+   * `cover` because a subject in a field of black is what this layout exists
+   * to avoid. See SecondSourceOptions.
    *
    * NOTHING DOWNSTREAM LEARNS ABOUT IT. `publishStream` is the same object,
    * carrying the same track, from the same canvas — so there is no
@@ -469,7 +504,7 @@ export interface FilteredStream {
    * frame does NOT mirror to the preview — see `portrait` — because there the
    * two differ only in how much of the width survives.
    */
-  setScreenSource: (next: MediaStream | null) => Promise<void>;
+  setSecondSource: (next: MediaStream | null, options?: SecondSourceOptions) => Promise<void>;
   /**
    * Arrange the composite: which preset, and which corner the จอลอย face sits
    * in.
@@ -528,8 +563,18 @@ export interface FilteredStream {
     lookMode: LookMode;
     /** True where the publish canvas is the fixed 9:16 frame. Desktop only. */
     portrait: boolean;
-    /** True while a screen share is being composited in. See setScreenSource. */
+    /** True while a second source is being composited in. See setSecondSource. */
     compositing: boolean;
+    /**
+     * What that second source is, and how it is fitted into the top slot.
+     *
+     * Null when nothing is composited. Worth reporting because it is the one
+     * thing about the published frame that a creator cannot see by looking at
+     * it: a back camera that is being `contain`ed reads as "the phone is
+     * holding the picture oddly", not as "the wrong fit was passed".
+     */
+    secondSource: SecondSourceKind | null;
+    secondFit: SlotFit;
     /** The creator's chosen arrangement. Only meaningful while compositing. */
     layout: CompositeLayout;
     pipCorner: PipCorner;
@@ -698,17 +743,34 @@ export async function createFilteredStream(
   let currentFlipped = initialFlipped;
   let currentZoom = 1;
   /**
-   * The screen share, when there is one, and whether to draw it.
+   * The second source, when there is one, and whether to draw it.
    *
    * A SECOND detached <video>, built lazily and only where a creator actually
-   * shares something — the overwhelming majority of broadcasts never allocate
+   * mounts something — the overwhelming majority of broadcasts never allocate
    * it. `compositing` is a separate flag rather than a null check on the
    * element, because the element is kept across a stop/start cycle (see
-   * setScreenSource) and "there is an element" and "draw the composite" stop
+   * setSecondSource) and "there is an element" and "draw the composite" stop
    * being the same question the moment it is.
+   *
+   * ONE ELEMENT FOR BOTH KINDS. A desktop screen share and a phone's back
+   * camera are the same thing to this loop — a decoded frame to draw into the
+   * top slot — so they share the element, the flag and the paint. What they do
+   * not share is `secondFit`, which is the whole of the difference.
    */
-  let screenVideo: HTMLVideoElement | null = null;
+  let secondVideo: HTMLVideoElement | null = null;
   let compositing = false;
+  /**
+   * How the top slot's source is fitted, and what it is.
+   *
+   * `contain` is the default because it is what the desktop share path has
+   * always done, and this pipeline's rule is that a caller who says nothing
+   * gets yesterday's behaviour. The mobile dual-camera path passes 'cover'
+   * explicitly — a phone camera hands back a 3:4 or 4:3 frame that would sit
+   * in a 9:16-wide slot with bars down both sides otherwise, and a person or a
+   * chart filmed by a camera is a subject, not a document.
+   */
+  let secondFit: SlotFit = 'contain';
+  let secondKind: SecondSourceKind | null = null;
   /**
    * The creator's chosen arrangement, and where the floating face sits.
    *
@@ -1045,7 +1107,7 @@ export async function createFilteredStream(
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     /*
-      THE SCREEN: whole, and untouched.
+      THE TOP SLOT: whole, and untouched.
 
       No look, no mirror, no zoom, and each omission is a decision rather than
       an oversight. A look is a portrait grade — a warm wash over a candlestick
@@ -1053,12 +1115,42 @@ export async function createFilteredStream(
       viewer cannot read at all. A mirror would reverse text. Zoom is a camera
       framing control and the creator already chose their framing when they
       picked what to share.
+
+      ALL THREE HOLD FOR A BACK CAMERA TOO, which is why this branch did not
+      grow a second set of rules when it grew a second kind of source. The back
+      camera is pointed at a chart on a screen or on paper: mirroring it would
+      reverse the text on that chart, a look would tint it, and the creator
+      frames it by moving the phone. The FIT is the one thing that differs.
+
+      `cover` crops in SOURCE space and draws across the whole slot — the same
+      shape the face below uses, and for the same reason: the slot is filled
+      edge to edge with no bars inside it. `contain` scales the whole frame
+      down into the slot and centres it. Neither can draw outside the slot, so
+      neither can reach the face's half of the frame.
     */
-    const screen = screenVideo;
-    if (screen && screen.videoWidth > 0 && screen.videoHeight > 0) {
-      const box = containRect(screen.videoWidth, screen.videoHeight, rects.screen);
-      if (box.width > 0 && box.height > 0) {
-        ctx.drawImage(screen, box.x, box.y, box.width, box.height);
+    const second = secondVideo;
+    if (second && second.videoWidth > 0 && second.videoHeight > 0) {
+      const slot = rects.screen;
+      if (secondFit === 'cover') {
+        const src = coverSourceRect(second.videoWidth, second.videoHeight, slot);
+        if (src.width > 0 && src.height > 0) {
+          ctx.drawImage(
+            second,
+            src.x,
+            src.y,
+            src.width,
+            src.height,
+            slot.x,
+            slot.y,
+            slot.width,
+            slot.height,
+          );
+        }
+      } else {
+        const box = containRect(second.videoWidth, second.videoHeight, slot);
+        if (box.width > 0 && box.height > 0) {
+          ctx.drawImage(second, box.x, box.y, box.width, box.height);
+        }
       }
     }
 
@@ -1153,7 +1245,7 @@ export async function createFilteredStream(
      * Two `performance.now()` reads per frame — nanoseconds against a paint
      * measured in milliseconds — and no logging on this path at all. The
      * per-frame numbers exist to be summarised (see the log line in
-     * setScreenSource and getStats); a console call per frame would be its own
+     * setSecondSource and getStats); a console call per frame would be its own
      * source of jank and would drown the one line anyone reads.
      */
     paintSamples.push(lastPaintAt - startedAt);
@@ -1525,6 +1617,8 @@ export async function createFilteredStream(
       lookMode,
       portrait: portraitPublish !== null,
       compositing,
+      secondSource: compositing ? secondKind : null,
+      secondFit,
       layout: currentLayout,
       pipCorner: currentPipCorner,
     }),
@@ -1547,7 +1641,7 @@ export async function createFilteredStream(
           (currentLayout === 'pip' ? ` (${currentPipCorner})` : ''),
       );
     },
-    setScreenSource: async (next) => {
+    setSecondSource: async (next, options) => {
       if (!next) {
         // The flag first: the very next frame goes back to paintFrame, which
         // resizes the canvas to the camera and draws it, so the picture is
@@ -1557,41 +1651,52 @@ export async function createFilteredStream(
         // camera-only path is 30fps in every respect the moment this lands.
         setPaintRate(frameRate);
         clearPaintSummary();
-        if (screenVideo) {
+        if (secondVideo) {
           // Detached from the dead track, but the ELEMENT is kept. Creating
           // one costs a decode pipeline set-up, and a creator toggling a share
           // on and off between segments would pay it every time. Not cleared
           // to a blank source either — `srcObject = null` is enough to stop it
           // decoding, and paintComposite is no longer being called.
-          screenVideo.pause();
-          screenVideo.srcObject = null;
+          secondVideo.pause();
+          secondVideo.srcObject = null;
         }
+        // The fit is NOT reset with it. It belongs to whatever is mounted
+        // next, every mount states it, and a default reasserted here would be
+        // a second place for the two to disagree.
+        secondKind = null;
         console.info('[composite] off — publishing the camera frame');
         return;
       }
 
-      const [screenTrack] = next.getVideoTracks();
-      if (!screenTrack) {
-        console.warn('[composite] display stream has no video track; staying camera-only');
+      const [secondTrack] = next.getVideoTracks();
+      if (!secondTrack) {
+        console.warn('[composite] second source has no video track; staying camera-only');
         return;
       }
 
-      if (!screenVideo) {
+      // Stated by the caller, defaulted to the desktop share's behaviour —
+      // see SecondSourceOptions. Assigned BEFORE `compositing` flips, so the
+      // very first composite frame is drawn with the right rule rather than
+      // one frame of a chart cropped like a face.
+      secondFit = options?.fit ?? 'contain';
+      secondKind = options?.kind ?? 'screen';
+
+      if (!secondVideo) {
         // Same three properties as the camera's element and for the same
         // reasons: never in the document, muted and playsInline so no
         // autoplay policy anywhere refuses to decode it.
-        screenVideo = document.createElement('video');
-        screenVideo.muted = true;
-        screenVideo.playsInline = true;
+        secondVideo = document.createElement('video');
+        secondVideo.muted = true;
+        secondVideo.playsInline = true;
       }
-      screenVideo.srcObject = new MediaStream([screenTrack]);
+      secondVideo.srcObject = new MediaStream([secondTrack]);
       // Awaited, not fired and forgotten: a paused element decodes nothing, so
       // flipping `compositing` before this resolved would publish a frame with
       // an empty top slot. Caught, because Safari rejects play() for reasons
       // that do not stop it playing, and a rejected promise here must not cost
       // the creator their broadcast.
-      await screenVideo.play().catch((err) => {
-        console.warn('[composite] screen video play() rejected', err);
+      await secondVideo.play().catch((err) => {
+        console.warn('[composite] second source play() rejected', err);
       });
 
       compositing = true;
@@ -1599,13 +1704,19 @@ export async function createFilteredStream(
       // frame is painted: a share that started at 30 and dropped to 24 a
       // moment later would spend that moment doing the work this change
       // exists to avoid.
+      //
+      // 24 FOR A SECOND CAMERA TOO, and not because the code happens to run
+      // here: two camera decodes, a paint that draws both and an encode of a
+      // frame with detail in it is the same budget pressure as a screen and a
+      // face, on hardware with less of it to give. See COMPOSITE_FRAME_RATE.
       setPaintRate(COMPOSITE_FRAME_RATE);
       schedulePaintSummary();
-      const settings = screenTrack.getSettings();
+      const settings = secondTrack.getSettings();
       const rects = layoutRects(currentLayout, currentPipCorner, publishSize);
       console.info(
-        `[composite] on @${paintRate}fps — ${publishSize.width}x${publishSize.height} ${currentLayout}: screen ` +
-          `${settings.width ?? '?'}x${settings.height ?? '?'} contained in ` +
+        `[composite] on @${paintRate}fps — ${publishSize.width}x${publishSize.height} ` +
+          `${currentLayout}: ${secondKind} ` +
+          `${settings.width ?? '?'}x${settings.height ?? '?'} ${secondFit} in ` +
           `${rects.screen.width}x${rects.screen.height} at y=${rects.screen.y}, camera ` +
           (rects.face
             ? `covering ${rects.face.width}x${rects.face.height} at ` +
@@ -1644,16 +1755,18 @@ export async function createFilteredStream(
       previewStream.getVideoTracks().forEach((track) => track.stop());
       publishStream.getVideoTracks().forEach((track) => track.stop());
       video.srcObject = null;
-      // The screen share's element, detached for the same reason as the
-      // camera's. The display TRACK is not stopped here — it belongs to
-      // whoever opened it (see lib/live/screenShareCapture), and stopping it
-      // from in here would take Chrome's "Stop sharing" bar down without the
-      // studio ever knowing its own toggle had moved.
+      // The second source's element, detached for the same reason as the
+      // camera's. Its TRACK is not stopped here — it belongs to whoever opened
+      // it (lib/live/screenShareCapture for a display, lib/live/dualCameraCapture
+      // for a back camera), and stopping it from in here would take Chrome's
+      // "Stop sharing" bar down, or a phone's second camera, without the studio
+      // ever knowing its own toggle had moved.
       compositing = false;
-      if (screenVideo) {
-        screenVideo.pause();
-        screenVideo.srcObject = null;
-        screenVideo = null;
+      secondKind = null;
+      if (secondVideo) {
+        secondVideo.pause();
+        secondVideo.srcObject = null;
+        secondVideo = null;
       }
     },
   };

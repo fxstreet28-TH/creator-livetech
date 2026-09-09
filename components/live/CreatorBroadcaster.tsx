@@ -1323,7 +1323,7 @@ export function CreatorBroadcaster({
    * misleading log line.
    *
    * The broadcast does not move. Composite off is a flag inside the draw loop
-   * (see setScreenSource), so the canvas keeps painting, the track keeps
+   * (see setSecondSource), so the canvas keeps painting, the track keeps
    * flowing, the peer connection is untouched and no viewer reconnects — the
    * picture simply becomes the camera again on the next frame.
    */
@@ -1331,7 +1331,7 @@ export function CreatorBroadcaster({
     const session = screenShareRef.current;
     screenShareRef.current = null;
     if (stopCapture) session?.stop();
-    void filteredRef.current?.setScreenSource(null);
+    void filteredRef.current?.setSecondSource(null);
     /**
      * The encoder's cap follows the canvas back up to 30.
      *
@@ -1403,7 +1403,10 @@ export function CreatorBroadcaster({
 
     screenShareRef.current = session;
     try {
-      await target.setScreenSource(session.stream);
+      // `contain`, explicitly: a shared chart cropped to fill the slot loses
+      // its price axis off one side and its time axis off the other. The
+      // mobile back camera passes 'cover' instead — see toggleDualCamera.
+      await target.setSecondSource(session.stream, { fit: 'contain', kind: 'screen' });
       // The composite paints at 24 from the line above; this is the encoder
       // being told the same thing. Capping it is what makes a frame the
       // encoder cannot finish in time a DROPPED frame rather than a queued
