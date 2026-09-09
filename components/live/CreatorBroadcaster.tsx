@@ -489,6 +489,16 @@ export function CreatorBroadcaster({
    * all reach it without any of them being a render.
    */
   const screenShareRef = useRef<ScreenShareSession | null>(null);
+  /**
+   * True while the browser's picker is up.
+   *
+   * The picker is modal to the browser but not to the page, and it can sit
+   * open for as long as a creator takes to find the right tab — long enough
+   * that a second press of a button that still looks un-pressed is the
+   * obvious thing to do. Without this, that second press opens a second
+   * picker on top of the first.
+   */
+  const screenSharePendingRef = useRef(false);
 
   const [openMenu, setOpenMenu] = useState<'look' | 'camera' | null>(null);
   const [phase, setPhase] = useState<BroadcastPhase>('connecting');
@@ -1245,11 +1255,13 @@ export function CreatorBroadcaster({
       endScreenShare(true);
       return;
     }
+    if (screenSharePendingRef.current) return;
 
     const filtered = filteredRef.current;
     if (!filtered) return;
 
     let session: ScreenShareSession | null = null;
+    screenSharePendingRef.current = true;
     try {
       // The picker is the browser's, and dismissing it resolves to null —
       // which must leave the studio exactly as it was: no error, no state
@@ -1261,6 +1273,8 @@ export function CreatorBroadcaster({
       // failure is — the creator is still live, just not sharing.
       console.error('[screen] could not start a share', err);
       return;
+    } finally {
+      screenSharePendingRef.current = false;
     }
     if (!session) return;
 
