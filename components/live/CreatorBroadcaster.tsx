@@ -94,6 +94,7 @@ import {
   startScreenShare,
   type ScreenShareSession,
 } from '@/lib/live/screenShareCapture';
+import { SHARE_PICKER_HINT, SHARE_ENDED_NOTICE } from '@/lib/live/screenShareCopy';
 import {
   cachedDualCameraTier,
   countVideoInputs,
@@ -111,12 +112,19 @@ import {
   DEFAULT_CHART_PAN,
   DEFAULT_COMPOSITE_LAYOUT,
   DEFAULT_PIP_CORNER,
+  DEFAULT_SCREEN_FIT,
   PIP_CORNER_LABELS,
   PIP_CORNER_ORDER,
+  SCREEN_FIT_LABELS,
+  SCREEN_FIT_ORDER,
   compositeSizeFor,
-  isChartLayout,
 } from '@/lib/live/compositeCanvas';
-import type { ChartPan, CompositeLayout, PipCorner } from '@/lib/live/compositeCanvas';
+import type {
+  ChartPan,
+  CompositeLayout,
+  PipCorner,
+  ScreenFit,
+} from '@/lib/live/compositeCanvas';
 import {
   isDefaultOrientation,
   shouldFlipPreview,
@@ -125,6 +133,7 @@ import {
 import type { FloatingReaction } from '@/lib/live/reactions';
 import { useResumeTriggers, type ResumeEvent } from '@/lib/live/useResumeTriggers';
 import { CameraControlsMenu, OrientationChangedBadge } from './CameraControlsMenu';
+import { previewBoxClass } from './previewBox';
 import { CameraFilterSelector } from './CameraFilterSelector';
 import { FloatingReactionsLayer } from './FloatingReactionsLayer';
 import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
@@ -251,23 +260,16 @@ interface CreatorBroadcasterProps {
 /** See CreatorBroadcasterProps.presentation. */
 export type BroadcastPresentation = 'framed' | 'fullbleed';
 
-/**
- * How long after a share starts the paint budget is judged.
- *
- * Long enough for the percentiles to be about the steady state rather than
- * about the canvas resize and the screen's first decodes; short enough that a
- * creator who is over budget spends six seconds there and not a broadcast.
- */
-const PAINT_BUDGET_CHECK_MS = 6_000;
+/*
+  THE PAINT-BUDGET THRESHOLD AND ITS TIMER USED TO LIVE HERE.
 
-/**
- * How much of the frame budget a paint may take before the capture is capped.
- *
- * 80% rather than 100%: a p95 sitting AT the budget is a broadcast with no
- * headroom, which is the state PR #64 found and fixed. The margin is what stops
- * the fallback from arriving one browser hiccup too late.
- */
-const PAINT_BUDGET_LIMIT = 0.8;
+  Both moved into lib/live/screenShareCapture with the decision they exist to
+  make — see the note at the top of that file. The studio no longer schedules,
+  re-judges or re-runs anything about the capture size: it supplies a way to
+  READ the composite's paint cost and the share makes one decision with it, in
+  its own first seconds. A layout change has no path to the capture track any
+  more, because the studio has no function left to call.
+*/
 
 /** What a layout needs to draw its own controls. See `controls`. */
 export interface BroadcastControls {
@@ -348,14 +350,31 @@ export interface BroadcastControls {
   setCompositeLayout: (layout: CompositeLayout) => void;
   setPipCorner: (corner: PipCorner) => void;
   /**
-   * Where the กราฟเต็ม crop window sits: ซ้าย, กลาง or ขวา.
+   * Where the chart's crop window sits: ซ้าย, กลาง or ขวา.
    *
-   * Only meaningful in that preset — the control renders only there — but
-   * always readable, for the same reason `pipCorner` is: the choice is
+   * Meaningful wherever the share is being CROPPED to fill its slot, which
+   * since ScreenFit is every layout at เต็มช่อง rather than กราฟเต็ม alone.
+   * Always readable, for the same reason `pipCorner` is: the choice is
    * remembered across presets and across a share being stopped and started.
    */
   chartPan: ChartPan;
   setChartPan: (pan: ChartPan) => void;
+  /**
+   * เต็มช่อง or เห็นทั้งกราฟ: does the share fill its slot, or fit inside it?
+   *
+   * Orthogonal to `compositeLayout`, and defaulted to filling — see ScreenFit
+   * for why `contain` was the wrong silent default in a 9:16 frame.
+   */
+  screenFit: ScreenFit;
+  setScreenFit: (fit: ScreenFit) => void;
+  /**
+   * One line of Thai about the share, or null. Rendered over the preview.
+   *
+   * Two occasions and they do not overlap: which surface to pick, shown while
+   * the browser's picker is up; and "การแชร์หยุดลง" when the source went away
+   * without the studio asking.
+   */
+  shareNotice: string | null;
   /**
    * What the ENCODER says it is sending, as opposed to what was asked for.
    *
@@ -741,6 +760,52 @@ export function CreatorBroadcaster({
   }, []);
 
   /**
+   * เต็มช่อง or เห็นทั้งกราฟ. Same state/ref pair, same reasons.
+   *
+   * ORTHOGONAL TO THE PRESET, which is the point of it existing at all: a
+   * creator picks an arrangement and, separately, says whether the chart
+   * should fill the space that arrangement gave it. Before this the two
+   * questions were answered by one control, and the answer to the second was
+   * `contain` in three of the four presets — which is what made them unusable
+   * on a 9:16 frame. See ScreenFit.
+   */
+  const [screenFit, setScreenFitState] = useState<ScreenFit>(DEFAULT_SCREEN_FIT);
+  const screenFitRef = useRef<ScreenFit>(DEFAULT_SCREEN_FIT);
+
+  const chooseScreenFit = useCallback((next: ScreenFit) => {
+    screenFitRef.current = next;
+    setScreenFitState(next);
+    filteredRef.current?.setScreenFit(next);
+  }, []);
+
+  /**
+   * WHAT THE STUDIO IS TELLING THE CREATOR ABOUT THEIR SHARE, right now.
+   *
+   * One line, two occasions, and they do not overlap: the ทิป about picking a
+   * tab, shown from the moment the picker is opened until the share is
+   * running; and "การแชร์หยุดลง" when the browser ends the capture without
+   * being asked. Null the rest of the time, which is nearly all of it.
+   */
+  const [shareNotice, setShareNotice] = useState<string | null>(null);
+
+  /**
+   * The "การแชร์หยุดลง" line takes itself down. The ทิป does not.
+   *
+   * They are different kinds of message and want different lifetimes: the ทิป
+   * is up while a decision is being made and is cleared by that decision (the
+   * picker resolving, either way), while the notice reports something that
+   * already happened and has nothing to wait for. Eight seconds is long enough
+   * to read twice and short enough that it is gone before it becomes furniture
+   * on a broadcast that has moved on.
+   */
+  const SHARE_NOTICE_MS = 8_000;
+  useEffect(() => {
+    if (shareNotice !== SHARE_ENDED_NOTICE) return;
+    const timer = setTimeout(() => setShareNotice(null), SHARE_NOTICE_MS);
+    return () => clearTimeout(timer);
+  }, [shareNotice]);
+
+  /**
    * The running capture, held outside React so the teardown paths — the
    * browser's own "Stop sharing" bar, the toggle, a reconnect, unmount — can
    * all reach it without any of them being a render.
@@ -758,66 +823,24 @@ export function CreatorBroadcaster({
   const screenSharePendingRef = useRef(false);
 
   /**
-   * THE ONE THING A NATIVE CAPTURE CANNOT PROMISE: that it fits in 41.7ms.
+   * HOW THE SHARE READS THE COMPOSITE'S PAINT COST — and nothing more.
    *
-   * A 1080p share asks the browser for the monitor's own frame, because that
-   * is where a candle wick still exists (see screenCapturePlanFor). Whether
-   * THIS machine can crop and paint one of those in a 24fps budget is not
-   * answerable in advance — it depends on the monitor, the GPU, what else the
-   * creator has open — so it is measured on the real pipeline a few seconds
-   * in, and the answer, if it is no, is to move the downscale back into the
-   * browser's capture path where it is cheap.
+   * The studio used to own the whole judgement: a six-second timer, a
+   * threshold, a call to `capTo1080`, and an effect that re-ran the lot on
+   * every layout change. That last part is what Por recorded — a layout tap
+   * reconfiguring a live display capture, two or three seconds of black, and a
+   * composite that did not recover.
    *
-   * ONE MEASUREMENT PER SHARE, and it only ever tightens. A capped capture is
-   * not re-measured and never re-opened at native resolution: a control that
-   * oscillated between two capture sizes on a moving p95 would be worse than
-   * either of them.
+   * What is left is a reader. `startScreenShare` asks it once, inside its own
+   * decision window, and decides. The studio cannot schedule that, cannot
+   * repeat it, and has nothing to call afterwards — see the note at the top of
+   * lib/live/screenShareCapture.
    */
-  const paintBudgetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const clearPaintBudgetCheck = useCallback(() => {
-    if (paintBudgetTimerRef.current === null) return;
-    clearTimeout(paintBudgetTimerRef.current);
-    paintBudgetTimerRef.current = null;
+  const measurePaint = useCallback(() => {
+    const stats = filteredRef.current?.getStats();
+    if (!stats || !stats.compositing || !(stats.frameBudgetMs > 0)) return null;
+    return { p95: stats.paintP95, budgetMs: stats.frameBudgetMs };
   }, []);
-
-  /**
-   * Six seconds in: is the composite keeping up with the frame it is painting?
-   *
-   * Deferred rather than immediate because the numbers do not exist yet when a
-   * share starts — the first paints include the screen's first decodes and a
-   * canvas resize, and a p95 over four frames is noise. Same delay and same
-   * reasoning as the [composite] paint summary this reads its numbers from.
-   */
-  const schedulePaintBudgetCheck = useCallback(
-    (session: ScreenShareSession) => {
-      clearPaintBudgetCheck();
-      paintBudgetTimerRef.current = setTimeout(() => {
-        paintBudgetTimerRef.current = null;
-        // The share may have ended, or the pipeline been rebuilt, in the
-        // seconds this was waiting. Capping a capture that is no longer being
-        // painted would be a log line about nothing.
-        if (screenShareRef.current !== session) return;
-        const stats = filteredRef.current?.getStats();
-        if (!stats || !stats.compositing || stats.frameBudgetMs <= 0) return;
-        const used = stats.paintP95 / stats.frameBudgetMs;
-        if (used <= PAINT_BUDGET_LIMIT) {
-          console.info(
-            `[composite] paint fits at native capture — p95 ${stats.paintP95}ms of ` +
-              `${stats.frameBudgetMs}ms (${Math.round(used * 100)}%)`,
-          );
-          return;
-        }
-        console.warn(
-          `[composite] paint over ${Math.round(PAINT_BUDGET_LIMIT * 100)}% of budget — ` +
-            `p95 ${stats.paintP95}ms of ${stats.frameBudgetMs}ms ` +
-            `(${Math.round(used * 100)}%); capping the capture`,
-        );
-        void session.capTo1080();
-      }, PAINT_BUDGET_CHECK_MS);
-    },
-    [clearPaintBudgetCheck],
-  );
 
   const [openMenu, setOpenMenu] = useState<'look' | 'camera' | null>(null);
   const [phase, setPhase] = useState<BroadcastPhase>('connecting');
@@ -1226,6 +1249,10 @@ export function CreatorBroadcaster({
           // move the price axis out of frame without anybody touching a
           // control.
           filtered.setChartPan(chartPanRef.current);
+          // And so does the fit, for exactly the same reason: a reconnect that
+          // put a creator who chose เห็นทั้งกราฟ back to เต็มช่อง would crop a
+          // chart they had asked not to have cropped.
+          filtered.setScreenFit(screenFitRef.current);
           setLookMode(filtered.getStats().lookMode);
         } catch (err) {
           if (cancelled) return;
@@ -1408,8 +1435,11 @@ export function CreatorBroadcaster({
       // Deliberately NOT reset when a share merely stops — see the state above.
       compositeLayoutRef.current = DEFAULT_COMPOSITE_LAYOUT;
       pipCornerRef.current = DEFAULT_PIP_CORNER;
+      screenFitRef.current = DEFAULT_SCREEN_FIT;
       setCompositeLayoutState(DEFAULT_COMPOSITE_LAYOUT);
       setPipCornerState(DEFAULT_PIP_CORNER);
+      setScreenFitState(DEFAULT_SCREEN_FIT);
+      setShareNotice(null);
       // Order matters: the filter stops its draw loop and its canvas track,
       // then the camera itself is released. Stopping the camera first leaves
       // the loop drawing a dead <video>.
@@ -1696,7 +1726,14 @@ export function CreatorBroadcaster({
     const session = screenShareRef.current;
     screenShareRef.current = null;
     if (stopCapture) session?.stop();
-    clearPaintBudgetCheck();
+    /**
+     * A share the STUDIO ended needs no explaining; one the browser ended
+     * does. `stopCapture` is false exactly when the source went away on its
+     * own — Chrome's stop bar, a shared tab closed, a window quit — and a
+     * creator who watches their chart disappear and is told nothing will
+     * reasonably conclude the studio broke. See SHARE_ENDED_NOTICE.
+     */
+    setShareNotice(stopCapture ? null : SHARE_ENDED_NOTICE);
     void filteredRef.current?.setSecondSource(null);
     /**
      * The encoder goes back to the camera's terms, both numbers at once.
@@ -1724,7 +1761,7 @@ export function CreatorBroadcaster({
       chartMode: false,
     });
     setScreenSharing(false);
-  }, [clearPaintBudgetCheck, quality]);
+  }, [quality]);
 
   /**
    * Share a screen, or stop sharing one.
@@ -1760,16 +1797,41 @@ export function CreatorBroadcaster({
       // at 720p, 1920x1080 at 1080p. A 720p capture drawn into a 1080-wide
       // slot would be an upscaled chart, which is the one outcome this whole
       // change exists to avoid — see screenCaptureCapFor.
-      session = await startScreenShare(() => endScreenShare(false), quality);
+      /**
+       * WHICH SURFACE TO PICK, SAID BEFORE THE PICKER OPENS.
+       *
+       * Set synchronously, one line above the call that puts up the chooser,
+       * so it is on screen behind it — and it stays up while the creator is
+       * choosing, which is exactly the window in which it is useful. Cleared
+       * when the share starts or when the picker is dismissed.
+       *
+       * A page cannot preselect แท็บ for a creator; the picker is the
+       * browser's and that is the point of it. Saying which to pick is the
+       * whole of what is available, and it is worth saying — see
+       * SHARE_PICKER_HINT.
+       */
+      setShareNotice(SHARE_PICKER_HINT);
+      session = await startScreenShare(() => endScreenShare(false), quality, {
+        // The one reading the share's own decision window takes. The studio
+        // schedules nothing and re-judges nothing; see measurePaint.
+        measurePaint,
+        // If the share does decide to reconfigure, the top slot goes black for
+        // it and comes back on the source's own resize, rather than painting
+        // from a decoder that is being torn down. See holdSecondSlot.
+        onReconfigure: () => filteredRef.current?.holdSecondSlot(),
+      });
     } catch (err) {
       // A policy or an extension refused. The broadcast is unaffected, so this
       // is logged rather than raised as a broadcast error the way a camera
       // failure is — the creator is still live, just not sharing.
       console.error('[screen] could not start a share', err);
+      setShareNotice(null);
       return;
     } finally {
       screenSharePendingRef.current = false;
     }
+    // Dismissed, or nothing to share. The ทิป has done its job either way.
+    setShareNotice(null);
     if (!session) return;
 
     // The pipeline may have been torn down during the seconds the picker was
@@ -1798,12 +1860,18 @@ export function CreatorBroadcaster({
        * for the rest of that share — this only runs on a share STARTING.
        */
       chooseCompositeLayout('chartfull');
-      // `contain` is still what a shared screen IS, and it is what the other
-      // three presets do with it. กราฟเต็ม overrides it in the paint loop
-      // rather than here, so that flipping to ครึ่ง-ครึ่ง mid-share puts the
-      // whole chart back without the studio having to restate anything. See
-      // effectiveSecondFit in cameraFilters.
-      await target.setSecondSource(session.stream, { fit: 'contain', kind: 'screen' });
+      /**
+       * THE FIT IS THE CREATOR'S, AND IT IS CARRIED IN RATHER THAN RESTATED.
+       *
+       * `fit` here describes the SOURCE for the mobile dual-camera path and
+       * nothing else — a shared screen's fit is now `screenFitRef`, which the
+       * pipeline reads every frame. Handing it over explicitly is what makes a
+       * creator who chose เห็นทั้งกราฟ during their last share start this one
+       * the same way.
+       */
+      target.setScreenFit(screenFitRef.current);
+      target.setChartPan(chartPanRef.current);
+      await target.setSecondSource(session.stream, { kind: 'screen' });
       /**
        * The encoder is told BOTH things about the new frame, in one call.
        *
@@ -1829,41 +1897,32 @@ export function CreatorBroadcaster({
         maxFramerate: COMPOSITE_FRAME_RATE,
         chartMode: true,
       });
-      // The paint budget is judged by the effect below rather than here — it
-      // has to re-judge on a LAYOUT change too, and one scheduler is better
-      // than two that could disagree about which capture is in effect.
+      // NOTHING SCHEDULES A CAPTURE RE-JUDGE HERE OR ANYWHERE ELSE. The share
+      // made its own decision inside its own first seconds, before this line
+      // ran; see lib/live/screenShareCapture.
     } catch (err) {
       console.error('[composite] could not mount the screen source', err);
       endScreenShare(true);
       return;
     }
     setScreenSharing(true);
-  }, [chooseCompositeLayout, endScreenShare, quality]);
+  }, [chooseCompositeLayout, endScreenShare, measurePaint, quality]);
 
-  /**
-   * RE-JUDGE THE PAINT BUDGET WHENEVER THE ARRANGEMENT CHANGES, not just on
-   * share start.
-   *
-   * A native capture is affordable BECAUSE of the crop: กราฟเต็ม reads a
-   * 1246x1440 window of a 2560x1440 monitor. The other three presets `contain`
-   * the share, which reads the WHOLE surface every frame — measurably more
-   * main-thread work, and on a machine without GPU compositing it is the
-   * difference between fitting the 41.7ms budget and not (measured at 95% vs
-   * 103% of budget on the /dev/live-chart bench). A creator who starts in
-   * กราฟเต็ม and switches to ครึ่ง-ครึ่ง has changed the cost of every frame,
-   * so the question gets asked again.
-   *
-   * It only ever tightens: `capTo1080` is one-way, so switching back to
-   * กราฟเต็ม does not re-open the capture at native resolution. A control that
-   * oscillated between two capture sizes on a moving p95 would be worse than
-   * either of them.
-   */
-  useEffect(() => {
-    const session = screenShareRef.current;
-    if (!session || !screenSharing) return;
-    schedulePaintBudgetCheck(session);
-    return clearPaintBudgetCheck;
-  }, [compositeLayout, screenSharing, schedulePaintBudgetCheck, clearPaintBudgetCheck]);
+  /*
+    THE EFFECT THAT RE-JUDGED THE PAINT BUDGET ON EVERY LAYOUT CHANGE WAS HERE.
+
+    It is the bug. `[compositeLayout, screenSharing]` meant every tap of
+    กราฟเต็ม / ครึ่ง-ครึ่ง / จอลอย / เฉพาะหน้าจอ armed a fresh six-second
+    timer, and a timer that fired called `applyConstraints` on the live display
+    capture — which stops frames for a second or more, and on a window capture
+    can end the track outright. A creator trying the four presets in a row was
+    reconfiguring their capture hardware four times.
+
+    Nothing replaces it, deliberately. The capture size is decided once, by the
+    share, in its own first seconds, and after that a layout is exactly what it
+    was always described as: two variables the paint loop reads. See
+    lib/live/screenShareCapture.
+  */
 
   /**
    * Never leave a capture running behind a studio that is gone.
@@ -1877,11 +1936,8 @@ export function CreatorBroadcaster({
     return () => {
       screenShareRef.current?.stop();
       screenShareRef.current = null;
-      // The timer outlives the component otherwise, and it closes over a
-      // session and a pipeline that are both gone by the time it fires.
-      clearPaintBudgetCheck();
     };
-  }, [clearPaintBudgetCheck]);
+  }, []);
 
   /*
     ==========================================================================
@@ -2343,6 +2399,39 @@ export function CreatorBroadcaster({
 
   const previewFlipped = shouldFlipPreview(orientation.mirrorPreview, orientation.flipOutput);
 
+  /**
+   * Is the pan control meaningful right now?
+   *
+   * It moves a CROP WINDOW, so it means something wherever there is one —
+   * which since ScreenFit is every layout at เต็มช่อง, not กราฟเต็ม alone. A
+   * creator in เฉพาะหน้าจอ has exactly the same 16:9-into-9:16 crop to aim as
+   * one in กราฟเต็ม, and until this they had no way to aim it.
+   */
+  const chartPanApplies = screenFit === 'fill';
+
+  /**
+   * ==========================================================================
+   * F4: THE CREATOR'S PREVIEW IS THE SHAPE OF WHAT THEY ARE PUBLISHING.
+   * ==========================================================================
+   *
+   * While a share is running the pipeline publishes a 9:16 composite, and the
+   * preview box is a 16:9 card the width of the studio. `object-contain` then
+   * does the only thing it can: it fits a tall frame into a wide box, which on
+   * a 1330px-wide card is about 420px of picture with 900px of black either
+   * side of it. Por's report is exactly that — he cannot judge his framing
+   * from it, because there is barely any of it to judge.
+   *
+   * So while compositing the BOX becomes 9:16 too, as tall as the space
+   * allows and centred, and the same `<video>` fills it. Nothing about the
+   * pipeline moves: WYSIWYG is preserved because what is in the box is still
+   * precisely the published frame — it is simply four times the size.
+   *
+   * CAMERA-ONLY IS UNTOUCHED, and that is a rule rather than an omission (PR
+   * #61/#65): the self-view of a camera is never cropped or reshaped, because
+   * a creator who cannot see their own edges cannot frame anything.
+   */
+  const previewIsComposite = screenSharing;
+
   /*
     HOW THE SELF-VIEW IS FITTED, and why it is not always `cover`.
 
@@ -2446,6 +2535,9 @@ export function CreatorBroadcaster({
           setCompositeLayout: chooseCompositeLayout,
           chartPan,
           setChartPan: chooseChartPan,
+          screenFit,
+          setScreenFit: chooseScreenFit,
+          shareNotice,
           encoderStats,
           setPipCorner: choosePipCorner,
         })}
@@ -2455,7 +2547,7 @@ export function CreatorBroadcaster({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
-      <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-white/10 bg-black">
+      <div className={previewBoxClass(previewIsComposite)}>
         {/* No CSS filter on this element any more. The look is already in the
             pixels — this is the canvas stream, which is what the encoder, the
             egress, Bunny and every viewer receive.
@@ -2479,6 +2571,21 @@ export function CreatorBroadcaster({
 
         <FloatingReactionsLayer reactions={reactions} />
         {overlay}
+
+        {/*
+          ONE LINE ABOUT THE SHARE, over the preview, where the creator is
+          already looking. See SHARE_PICKER_HINT and SHARE_ENDED_NOTICE — the
+          first is up while the browser's picker is, which is the only moment
+          at which "pick the tab" is advice rather than a reprimand.
+        */}
+        {shareNotice && (
+          <div
+            role="status"
+            className="pointer-events-none absolute inset-x-3 bottom-3 z-20 mx-auto max-w-md rounded-xl bg-black/80 px-3 py-2 text-center text-xs font-medium leading-snug text-white/90 backdrop-blur-sm"
+          >
+            {shareNotice}
+          </div>
+        )}
 
         <div className="pointer-events-none absolute left-3 top-3 z-10 flex items-center gap-2">
           <LiveBadge pulse={phase === 'live'} />
@@ -2539,7 +2646,7 @@ export function CreatorBroadcaster({
             <span>
               mode {screenSharing ? 'chart' : 'camera'}
               {screenSharing ? ` · ${compositeLayout}` : ''}
-              {screenSharing && isChartLayout(compositeLayout) ? ` · pan ${chartPan}` : ''}
+              {screenSharing && screenFit === 'fill' ? ` · pan ${chartPan}` : ''}
             </span>
           </div>
         )}
@@ -2707,6 +2814,47 @@ export function CreatorBroadcaster({
           </div>
         )}
         {/*
+          เต็มช่อง / เห็นทั้งกราฟ — DOES THE CHART FILL ITS SLOT, OR FIT IN IT?
+
+          ONE toggle, next to the four presets and independent of them, which
+          is the shape the thing actually has. Until this the answer was baked
+          into the preset — กราฟเต็ม cropped, the other three contained — so a
+          creator who wanted ครึ่ง-ครึ่ง got a 1080x608 strip of chart in a
+          1080x960 slot with no way to say otherwise, and a creator who wanted
+          the whole chart had to give up the arrangement to get it.
+
+          DEFAULT เต็มช่อง, and that is the change Por asked for: a 16:9 share
+          contained in a 9:16 frame is not a usable trading broadcast. เห็นทั้ง
+          กราฟ is there because "unusable for a trading creator" is not
+          "unusable for everyone" — a creator walking through a whole chart
+          with its volume bars can have it, in one tap, in any preset.
+        */}
+        {screenShareReady && screenSharing && (
+          <div
+            role="radiogroup"
+            aria-label="ขนาดกราฟในช่อง"
+            className="inline-flex items-center gap-1 rounded-xl border border-white/10 bg-white/[0.04] p-1"
+          >
+            {SCREEN_FIT_ORDER.map((fit) => (
+              <button
+                key={fit}
+                type="button"
+                role="radio"
+                aria-checked={screenFit === fit}
+                onClick={() => chooseScreenFit(fit)}
+                className={[
+                  'relative z-50 inline-flex min-h-9 items-center rounded-lg px-2.5 text-xs font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400',
+                  screenFit === fit
+                    ? 'bg-cyan-400/20 text-cyan-100'
+                    : 'text-white/65 hover:bg-white/[0.06] hover:text-white/85',
+                ].join(' ')}
+              >
+                {SCREEN_FIT_LABELS[fit]}
+              </button>
+            ))}
+          </div>
+        )}
+        {/*
           WHERE THE กราฟเต็ม CROP WINDOW SITS.
 
           Three buttons, default ขวา, and only under กราฟเต็ม — the crop is a
@@ -2721,7 +2869,7 @@ export function CreatorBroadcaster({
           and the preview is WYSIWYG, so which one is right is a thing they can
           see rather than guess.
         */}
-        {screenShareReady && screenSharing && isChartLayout(compositeLayout) && (
+        {screenShareReady && screenSharing && chartPanApplies && (
           <div
             role="radiogroup"
             aria-label="ตำแหน่งกราฟในเฟรม"

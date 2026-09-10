@@ -33,31 +33,169 @@ import {
 import { DEFAULT_QUALITY } from './constants';
 import type { BroadcastQuality } from './types';
 
+/**
+ * ==========================================================================
+ * THE CAPTURE SIZE IS DECIDED ONCE, IN THE FIRST SECONDS, AND NEVER AGAIN.
+ * ==========================================================================
+ *
+ * WHAT THIS REPLACES, AND WHY. PR #68 measured the paint budget six seconds
+ * into a share AND again on every layout change, and called `applyConstraints`
+ * on the live display track whenever the p95 crossed 80%. Every part of that
+ * is defensible in isolation and the combination is what Por recorded: tap a
+ * layout button, the picture goes black for two or three seconds, and when it
+ * comes back it does not move again.
+ *
+ * `applyConstraints` on a live display capture is not a cheap setter. Chrome
+ * tears the capturer down and builds a new one at the new size: frames stop
+ * arriving for a second or more — that is the black — and on a WINDOW capture
+ * (which is what Por was sharing) it has been observed to end the track
+ * outright. Whatever else was true, doing that in response to a LAYOUT TAP
+ * meant a creator rearranging their frame was reconfiguring their capture
+ * hardware, several times in a row, mid-broadcast.
+ *
+ * So the decision moves to the only place it can be made safely: the first
+ * seconds of the share, before the creator has touched anything, at most once,
+ * with no path back into it afterwards. A layout change cannot reach the track
+ * any more because nothing outside this module can — `capTo1080` is gone from
+ * the session's surface, and the session's own decision is spent by the time
+ * the first layout button is legible.
+ */
+
+/**
+ * A share above this is a candidate for the cap; at or below it, nothing is
+ * ever asked of the track. 1920x1080 — see SCREEN_CAPTURE_MAX_* .
+ */
+const NATIVE_IS_LARGE = screenCaptureCapFor();
+
+/**
+ * How much of the frame budget the paint may use before the capture is capped.
+ *
+ * 0.8 rather than 1.0: a p95 AT the budget is a composite with no headroom,
+ * and the machine it is running on has a browser, a chart and an encoder on it
+ * too. Moved here from the studio, where it used to be read by the six-second
+ * re-judge this replaces — the threshold and the one thing that acts on it
+ * belong in the same file.
+ */
+export const PAINT_BUDGET_LIMIT = 0.8;
+
+/**
+ * How long the decision window stays open. Two seconds of real paint.
+ *
+ * Long enough for the percentiles to mean something — the first paints after
+ * a share mounts include the canvas resize and the screen element's first
+ * decodes and are several times the steady-state cost — and short enough that
+ * it closes before a creator has finished reading the layout row. That second
+ * property is the load-bearing one: a decision that can still fire while the
+ * creator is tapping is the bug this replaces.
+ */
+const DECISION_WINDOW_MS = 2_000;
+
+/**
+ * Below this many logical cores, a larger-than-1080p surface is capped without
+ * waiting to measure anything.
+ *
+ * `hardwareConcurrency` is a crude proxy for "can this machine crop and paint
+ * a 4K frame in 41.7ms while encoding one", and crude is the right amount of
+ * precision for a decision that has to be made before there is anything to
+ * measure. 8 is where consumer laptops that can do it and ones that cannot
+ * broadly divide, and being wrong in either direction costs sharpness rather
+ * than a broadcast.
+ */
+const CHEAP_MACHINE_CORES = 8;
+
+/** What the composite is currently costing, for the one deferred decision. */
+export interface PaintBudgetReading {
+  /** The 95th percentile paint, in ms. */
+  p95: number;
+  /** 1000 / the rate the composite paints at. 41.7ms at 24fps. */
+  budgetMs: number;
+}
+
+export interface ScreenShareOptions {
+  /**
+   * Read the composite's real paint cost. Supplied by the studio.
+   *
+   * A callback rather than a number because the answer does not exist yet when
+   * a share starts — see DECISION_WINDOW_MS — and rather than an import
+   * because this module has no business knowing which pipeline is painting.
+   * Return null when there is nothing to read; the share then keeps whatever
+   * the heuristic decided and closes the window.
+   */
+  measurePaint?: () => PaintBudgetReading | null;
+  /**
+   * Called immediately BEFORE the one possible `applyConstraints`.
+   *
+   * The studio wires this to `holdSecondSlot`, so the top slot goes black for
+   * the reconfigure and comes back on the source's own `resize` rather than
+   * painting from a decoder that is mid-teardown. See cameraFilters.
+   */
+  onReconfigure?: () => void;
+}
+
+/**
+ * Is a surface of this size, on a machine with this many cores, worth capping
+ * before anything has been measured?
+ *
+ * Pure, and exported, because it is the half of the decision that can be
+ * checked without a browser, a monitor or a stopwatch.
+ */
+export function shouldCapOnSight(
+  native: { width: number; height: number },
+  hardwareConcurrency: number | undefined,
+): boolean {
+  const larger = native.width > NATIVE_IS_LARGE.width || native.height > NATIVE_IS_LARGE.height;
+  if (!larger) return false;
+  // An unknown core count is treated as capable. A browser that will not say
+  // is not evidence of a slow machine, and capping on silence would throw away
+  // the native capture on every browser that does not implement the property.
+  if (typeof hardwareConcurrency !== 'number' || !Number.isFinite(hardwareConcurrency)) {
+    return false;
+  }
+  return hardwareConcurrency < CHEAP_MACHINE_CORES;
+}
+
+/** Is the measured paint over the share of the budget a capture may use? */
+export function isOverPaintBudget(reading: PaintBudgetReading | null): boolean {
+  if (!reading || !(reading.budgetMs > 0) || !(reading.p95 > 0)) return false;
+  return reading.p95 / reading.budgetMs > PAINT_BUDGET_LIMIT;
+}
+
 /** A screen capture that is running, and the one way to end it. */
 export interface ScreenShareSession {
   /** Video only, one track. Hand it to the composite pipeline. */
   stream: MediaStream;
   /**
-   * Ask the browser to downscale THIS capture to 1920x1080, mid-share.
+   * What the creator actually picked: a tab, a window, or a whole monitor.
    *
-   * THE ESCAPE HATCH FOR A NATIVE CAPTURE THAT TURNED OUT TOO EXPENSIVE. A
-   * 1080p share asks for the monitor's own frame, because that is where a
-   * candle wick still exists (see screenCapturePlanFor) — but "can this
-   * machine paint it in 41.7ms?" is not answerable before it is running, and
-   * on a 4K monitor with no GPU compositing the answer can be no. The studio
-   * measures the real paint p95 a few seconds in and calls this when it is
-   * over; `applyConstraints` moves the downscale back into the browser's own
-   * capture path, off the main thread, without touching the track, the canvas,
-   * the peer connection or anything a viewer can see.
+   * `track.getSettings().displaySurface` normalised — Chrome says 'browser'
+   * for a tab, which is not a word any creator or any log reader uses. Null
+   * where the browser does not report it.
    *
-   * Resolves to the size that is actually in effect afterwards, or null where
-   * the browser refused — in which case the picture is still correct and still
-   * costs what it cost, which is the behaviour before this existed.
-   *
-   * Idempotent: a capture already at or under the cap returns its own size
-   * without asking for anything.
+   * It is on the session rather than only in a log line because it is the one
+   * fact about a share that explains a whole class of report: a WINDOW capture
+   * carries the browser's own tab strip and address bar into the broadcast and
+   * is the surface `applyConstraints` is least reliable on. See the ทิป in the
+   * studio's share flow.
    */
-  capTo1080: () => Promise<{ width: number; height: number } | null>;
+  surface: 'tab' | 'window' | 'monitor' | null;
+  /**
+   * How many times this share has RECONFIGURED its capture track.
+   *
+   * 0 or 1, for the whole life of a share, and that ceiling is the fix rather
+   * than a statistic — see the note at the top of this file. Exposed so the
+   * bench can assert it across twenty layout switches rather than take the
+   * absence of a call site as proof.
+   */
+  reconfigureCount: () => number;
+  /**
+   * Resolves when the one capture-size decision has been made and the window
+   * has closed. The size in effect, or null if nothing was ever asked.
+   *
+   * Nothing in the studio waits on it — the share is live and correct either
+   * way — but the bench does, because "the decision is spent before the
+   * creator can tap anything" is the property under test.
+   */
+  sizeDecided: Promise<{ width: number; height: number } | null>;
   /**
    * Stop the capture and release the source.
    *
@@ -65,6 +203,14 @@ export interface ScreenShareSession {
    * caller that stops the share knows it stopped it.
    */
   stop: () => void;
+}
+
+/** Chrome's 'browser' is a tab. Everything else already says what it is. */
+function describeSurface(displaySurface: string | undefined): 'tab' | 'window' | 'monitor' | null {
+  if (displaySurface === 'browser') return 'tab';
+  if (displaySurface === 'window') return 'window';
+  if (displaySurface === 'monitor') return 'monitor';
+  return null;
 }
 
 /**
@@ -103,6 +249,8 @@ export async function startScreenShare(
    * a caller forgetting to pass it must not silently uncap a 4K monitor.
    */
   quality: BroadcastQuality = DEFAULT_QUALITY,
+  /** How the one capture-size decision is measured and announced. */
+  options: ScreenShareOptions = {},
 ): Promise<ScreenShareSession | null> {
   if (!isScreenShareSupported()) return null;
 
@@ -219,16 +367,79 @@ export async function startScreenShare(
    * window.
    */
   const native = track.getSettings();
-  if (plan && ((native.width ?? 0) > plan.width || (native.height ?? 0) > plan.height)) {
+
+  /**
+   * THE ONE RECONFIGURE THIS SHARE IS ALLOWED, and the flag that makes it one.
+   *
+   * Every path that would touch the track goes through here, and the first one
+   * to arrive spends the budget. There is no second path today — this is what
+   * enforces that there cannot be a second one tomorrow either.
+   */
+  let reconfigures = 0;
+  let decided = false;
+  let announceDecision: (size: { width: number; height: number } | null) => void = () => {};
+  const sizeDecided = new Promise<{ width: number; height: number } | null>((resolve) => {
+    announceDecision = resolve;
+  });
+  const closeDecision = (size: { width: number; height: number } | null) => {
+    if (decided) return;
+    decided = true;
+    announceDecision(size);
+  };
+
+  const reconfigureTo = async (
+    cap: { width: number; height: number },
+    why: string,
+  ): Promise<{ width: number; height: number } | null> => {
+    if (reconfigures > 0) return null;
+    reconfigures += 1;
+    const before = track.getSettings();
+    // The composite is told BEFORE the track is touched, so the top slot is
+    // already black when the frames stop rather than holding a stale one and
+    // then reading a decoder that is mid-teardown. See holdSecondSlot.
+    options.onReconfigure?.();
     try {
       await track.applyConstraints({
-        width: { max: plan.width },
-        height: { max: plan.height },
+        width: { max: cap.width },
+        height: { max: cap.height },
         frameRate: { max: SCREEN_CAPTURE_MAX_FRAME_RATE },
       });
     } catch (err) {
       console.warn('[screen] could not downscale the capture; compositing at source size', err);
+      return null;
     }
+    const after = track.getSettings();
+    console.info(
+      `[screen] capture reconfigured once (${why}): ` +
+        `${before.width ?? '?'}x${before.height ?? '?'} -> ` +
+        `${after.width ?? '?'}x${after.height ?? '?'}`,
+    );
+    // A reconfigure that ended the track is worth saying out loud: the studio
+    // hears it through `onEnded` either way, and this is the line that says
+    // which of the two things ended it.
+    if (track.readyState === 'ended') {
+      console.warn('[screen] the capture ended during the reconfigure');
+    }
+    return { width: after.width ?? 0, height: after.height ?? 0 };
+  };
+
+  /*
+    DID THE CONSTRAINT ACTUALLY LAND? Ask, and if not, insist once.
+
+    `getDisplayMedia` constraints are honoured by Chrome and Edge and have a
+    history of being ignored elsewhere — Firefox has shipped versions that hand
+    back the native surface whatever is asked for. This is the second ask, and
+    it is the FIRST claim on the one reconfigure: it happens before the picker
+    has even left the screen, which is the only moment at which touching the
+    track costs a creator nothing.
+
+    Where there is no plan — the 1080p rung, which asks for the monitor itself
+    — there is nothing to insist on, and the budget passes to the decision
+    window below.
+  */
+  if (plan && ((native.width ?? 0) > plan.width || (native.height ?? 0) > plan.height)) {
+    await reconfigureTo(plan, 'the browser ignored the capture constraint');
+    closeDecision({ width: track.getSettings().width ?? 0, height: track.getSettings().height ?? 0 });
   }
 
   const settings = track.getSettings();
@@ -245,12 +456,23 @@ export async function startScreenShare(
     native.width !== settings.width || native.height !== settings.height
       ? ` (capped from ${native.width ?? '?'}x${native.height ?? '?'})`
       : '';
+  const surface = describeSurface(settings.displaySurface);
   console.info(
     `[screen] sharing ${settings.width ?? '?'}x${settings.height ?? '?'} @${settings.frameRate ?? '?'}fps` +
-      (settings.displaySurface ? ` (${settings.displaySurface})` : '') +
       capped +
       ` | ${plan ? `cap ${plan.width}x${plan.height}` : 'native (uncapped)'} for ${quality}`,
   );
+  /**
+   * WHAT THE CREATOR ACTUALLY PICKED, on its own line so it is greppable.
+   *
+   * Por's recording was of a WINDOW share — the browser's tab strip is in the
+   * picture — and a window is both the blurrier source (it is composited by
+   * the OS before it is captured) and the one `applyConstraints` is least
+   * reliable on. A tab is sharper and carries no chrome. We cannot preselect
+   * for a creator, so the studio says which to pick and this says which they
+   * did; between the two, "why is it soft?" stops being a guess.
+   */
+  console.info(`[screen] surface: ${surface ?? 'unknown'}`);
 
   /**
    * One teardown, at most once.
@@ -273,39 +495,92 @@ export async function startScreenShare(
 
   track.addEventListener('ended', onTrackEnded);
 
+  /**
+   * ==================================================================
+   * THE DECISION, IN THE FIRST SECONDS, AND THEN THE DOOR IS SHUT.
+   * ==================================================================
+   *
+   * Two ways to reach the one reconfigure, and the cheap one goes first:
+   *
+   *   ON SIGHT. The surface is larger than 1920x1080 AND the machine reports
+   *   fewer than eight cores. No measurement is needed for that combination —
+   *   it is the case the six-second re-judge was always going to find, and
+   *   finding it now costs the creator a reconfigure they never see instead of
+   *   one in the middle of their broadcast.
+   *
+   *   MEASURED, ONCE, at DECISION_WINDOW_MS. The surface is large and the
+   *   machine looks capable, so the honest thing is to look: read the
+   *   composite's real p95 against its real budget and cap if it is over. The
+   *   window closes whatever the answer is.
+   *
+   * A capture at or under 1920x1080 never reaches either — there is nothing to
+   * cap — and the window closes immediately so nothing is left pending.
+   *
+   * NOTE WHAT DOES NOT APPEAR: the layout. A creator's arrangement has no way
+   * into this decision, which is the whole point.
+   */
+  const nativeSize = { width: settings.width ?? 0, height: settings.height ?? 0 };
+  let decisionTimer: ReturnType<typeof setTimeout> | null = null;
+
+  if (!decided) {
+    if (nativeSize.width <= fallbackCap.width && nativeSize.height <= fallbackCap.height) {
+      closeDecision(nativeSize);
+    } else if (
+      shouldCapOnSight(
+        nativeSize,
+        typeof navigator === 'undefined' ? undefined : navigator.hardwareConcurrency,
+      )
+    ) {
+      console.info(
+        `[screen] ${nativeSize.width}x${nativeSize.height} on ` +
+          `${navigator.hardwareConcurrency} cores — capping before the composite starts`,
+      );
+      void reconfigureTo(fallbackCap, 'large surface, few cores').then((size) => {
+        closeDecision(size ?? nativeSize);
+      });
+    } else {
+      decisionTimer = setTimeout(() => {
+        decisionTimer = null;
+        if (finished || track.readyState === 'ended') {
+          closeDecision(null);
+          return;
+        }
+        const reading = options.measurePaint?.() ?? null;
+        if (!isOverPaintBudget(reading)) {
+          console.info(
+            `[screen] keeping the native capture — paint p95 ` +
+              `${reading ? `${reading.p95}ms of ${reading.budgetMs}ms` : 'not measured'}`,
+          );
+          closeDecision(nativeSize);
+          return;
+        }
+        console.warn(
+          `[screen] paint over ${Math.round(PAINT_BUDGET_LIMIT * 100)}% of budget — ` +
+            `p95 ${reading?.p95}ms of ${reading?.budgetMs}ms; capping the capture once`,
+        );
+        void reconfigureTo(fallbackCap, 'paint budget').then((size) => {
+          closeDecision(size ?? nativeSize);
+        });
+      }, DECISION_WINDOW_MS);
+    }
+  }
+
   return {
     stream,
-    capTo1080: async () => {
-      const current = track.getSettings();
-      const width = current.width ?? 0;
-      const height = current.height ?? 0;
-      // Already small enough. Said as a resolved size rather than as null,
-      // because "nothing to do" and "the browser refused" are different
-      // answers and the caller logs them differently.
-      if (width <= fallbackCap.width && height <= fallbackCap.height) {
-        return { width, height };
-      }
-      try {
-        await track.applyConstraints({
-          width: { max: fallbackCap.width },
-          height: { max: fallbackCap.height },
-          frameRate: { max: SCREEN_CAPTURE_MAX_FRAME_RATE },
-        });
-      } catch (err) {
-        console.warn('[screen] could not fall back to a capped capture', err);
-        return null;
-      }
-      const after = track.getSettings();
-      console.info(
-        `[screen] capture capped mid-share: ${width}x${height} -> ` +
-          `${after.width ?? '?'}x${after.height ?? '?'} (paint budget)`,
-      );
-      return { width: after.width ?? 0, height: after.height ?? 0 };
-    },
+    surface,
+    reconfigureCount: () => reconfigures,
+    sizeDecided,
     stop: () => {
       if (finished) return;
       finished = true;
       track.removeEventListener('ended', onTrackEnded);
+      if (decisionTimer !== null) {
+        clearTimeout(decisionTimer);
+        decisionTimer = null;
+      }
+      // Nobody is waiting on this in the studio, but an unresolved promise
+      // held by a session that is gone is a leak with a long tail.
+      closeDecision(null);
       stream.getTracks().forEach((t) => t.stop());
       console.info('[screen] stopped by the studio');
     },

@@ -200,7 +200,9 @@ export function Live1080pBench() {
           setRows([...collected]);
 
           // Then each arrangement, with the share mounted.
-          await filtered.setSecondSource(screen.stream, { fit: 'contain', kind: 'screen' });
+          // No `fit`: a shared screen's fit is the creator's (เต็มช่อง by
+          // default) and the pipeline reads it per frame. See ScreenFit.
+          await filtered.setSecondSource(screen.stream, { kind: 'screen' });
           for (const layout of COMPOSITE_LAYOUT_ORDER) {
             filtered.setCompositeLayout(layout);
             await wait(SAMPLE_MS);
