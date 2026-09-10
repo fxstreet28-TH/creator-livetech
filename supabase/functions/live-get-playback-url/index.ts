@@ -17,11 +17,17 @@
  *   llhls    a session carried by Bunny Live. A Bunny CDN URL the browser
  *            plays with hls.js.
  *   livekit  a session with no HLS playlist at all — a row created before this
- *            migration, or one whose Bunny create failed and fell back. The
- *            viewer gets a subscriber token instead, so those sessions keep
- *            playing instead of showing an error for something that is not the
- *            viewer's problem.
+ *            migration, one whose Bunny create failed and fell back, or one on
+ *            self-hosted LiveKit. The viewer gets a subscriber token instead,
+ *            so those sessions keep playing instead of showing an error for
+ *            something that is not the viewer's problem.
  *            TODO(phase 2B): drop with the rest of the LiveKit viewer path.
+ *
+ * SELF-HOSTED LIVEKIT IS NOT A FOURTH ANSWER, deliberately. It is the 'livekit'
+ * answer with `ws_url` and `access_token` pointing at livekit-sg-1 instead of
+ * LiveKit Cloud, so the player needs no new branch and cannot tell them apart.
+ * What it DOES need is the right signing secret — see the deliveryMode note
+ * below, which is where Round 1 of the 2026-09-10 bring-up went wrong.
  *
  * ORDER MATTERS between those three. The LiveKit answer is selected by the
  * ABSENCE of a Bunny playlist, so it is the fallback for anything unrecognised
@@ -45,7 +51,14 @@ import {
   getVaultSecrets,
   tryGetVaultSecret,
 } from '../_shared/utils.ts';
-import { bunnyGetLiveStream, generateLiveKitToken, signBunnyUrl } from '../_shared/live.ts';
+import {
+  bunnyGetLiveStream,
+  generateLiveKitToken,
+  livekitVaultNamesFor,
+  resolveLiveKitCreds,
+  signBunnyUrl,
+  storedDeliveryMode,
+} from '../_shared/live.ts';
 
 /**
  * How long a playback URL stays valid.
@@ -93,7 +106,9 @@ Deno.serve(async (req) => {
 
     const { data: session, error: sessionErr } = await supabase
       .from('live_sessions')
-      .select('id, creator_id, room_name, title, status, ended_at, latency_mode, bunny_stream_id, bunny_playback_url, bunny_thumbnail_url, access_level, origin_room_id, hls_playback_url')
+      // `metadata` carries delivery_mode, which decides which LiveKit
+      // deployment's secret this viewer's token must be signed with. See below.
+      .select('id, creator_id, room_name, title, status, ended_at, latency_mode, bunny_stream_id, bunny_playback_url, bunny_thumbnail_url, access_level, origin_room_id, hls_playback_url, metadata')
       .eq('id', body.session_id)
       .maybeSingle();
 
@@ -139,13 +154,37 @@ Deno.serve(async (req) => {
       .eq('id', session.creator_id)
       .maybeSingle();
 
+    /**
+     * Which LiveKit deployment THIS SESSION lives on.
+     *
+     * FROM THE ROW FIRST, and that ordering is the fix for the 2026-09-10
+     * Round 1 failure. A viewer token is an HMAC over one deployment's API
+     * secret, so it has to be signed with the secret of the server the creator
+     * is actually publishing to — and the vault's `live_delivery_mode` cannot
+     * answer that: it says what the NEXT session will get. Reading it here
+     * means that flipping the mode mid-broadcast hands every viewer of every
+     * in-flight session a token their server will refuse, and a refused join is
+     * indistinguishable from a creator who has not started yet ("กำลังรอ
+     * สัญญาณจาก Creator", forever). Flipping the vault is the documented
+     * rollback lever, so that is not an unlikely sequence — it is the one the
+     * runbook tells an operator to pull under pressure.
+     *
+     * The vault is the FALLBACK, for rows written before delivery_mode was
+     * recorded. Those predate self-hosting entirely, so the current mode is as
+     * good an answer as exists, and it is what this function did for all of
+     * them until now.
+     */
+    const deliveryMode =
+      storedDeliveryMode(session.metadata) ??
+      (await tryGetVaultSecret('live_delivery_mode')) ??
+      'livekit';
+
     const secrets = await getVaultSecrets([
-      'livekit_ws_url',
-      'livekit_api_key',
-      'livekit_api_secret',
+      ...livekitVaultNamesFor(deliveryMode),
       'bunny_stream_api_key',
       'bunny_stream_library_id',
     ]);
+    const livekit = resolveLiveKitCreds(deliveryMode, secrets);
 
     // ---- Origin (self-hosted MediaMTX + Bunny pull zone) -------------------
     //
@@ -185,8 +224,8 @@ Deno.serve(async (req) => {
     // ---- Legacy / fallback delivery ---------------------------------------
     if (!session.bunny_playback_url) {
       const token = await generateLiveKitToken(
-        secrets.livekit_api_key,
-        secrets.livekit_api_secret,
+        livekit.apiKey,
+        livekit.apiSecret,
         `viewer-${user.id}`,
         user.email?.split('@')[0] ?? 'viewer',
         { room: session.room_name, roomJoin: true, canPublish: false, canSubscribe: true, canPublishData: true },
@@ -196,7 +235,7 @@ Deno.serve(async (req) => {
       return jsonResponse({
         delivery: 'livekit',
         session_id: session.id,
-        ws_url: secrets.livekit_ws_url,
+        ws_url: livekit.wsUrl,
         access_token: token,
         creator_user_id: creator?.user_id ?? null,
         latency_mode: session.latency_mode ?? 'low_latency',

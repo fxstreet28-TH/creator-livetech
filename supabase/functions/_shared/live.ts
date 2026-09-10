@@ -132,7 +132,84 @@ export interface LiveCostBreakdown {
 }
 
 /** Which pipeline carried the session being priced. */
-export type LiveDeliveryMode = 'livekit' | 'llhls' | 'origin';
+export type LiveDeliveryMode = 'livekit' | 'llhls' | 'origin' | 'livekit_selfhost';
+
+/** Every valid mode, so a value read back off a row can be rejected. */
+export const LIVE_DELIVERY_MODES: readonly LiveDeliveryMode[] = [
+  'livekit',
+  'llhls',
+  'origin',
+  'livekit_selfhost',
+];
+
+/**
+ * The delivery mode a session RECORDED for itself, or null if it did not.
+ *
+ * `live_delivery_mode` in the vault answers a different question — what the
+ * next session will get — so anything asking "what was THIS session on" has to
+ * read the row. live-create-session writes it into `metadata.delivery_mode` at
+ * insert; see the note there for why no other column can stand in for it.
+ *
+ * Null rather than a default, because the two callers want DIFFERENT fallbacks
+ * and neither is safe to bake in here: pricing has to reproduce the old
+ * derivation exactly so historical rows do not reprice themselves, while
+ * token-minting wants the vault's current mode. A default here would silently
+ * give one of them the other's answer.
+ */
+export function storedDeliveryMode(metadata: unknown): LiveDeliveryMode | null {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  const value = (metadata as Record<string, unknown>).delivery_mode;
+  if (typeof value !== 'string') return null;
+  return (LIVE_DELIVERY_MODES as readonly string[]).includes(value)
+    ? (value as LiveDeliveryMode)
+    : null;
+}
+
+/**
+ * Which LiveKit deployment's credentials a mode calls for.
+ *
+ * THE ONLY DIFFERENCE between 'livekit' and 'livekit_selfhost' anywhere in the
+ * stack. Both mint the same token for the same room name and the same player
+ * joins it — but a LiveKit token is an HMAC over the API secret, so signing
+ * with Cloud's secret and connecting to livekit-sg-1 yields a token the server
+ * refuses. That is not hypothetical: live-get-playback-url did exactly this on
+ * 2026-09-10, and the symptom was a viewer stuck on "กำลังรอสัญญาณจาก
+ * Creator" indefinitely, because a refused join is indistinguishable from a
+ * room nobody has published into yet.
+ *
+ * The names to request and the way to read them back are one PAIR of functions
+ * on purpose — they are the two halves of a single fact, and splitting them
+ * across two files is how they would drift.
+ */
+export function livekitVaultNamesFor(deliveryMode: string): string[] {
+  return deliveryMode === 'livekit_selfhost'
+    ? ['livekit_selfhost_ws_url', 'livekit_selfhost_api_key', 'livekit_selfhost_api_secret']
+    : ['livekit_ws_url', 'livekit_api_key', 'livekit_api_secret'];
+}
+
+export interface LiveKitCreds {
+  wsUrl: string;
+  apiKey: string;
+  apiSecret: string;
+}
+
+export function resolveLiveKitCreds(
+  deliveryMode: string,
+  secrets: Record<string, string>,
+): LiveKitCreds {
+  if (deliveryMode === 'livekit_selfhost') {
+    return {
+      wsUrl: secrets.livekit_selfhost_ws_url,
+      apiKey: secrets.livekit_selfhost_api_key,
+      apiSecret: secrets.livekit_selfhost_api_secret,
+    };
+  }
+  return {
+    wsUrl: secrets.livekit_ws_url,
+    apiKey: secrets.livekit_api_key,
+    apiSecret: secrets.livekit_api_secret,
+  };
+}
 
 /**
  * What one finished session cost.
@@ -154,6 +231,27 @@ export type LiveDeliveryMode = 'livekit' | 'llhls' | 'origin';
  * per-stream line is zero rather than small. The audience line stays exactly as
  * it is: those bytes are still Bunny CDN egress at the same bitrate, so the
  * same per-viewer-minute rate applies whichever origin served them.
+ *
+ * A 'livekit_selfhost' session is the only mode where BOTH lines are zero, and
+ * it is worth being explicit about why, because "the bill is zero" is the kind
+ * of claim that should not pass without an argument.
+ *
+ *   - The per-stream line is zero for the same reason 'origin' is: livekit-sg-1
+ *     is a $28.80/month droplet, and a flat cost is not a per-session one.
+ *   - The audience line is zero because there is NO CDN IN THE PATH. Viewers
+ *     subscribe to the self-hosted SFU over WebRTC and are served by that
+ *     droplet directly; Bunny is not involved, so charging Bunny's
+ *     per-viewer-minute rate would be inventing a bill for a vendor this
+ *     session never used. That is not the safe direction — `estimated_cost_thb`
+ *     feeds `platform_budget_state`, and a phantom charge walks the platform
+ *     toward its own kill switch.
+ *
+ * WHAT ZERO IS HIDING, recorded here so it is not rediscovered the hard way:
+ * the droplet's bandwidth ALLOWANCE is finite (4 TB/month on this tier, then
+ * $0.01/GB). At the 6 Mbps 720p rung that is roughly 1.5 million viewer-minutes
+ * before a single baht of overage, which is far beyond anything this platform
+ * has served — so zero is honest today and is NOT honest at scale. The trigger
+ * to revisit is the droplet's transfer graph, not this function.
  */
 export function estimateLiveCost(
   durationMinutes: number,
@@ -168,9 +266,15 @@ export function estimateLiveCost(
    */
   quality: BroadcastQuality = '720p',
 ): LiveCostBreakdown {
-  const livekitThb =
-    delivery === 'origin' ? 0 : durationMinutes * LIVEKIT_THB_PER_STREAM_MINUTE;
-  const bunnyThb = durationMinutes * peakViewers * bunnyThbPerViewerMinute(quality);
+  const selfHosted = delivery === 'origin' || delivery === 'livekit_selfhost';
+  const livekitThb = selfHosted ? 0 : durationMinutes * LIVEKIT_THB_PER_STREAM_MINUTE;
+  // 'origin' still pays this line — its viewers are served through a Bunny pull
+  // zone. 'livekit_selfhost' does not: its viewers are on WebRTC to our own SFU
+  // and never touch a CDN. See the note above.
+  const bunnyThb =
+    delivery === 'livekit_selfhost'
+      ? 0
+      : durationMinutes * peakViewers * bunnyThbPerViewerMinute(quality);
   return { livekitThb, bunnyThb, totalThb: livekitThb + bunnyThb };
 }
 

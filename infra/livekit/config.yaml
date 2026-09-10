@@ -1,0 +1,117 @@
+# LiveKit server config for livekit-sg-1 (157.245.158.189, SGP1).
+#
+# Lives at /opt/aurum-livekit/livekit/config.yaml on the droplet. This copy is
+# the source of truth; see README.md in this directory for how to apply it and
+# what to check afterwards.
+#
+# SECRETS ARE NOT IN THIS FILE. The `keys:` block LiveKit wants is supplied
+# through the LIVEKIT_KEYS environment variable instead — see README.md. A
+# config file in git that carries the API secret is a config file that leaks it
+# to every clone, every mirror (this repo force-pushes to two) and every branch
+# diff, permanently.
+
+port: 7880
+
+# Every interface, which is what lets Caddy reach the HTTP/WSS listener on
+# 127.0.0.1:7880 while the RTC side is reachable from outside.
+#
+# DO NOT narrow this to the public IP. It is tempting — "bind only to the
+# address we want to advertise" reads like the fix for the ICE problem below —
+# and it breaks signalling outright: Caddy terminates TLS and reverse-proxies
+# to 127.0.0.1:7880, so a LiveKit that has stopped listening on loopback is a
+# LiveKit no viewer can reach at all. Candidate advertisement is controlled by
+# `rtc.ips`, not by the bind address.
+bind_addresses:
+  - ''
+
+rtc:
+  # Inert while `use_external_ip` is false — nothing here performs a STUN
+  # lookup — and kept because turning that flag back on without them would
+  # silently gather no server-reflexive candidates at all.
+  stun_servers:
+    - stun.l.google.com:19302
+    - stun1.l.google.com:19302
+
+  # The TCP fallback, for a viewer whose network blocks UDP entirely. Slower and
+  # jitter-prone; it exists so those viewers see video rather than nothing.
+  tcp_port: 7881
+
+  port_range_start: 50000
+  port_range_end: 60000
+
+  # False because this droplet's public address is static and known, so there is
+  # nothing to discover: with it true, LiveKit STUNs out to learn its own
+  # address and adds a round trip to every startup for an answer already
+  # written below.
+  use_external_ip: false
+  node_ip: 157.245.158.189
+
+  # ======================================================================
+  # THE FIX for the 2026-09-10 viewer disconnect. Do not remove this block.
+  # ======================================================================
+  #
+  # THE SYMPTOM: an iPhone viewer got video for a few seconds and then dropped
+  # with the peer connection disconnected, every time, roughly thirty seconds
+  # in. A desktop publisher took ~20s to go live where LiveKit Cloud took ~5s.
+  #
+  # THE CAUSE: LiveKit advertised all four of this host's addresses as ICE
+  # candidates —
+  #
+  #     "ips":["157.245.158.189/157.245.158.189",   <- public, the only useful one
+  #            "10.15.0.6/10.15.0.6",               <- DigitalOcean anchor, VPS-only
+  #            "10.104.0.3/10.104.0.3",             <- DO VPC private
+  #            "172.17.0.1/172.17.0.1"]             <- Docker bridge
+  #
+  # Three of those are unroutable from a phone. A browser works its candidate
+  # pairs in priority order and spends its checking budget timing out against
+  # them, which is both the slow connect and — once consent freshness on a pair
+  # that never properly validated expires, at the 30s the RFC mandates — the
+  # disconnect.
+  #
+  # WHY THE OBVIOUS KNOBS DID NOT WORK. Neither `use_external_ip: false` nor
+  # `node_ip` filters the candidate list: the first chooses whether to STUN for
+  # a mapped address, the second names this node for the server's own peering.
+  # `interfaces.includes: [eth0]` does filter, and still could not help here —
+  # on a DigitalOcean droplet the anchor address 10.15.0.6 is configured ON eth0
+  # alongside the public address, so no interface-level filter can separate
+  # them. `rtc.ips` is the only lever that operates on the addresses themselves.
+  #
+  # WHY AN ALLOWLIST rather than excluding the three private ranges: an exclude
+  # list is a standing bet that no future address falls outside the patterns
+  # somebody thought of. This droplet has exactly one address that a viewer can
+  # reach, so naming it is both shorter and closed by construction — a new
+  # interface, a second VPC, another container bridge all change nothing.
+  #
+  # VERIFY, don't assume — the startup log prints what it settled on:
+  #   docker compose -f /opt/aurum-livekit/docker-compose.yml logs livekit \
+  #     2>&1 | grep "using external IPs" | tail -3
+  # Exactly one entry, 157.245.158.189, or the block has not taken effect.
+  ips:
+    includes:
+      - 157.245.158.189
+
+redis:
+  # Loopback, and Redis is bound to 127.0.0.1 on its side too: it holds room
+  # state for a single-node deployment and has no business on a public port.
+  address: 127.0.0.1:6379
+
+# `keys:` is deliberately absent — supplied via LIVEKIT_KEYS. See the header.
+
+turn:
+  # Off because LiveKit's built-in TURN wants 443, which Caddy holds for the
+  # WSS signalling endpoint. Thai carrier CGNAT on AIS/True/DTAC will need a
+  # relay eventually; that is a separate coturn container on its own port, not
+  # this flag. Until then the recovery ladder's relay rung has nothing to
+  # escalate to, so a viewer behind symmetric NAT has no fallback.
+  enabled: false
+
+logging:
+  level: info
+  json: false
+
+room:
+  auto_create: true
+  # Five minutes, so a creator whose browser crashes can rejoin the same room
+  # rather than stranding their viewers on a room id that no longer exists.
+  empty_timeout: 300
+  max_participants: 100
