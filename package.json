@@ -14,7 +14,8 @@
     "cap:copy": "npm run build:mobile && npx cap copy",
     "bench:dualcam": "node scripts/dev-bench-dualcam.mjs",
     "bench:resume": "node scripts/dev-bench-resume.mjs",
-    "bench:chart": "node scripts/dev-bench-chart.mjs"
+    "bench:chart": "node scripts/dev-bench-chart.mjs",
+    "bench:layout": "node scripts/dev-bench-layout.mjs"
   },
   "dependencies": {
     "@capacitor/browser": "^8.0.4",
