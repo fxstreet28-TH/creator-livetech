@@ -143,6 +143,42 @@ So:
 - After deploying, spot-check that what landed is what you meant:
   `supabase functions download <name>` and diff it against the tree.
 
+### The undeployed-fix trap, 2026-09-10 evening
+
+The same two hand-edited functions cost a second evening the same day, and the
+shape of it is worth keeping because nothing about it looks like a bug.
+
+PR #70 merged at 20:15 ICT carrying the real fix for the self-host viewer: it
+made `live-create-session` write `metadata.delivery_mode` at insert, and made
+`live-get-playback-url` resolve the mode from THAT — the session's own record
+of the pipeline it was opened on — instead of from the vault. Nobody ran
+`supabase functions deploy`. Production kept serving the dashboard-edited
+`live-create-session` v7 and `live-get-playback-url` v5, which resolve the mode
+from `live_delivery_mode` in the vault, through the five-minute cache in
+`_shared/utils.ts`, in two isolates that expire independently.
+
+So the A/B test that followed measured code that was never in the PR. Flipping
+the vault mid-test put the creator on livekit-sg-1 and the viewer on LiveKit
+Cloud; the viewer joined an empty room and saw a black frame under a running
+timer and a participant count of 1. Every layer reported success, because every
+layer HAD succeeded — they had just succeeded on two different servers. The
+evening went into LiveKit's ICE configuration, which was correct the whole time.
+
+Two lessons, both cheap:
+
+- **A merged PR that touches this directory has not shipped.** Before testing
+  anything, confirm what is actually running:
+
+  ```bash
+  supabase functions download live-get-playback-url --project-ref hknvooaqgpufrbdxtzxf
+  diff -u supabase/functions/live-get-playback-url/index.ts <the download>
+  ```
+
+  A test run against undeployed code produces a real symptom with no cause in
+  the code you are reading, which is the most expensive kind of result.
+- **A switch is not a credential, so do not cache it.** `live_delivery_mode` is
+  in `NEVER_CACHED_SECRETS` for this reason — see the note there.
+
 ## Secrets
 
 Edge Functions do not see Vercel's environment variables. They have their own

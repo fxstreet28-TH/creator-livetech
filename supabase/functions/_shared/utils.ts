@@ -130,21 +130,51 @@ export async function getAuthedCreatorFromToken(
 const _vaultCache = new Map<string, { value: string; expiresAt: number }>();
 const VAULT_CACHE_TTL_MS = 5 * 60 * 1000;
 
+/**
+ * Names that must NEVER be served from the cache above.
+ *
+ * The cache exists for CREDENTIALS — an API key changes about once a year, and
+ * re-reading it on every invocation is a round trip for an answer that is
+ * always the same. `live_delivery_mode` is not a credential. It is a SWITCH,
+ * and the whole point of a switch is that somebody flips it and the next thing
+ * that reads it sees the new position.
+ *
+ * WHAT CACHING IT COSTS, observed on 2026-09-10. Each edge function is its own
+ * isolate with its own copy of this Map, so live-create-session and
+ * live-get-playback-url cache the mode INDEPENDENTLY and their five-minute
+ * windows do not line up. Flip the vault mid-session and the two disagree: the
+ * creator's browser is handed livekit-sg-1 by one function while the viewer's
+ * is handed LiveKit Cloud by the other. Both connect, both authenticate — the
+ * token is signed with whichever deployment's secret that function chose, so
+ * neither sees an error — and the viewer joins a room on a server the
+ * publisher was never on. The session row says live, the timer runs, the
+ * participant count reads 1 because the viewer is counting itself, and the
+ * video is BLACK. Nothing in any log is red, on either box, which is what made
+ * this cost a full evening to find.
+ *
+ * A stale mode is also indistinguishable from a failed flip while testing, so
+ * an A/B round run inside the window measures the previous configuration and
+ * reports it as the new one's result.
+ */
+const NEVER_CACHED_SECRETS = new Set(['live_delivery_mode']);
+
 export async function getVaultSecret(name: string): Promise<string> {
-  const cached = _vaultCache.get(name);
+  const cached = NEVER_CACHED_SECRETS.has(name) ? undefined : _vaultCache.get(name);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
   const client = getServiceClient();
   const { data, error } = await client.rpc('get_vault_secret', { p_name: name });
   if (error || !data) throw new Error(`Vault secret not found: ${name}`);
   const value = data as string;
-  _vaultCache.set(name, { value, expiresAt: Date.now() + VAULT_CACHE_TTL_MS });
+  if (!NEVER_CACHED_SECRETS.has(name)) {
+    _vaultCache.set(name, { value, expiresAt: Date.now() + VAULT_CACHE_TTL_MS });
+  }
   return value;
 }
 
 export async function getVaultSecrets(names: string[]): Promise<Record<string, string>> {
   const result: Record<string, string> = {};
   const uncached = names.filter((n) => {
-    const c = _vaultCache.get(n);
+    const c = NEVER_CACHED_SECRETS.has(n) ? undefined : _vaultCache.get(n);
     if (c && c.expiresAt > Date.now()) {
       result[n] = c.value;
       return false;
@@ -158,6 +188,7 @@ export async function getVaultSecrets(names: string[]): Promise<Record<string, s
   if (error) throw new Error(`Failed to fetch vault secrets: ${error.message}`);
   for (const row of (data ?? []) as { name: string; decrypted_secret: string }[]) {
     result[row.name] = row.decrypted_secret;
+    if (NEVER_CACHED_SECRETS.has(row.name)) continue;
     _vaultCache.set(row.name, {
       value: row.decrypted_secret,
       expiresAt: Date.now() + VAULT_CACHE_TTL_MS,
