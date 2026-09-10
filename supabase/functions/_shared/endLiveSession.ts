@@ -28,6 +28,7 @@ import {
   bunnyGetLiveStream,
   estimateLiveCost,
   stopEgress,
+  storedDeliveryMode,
 } from './live.ts';
 import type { BroadcastQuality, LiveDeliveryMode } from './live.ts';
 
@@ -102,6 +103,34 @@ function clampChatCount(value: unknown): number {
 }
 
 /**
+ * Which pipeline carried this session.
+ *
+ * READ FROM THE ROW, NEVER FROM THE VAULT, and that has always been the rule
+ * here — `live_delivery_mode` says what the NEXT session will get, so a session
+ * that was on air while somebody flipped the mode would be priced as a pipeline
+ * it was never on. What changes is only WHERE on the row it is read from.
+ *
+ * `metadata.delivery_mode` is written by live-create-session at insert time and
+ * is the honest, complete record. It exists because the old derivation could
+ * not see the whole picture: `origin_room_id ? 'origin' : 'llhls'` has no way to
+ * name a self-hosted LiveKit session, which has neither an origin room nor a
+ * Bunny stream, so every one of them fell through to 'llhls' and was charged
+ * ~0.56 THB/minute for a Bunny CDN it never touched. Session
+ * 9595d27e-fc6d-47d0-990f-f521c95fcc0b on 2026-09-10 is the one that had to be
+ * refunded by hand, with `platform_budget_state` rolled back after it.
+ *
+ * THE FALLBACK IS THE OLD DERIVATION, EXACTLY. Every row written before this
+ * field existed has no `delivery_mode`, and must keep pricing precisely as it
+ * did — an end-of-session cost that changes retroactively is worse than one
+ * that was always slightly wrong, because the quota and budget totals those
+ * rows already posted cannot be recomputed. A row with an unrecognised value
+ * falls back the same way rather than being trusted.
+ */
+function deliveryModeFor(session: LiveSessionRow): LiveDeliveryMode {
+  return storedDeliveryMode(session.metadata) ?? (session.origin_room_id ? 'origin' : 'llhls');
+}
+
+/**
  * Stop the stream at the provider, close the row, and post the session's cost
  * to the creator's quota and the platform budget.
  *
@@ -117,6 +146,23 @@ export async function closeLiveSession(
 ): Promise<CloseLiveSessionResult> {
   const { endedAt, closedBy } = options;
 
+  /**
+   * LiveKit CLOUD's credentials, unconditionally, and that is safe for exactly
+   * one reason: they are used only to stop an egress, and only a session with a
+   * `livekit_egress_id` has one to stop.
+   *
+   * A self-hosted session can never hold that id. `start_egress` refuses any
+   * session without a Bunny stream, and only 'llhls' mode creates one — so the
+   * column is null for 'livekit', 'origin' and 'livekit_selfhost' alike and
+   * stopEgress is never reached for them.
+   *
+   * IF EGRESS IS EVER ADDED TO THE SELF-HOSTED PATH, this becomes a real bug:
+   * the stop would be signed with Cloud's secret and livekit-sg-1 would refuse
+   * it, leaving an encoder running with nothing to stop it. The fix at that
+   * point is livekitVaultNamesFor(delivery) — which means moving the
+   * deliveryModeFor call above this block, since it would then choose the
+   * secrets.
+   */
   const secrets = await getVaultSecrets([
     'livekit_ws_url',
     'livekit_api_key',
@@ -199,15 +245,8 @@ export async function closeLiveSession(
       ? storedChatCount
       : Math.max(storedChatCount, clampChatCount(options.reportedChatCount));
 
-  /**
-   * Which pipeline carried this, read from the row rather than from the vault.
-   *
-   * `live_delivery_mode` says what the NEXT session will get, not what this one
-   * got — and a session that was on air while the mode was flipped would
-   * otherwise be priced as the pipeline it was never on. `origin_room_id` is
-   * set at create and never changes, so it is the honest record.
-   */
-  const delivery: LiveDeliveryMode = session.origin_room_id ? 'origin' : 'llhls';
+  /** See deliveryModeFor: the row's own record of the pipeline it ran on. */
+  const delivery: LiveDeliveryMode = deliveryModeFor(session);
   /**
    * What the audience line is priced at, read from the row for the same reason
    * `delivery` is: it is what this session ACTUALLY published at, not what the

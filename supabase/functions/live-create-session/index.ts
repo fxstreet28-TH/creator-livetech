@@ -25,6 +25,20 @@
  * out of the path — there is no room, no token and no egress, which is why the
  * origin branch returns before any of those are minted.
  *
+ * THE FOURTH MODE, 'livekit_selfhost', added 2026-09-10. Byte for byte the
+ * 'livekit' path — same room, same token shape, same WebRTC subscribe — pointed
+ * at our own LiveKit on livekit-sg-1 instead of LiveKit Cloud. ONLY THE VAULT
+ * NAMES DIFFER (see livekitVaultNamesFor), which is deliberate: the whole point
+ * of the migration is to escape Cloud's $0.12/GB egress without the frontend
+ * learning a new delivery path, so `delivery` still answers 'livekit' and
+ * LiveKitLivePlayer cannot tell the two apart.
+ *
+ * WHICH MODE A SESSION GOT IS WRITTEN ONTO THE ROW, in
+ * `metadata.delivery_mode`. Nothing else on the row can say: a self-hosted
+ * session has no `origin_room_id` and no `bunny_stream_id`, so the derivation
+ * live-end-session used to run scored it as 'llhls' and billed it for a CDN it
+ * never touched. See deliveryModeFor in ../_shared/endLiveSession.ts.
+ *
  * It is also the only mode with a HARD CEILING. LiveKit and Bunny absorb load
  * by billing for it; origin-sg-1 is one 2 vCPU box, so admission is capped at
  * `origin_concurrent_live_cap` broadcasts. See the cap check in `create` —
@@ -60,6 +74,8 @@ import {
   bunnyCreateLiveStream,
   bunnyRtmpDestination,
   generateLiveKitToken,
+  livekitVaultNamesFor,
+  resolveLiveKitCreds,
   startRoomCompositeEgress,
   stopEgress,
 } from '../_shared/live.ts';
@@ -108,6 +124,7 @@ function randomPathSuffix(length = 8): string {
   return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('');
 }
 
+
 Deno.serve(async (req) => {
   const cors = handleCors(req);
   if (cors) return cors;
@@ -117,20 +134,29 @@ Deno.serve(async (req) => {
     const body = await req.json();
     const supabase = getServiceClient();
 
+    /**
+     * Read BEFORE the vault fetch, not inside the `create` branch as it was.
+     *
+     * The mode decides WHICH secrets to ask for — see livekitVaultNamesFor —
+     * so it cannot be resolved after them. It is also needed by `start_egress`
+     * and `join`, which mint tokens of their own and would otherwise sign a
+     * self-hosted room's credentials with LiveKit Cloud's secret.
+     */
+    const deliveryMode =
+      (await tryGetVaultSecret('live_delivery_mode')) ?? DEFAULT_DELIVERY_MODE;
+
     const secrets = await getVaultSecrets([
-      'livekit_ws_url',
-      'livekit_api_key',
-      'livekit_api_secret',
+      ...livekitVaultNamesFor(deliveryMode),
       'bunny_stream_api_key',
       'bunny_stream_library_id',
     ]);
     const {
-      livekit_ws_url: wsUrl,
-      livekit_api_key: livekitKey,
-      livekit_api_secret: livekitSecret,
-      bunny_stream_api_key: bunnyKey,
-      bunny_stream_library_id: bunnyLibrary,
-    } = secrets;
+      wsUrl,
+      apiKey: livekitKey,
+      apiSecret: livekitSecret,
+    } = resolveLiveKitCreds(deliveryMode, secrets);
+    const bunnyKey = secrets.bunny_stream_api_key;
+    const bunnyLibrary = secrets.bunny_stream_library_id;
 
     // -----------------------------------------------------------------------
     // create
@@ -164,9 +190,6 @@ Deno.serve(async (req) => {
       const finalQuality = QUALITY_ORDER[
         Math.min(QUALITY_ORDER.indexOf(requestedQuality), QUALITY_ORDER.indexOf(quota.max_quality))
       ];
-
-      const deliveryMode =
-        (await tryGetVaultSecret('live_delivery_mode')) ?? DEFAULT_DELIVERY_MODE;
 
       /**
        * ADMISSION CONTROL — origin mode only.
@@ -224,11 +247,17 @@ Deno.serve(async (req) => {
        * to the player. Under either HLS pipeline the creator's own choice
        * governs: 'origin' is LL-HLS the same as 'llhls' is, so it reads the
        * request rather than being pinned to a number that describes WebRTC.
+       *
+       * BOTH LiveKit modes are 'ultra_low': self-hosting changes who runs the
+       * SFU, not what a WebRTC subscribe feels like.
        */
       const requestedLatency = ['ultra_low', 'low_latency', 'standard'].includes(body.latency_mode)
         ? body.latency_mode
         : 'low_latency';
-      const latencyMode = deliveryMode === 'livekit' ? 'ultra_low' : requestedLatency;
+      const latencyMode =
+        deliveryMode === 'livekit' || deliveryMode === 'livekit_selfhost'
+          ? 'ultra_low'
+          : requestedLatency;
 
       /**
        * Bunny is created BEFORE the row so the row is written once, complete.
@@ -332,6 +361,22 @@ Deno.serve(async (req) => {
           origin_room_id: originRoomId,
           whip_publish_url: whipPublishUrl,
           hls_playback_url: hlsPlaybackUrl,
+          /**
+           * The pipeline this session is being opened on, recorded at the one
+           * moment it is known for certain.
+           *
+           * WRITTEN HERE RATHER THAN DERIVED LATER because it cannot be derived
+           * later: 'livekit' and 'livekit_selfhost' leave identical rows —
+           * neither has an origin room nor a Bunny stream — and the vault
+           * secret that chose between them describes whatever the NEXT session
+           * will get by the time anyone reads it back. live-end-session prices
+           * the session off this field; see deliveryModeFor.
+           *
+           * The whole `metadata` object is set rather than merged because this
+           * is an INSERT: there is nothing yet to merge with, and closeLiveSession
+           * spreads the stored object when it adds its own keys later.
+           */
+          metadata: { delivery_mode: deliveryMode },
         })
         .select('id, room_name')
         .single();
@@ -403,6 +448,13 @@ Deno.serve(async (req) => {
         // this architecture the browser never speaks RTMP — only the egress
         // does, server side — so handing the page a publish credential would
         // be giving away something it has no use for.
+        //
+        // 'livekit' COVERS BOTH LiveKit modes, and that is the contract rather
+        // than a shortcut: `ws_url` and `access_token` above already point at
+        // whichever deployment was chosen, so the page has everything it needs
+        // and a fifth value here would only give the frontend a distinction it
+        // has no code for. The row remembers the difference — see the metadata
+        // note on the insert — which is where the difference actually matters.
         delivery: bunny ? 'llhls' : 'livekit',
         latency_mode: latencyMode,
       });

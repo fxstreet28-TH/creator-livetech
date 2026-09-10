@@ -28,6 +28,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Volume2 } from 'lucide-react';
 import {
+  DisconnectReason,
   RoomEvent,
   Track,
   connectAsSubscriber,
@@ -37,6 +38,7 @@ import {
   type RemoteTrack,
 } from '@/lib/live/livekitClient';
 import { useRecoveryLadder, type PlaybackHealth } from '@/lib/live/useRecoveryLadder';
+import { readIcePath, type IcePathSnapshot } from '@/lib/live/iceDiagnostics';
 import { logViewerDiagnostic } from '@/lib/live/viewerDiagnostics';
 import { useStaleBuildGuard } from '@/lib/live/useStaleBuildGuard';
 import { useVideoFrameWatchdog } from '@/lib/live/useVideoFrameWatchdog';
@@ -63,6 +65,69 @@ import { DurationPill, LiveBadge, ViewerCountPill } from './LiveStatsBar';
 const LIVEKIT_STALE_MS = 4_000;
 const RESUME_SETTLE_MS = 800;
 const RESTART_DEBOUNCE_MS = 3_000;
+
+/**
+ * How long after the first frame to photograph the ICE path.
+ *
+ * Late enough that a pair has been nominated and has carried some media — a
+ * snapshot taken at subscribe time reports a half-finished negotiation and a
+ * `bytesReceived` of zero, which reads like a failure and is not one. Early
+ * enough to still be inside the window where the 2026-09-10 self-host
+ * disconnect happens, so the row describes the path that then died rather than
+ * the path that replaced it.
+ */
+const ICE_SAMPLE_DELAY_MS = 3_000;
+
+/**
+ * The disconnects that mean "this broadcast is over for you", as opposed to
+ * "the network dropped and it can be picked up again".
+ *
+ * AN ALLOWLIST, AND THAT DIRECTION IS THE WHOLE FIX. Until 2026-09-10 this
+ * component treated EVERY RoomEvent.Disconnected as the end of the broadcast:
+ * it showed the "ไลฟ์จบแล้ว" card and told the page the live was over. That is
+ * right for a room that was deleted and wrong for a peer connection that died,
+ * and the self-host bring-up made the difference impossible to ignore — an
+ * iPhone whose connection dropped thirty seconds in was told the creator had
+ * finished, while the creator was still broadcasting. The recovery ladder,
+ * which exists precisely to reconnect a viewer whose transport failed, never
+ * got a chance to run.
+ *
+ * So only these end it, and anything else — including `undefined` and
+ * UNKNOWN_REASON, which is what a dead peer connection actually arrives as —
+ * is treated as recoverable. Erring this way is cheap: a viewer whose
+ * broadcast really has ended still lands on the ended card within one poll of
+ * `useLiveWatch`, which reads the session row and is the authority on the
+ * question. Erring the other way is what shipped, and it is a viewer being
+ * shown a lie.
+ */
+const TERMINAL_DISCONNECT_REASONS: ReadonlySet<DisconnectReason> = new Set([
+  // Our own leaveRoom() during teardown. Never actually observed here — the
+  // effect's `cancelled` flag returns before the handler reads the reason —
+  // but listed so the set reads as the complete statement it is.
+  DisconnectReason.CLIENT_INITIATED,
+  // A second tab on the same broadcast took the identity. Reconnecting would
+  // just take it back, and the two tabs would trade it forever.
+  DisconnectReason.DUPLICATE_IDENTITY,
+  DisconnectReason.PARTICIPANT_REMOVED,
+  DisconnectReason.ROOM_DELETED,
+  DisconnectReason.ROOM_CLOSED,
+  DisconnectReason.USER_REJECTED,
+  DisconnectReason.USER_UNAVAILABLE,
+]);
+
+/**
+ * The reason's NAME, for the diagnostics row.
+ *
+ * The wire carries a number and a row that records `9` is a row somebody has to
+ * go and look up. The reverse mapping is a plain numeric enum's, so it is
+ * guarded rather than trusted: a protocol package that ever switched to string
+ * enums would otherwise write `undefined` into the one field that says what
+ * happened.
+ */
+function describeDisconnectReason(reason: DisconnectReason | undefined): string {
+  if (reason === undefined) return 'undefined';
+  return DisconnectReason[reason] ?? String(reason);
+}
 
 export type ViewerPhase = 'connecting' | 'watching' | 'reconnecting' | 'ended' | 'failed';
 
@@ -227,6 +292,27 @@ export function LiveKitLivePlayer({
      */
     let disposeOrientation: (() => void) | null = null;
 
+    /**
+     * The subscribed video track, kept only so its stats can be read.
+     *
+     * `getRTCStatsReport()` is livekit-client's own accessor and reaches the
+     * subscriber peer connection without this component reaching into SDK
+     * internals — which matters, because the alternative (`room.engine
+     * .pcManager.subscriber.pc`) is private and has been renamed twice.
+     */
+    let videoTrack: RemoteTrack | null = null;
+    /**
+     * The last ICE path this room was known to be on.
+     *
+     * Held because a disconnect DESTROYS the evidence: by the time
+     * RoomEvent.Disconnected fires the peer connection is closing and its stats
+     * report is empty or gone, so "which address was this viewer actually
+     * talking to when it died" can only be answered from a sample taken while
+     * it was alive. The live read is still attempted first — see onDisconnected.
+     */
+    let lastIcePath: IcePathSnapshot | null = null;
+    let iceSampleTimer: ReturnType<typeof setTimeout> | null = null;
+
     // Tracks are attached with `track.attach()` rather than bound to elements
     // we render, because the SDK owns srcObject, autoplay and the muted flag —
     // and a hand-rolled <video> gets one of those wrong on Safari.
@@ -245,6 +331,33 @@ export function LiveKitLivePlayer({
         disposeOrientation = watchSourceOrientation(video, (orientation) =>
           onSourceOrientationRef.current?.(orientation),
         );
+
+        /**
+         * Photograph the network path once this attempt is genuinely playing.
+         *
+         * One row per room, not a poll: the question it answers — WHICH server
+         * addresses were offered, and which one was chosen — is settled at
+         * negotiation and does not change for the life of the peer connection.
+         * The ladder building a new room is what produces the next sample, and
+         * that is exactly when the answer can differ (the relay rung forces a
+         * different path).
+         */
+        videoTrack = track;
+        if (iceSampleTimer) clearTimeout(iceSampleTimer);
+        iceSampleTimer = setTimeout(() => {
+          void (async () => {
+            const path = await readIcePath(videoTrack);
+            if (cancelled || !path) return;
+            lastIcePath = path;
+            logViewerDiagnostic({
+              sessionId,
+              delivery: 'livekit',
+              step: 'normal',
+              outcome: 'detected',
+              detail: { event: 'ice_path', ice_path: path },
+            });
+          })();
+        }, ICE_SAMPLE_DELAY_MS);
       } else {
         // The audio element is present but has nothing to show. Hiding it
         // rather than skipping attach(): a detached audio track is silent.
@@ -260,21 +373,63 @@ export function LiveKitLivePlayer({
       if (track.kind === Track.Kind.Video) {
         disposeOrientation?.();
         disposeOrientation = null;
+        if (videoTrack === track) videoTrack = null;
       }
       track.detach().forEach((element) => element.remove());
     };
 
     /**
-     * The broadcaster left, or the server closed the room.
+     * The room went away. Whether that is the END of the broadcast or a
+     * TRANSPORT FAILURE is the entire question — see
+     * TERMINAL_DISCONNECT_REASONS for why it used to be answered wrongly.
      *
-     * Either way this is "the live is over" for a viewer, not a connection
-     * problem to retry: a viewer token is minted for one room, and a room with
-     * no publisher has nothing to reconnect to.
+     * Every disconnect is recorded either way, with the path it was on. That
+     * row is what the self-host A/B test is read from: a `remoteCandidates`
+     * carrying four addresses says the server is still advertising its private
+     * IPs, and a single public address says the candidate list is fixed and the
+     * next disconnect is something else.
      */
-    const onDisconnected = () => {
+    const onDisconnected = (reason?: DisconnectReason) => {
       if (cancelled) return;
-      setPhase('ended');
-      onEndedRef.current();
+      const terminal = reason !== undefined && TERMINAL_DISCONNECT_REASONS.has(reason);
+
+      // Kicked off rather than awaited: the phase change below must not wait on
+      // a stats read, and the read is allowed to lose the race with teardown.
+      void (async () => {
+        // The live report first — it is the truthful one when the peer
+        // connection has not finished closing — and the sample taken while
+        // playing as the fallback, because usually it has.
+        const path = (await readIcePath(videoTrack)) ?? lastIcePath;
+        logViewerDiagnostic({
+          sessionId,
+          delivery: 'livekit',
+          step: 'normal',
+          outcome: 'detected',
+          detail: {
+            event: 'disconnected',
+            disconnect_reason: describeDisconnectReason(reason),
+            terminal,
+            ...(path ? { ice_path: path } : {}),
+          },
+        });
+      })();
+
+      if (terminal) {
+        setPhase('ended');
+        onEndedRef.current();
+        return;
+      }
+
+      /**
+       * Recoverable: hand it to the ladder rather than to the ended card.
+       *
+       * Setting 'reconnecting' is all it takes — `health` reads it as
+       * unhealthy, the ladder starts its clock, and its rungs rebuild the room
+       * (and from 'relay' on, force the connection through a TURN server, which
+       * is the right escalation for a peer connection that will not stay up).
+       * Nothing here retries by hand; doing so would race the ladder.
+       */
+      setPhase('reconnecting');
     };
 
     async function connect() {
@@ -344,6 +499,12 @@ export function LiveKitLivePlayer({
       // Before the elements go: the observer holds the element it watches.
       disposeOrientation?.();
       disposeOrientation = null;
+      // The pending sample would otherwise fire against a room this effect has
+      // already left. `cancelled` would discard its result, but the timer keeps
+      // the track — and through it the peer connection — reachable until then.
+      if (iceSampleTimer) clearTimeout(iceSampleTimer);
+      iceSampleTimer = null;
+      videoTrack = null;
       container?.replaceChildren();
       void leaveRoom(room);
     };

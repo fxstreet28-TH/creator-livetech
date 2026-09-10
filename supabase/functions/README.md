@@ -110,6 +110,39 @@ The trade is that a merged PR does not ship the function — you have to run the
 deploy yourself, and that step is easy to forget. When a PR changes anything
 under `supabase/functions/`, deploying is part of merging it.
 
+### `_shared/` is copied per function, so edits in the dashboard roll it back
+
+Every deploy bundles a **snapshot** of the `_shared/` files a function imports.
+The functions do not share one live copy — each carries its own — so
+`_shared/live.ts` can be a different vintage in `live-create-session` than in
+`live-end-session`, and nothing anywhere reports the skew.
+
+Editing a function in the Supabase dashboard is what makes that dangerous.
+The editor shows the bundle as deployed, so saving it re-uploads whatever
+`_shared/` snapshot that bundle was carrying — reverting any shared-code change
+that landed since, for that function only, invisibly.
+
+This has already cost money once. On 2026-09-10 `live-create-session` was
+hand-edited to v7 in the dashboard to add `livekit_selfhost`, and the bundle it
+saved carried a `_shared/live.ts` from before the per-rung pricing work: a flat
+3 Mbps Bunny constant and an `estimateLiveCost` with no `quality` argument.
+`live-end-session` was on the same stale copy, which is the function that
+actually posts `estimated_cost_thb` to `platform_budget_state` — so every
+session priced after the 720p ceiling doubled to 6 Mbps was billed at roughly
+half its real CDN egress, and 1080p sessions at a third.
+
+So:
+
+- **Change shared code in the repo, then redeploy every function that imports
+  it** — not just the one you were working on. `grep -l` the module across
+  `supabase/functions/*/index.ts` and deploy the lot.
+- **Do not edit functions in the dashboard.** If a hotfix has to go out that
+  way, land the same change in the repo in the same sitting and redeploy from
+  the CLI, or the next CLI deploy silently reverts the hotfix and the dashboard
+  edit silently reverts the repo.
+- After deploying, spot-check that what landed is what you meant:
+  `supabase functions download <name>` and diff it against the tree.
+
 ## Secrets
 
 Edge Functions do not see Vercel's environment variables. They have their own
