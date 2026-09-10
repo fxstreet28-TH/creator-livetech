@@ -708,7 +708,13 @@ export function ChartModeBench() {
           );
           const publish = filtered.publishStream;
 
-          await filtered.setSecondSource(screen.stream, { fit: 'contain', kind: 'screen' });
+          // No `fit` argument: since ScreenFit a shared screen's fit is the
+          // CREATOR'S, read per frame, and the caller no longer states it. The
+          // 'before' rows say `whole` explicitly below, because that — a
+          // `contain` in a half-height slot — is precisely what they exist to
+          // measure the cost of.
+          await filtered.setSecondSource(screen.stream, { kind: 'screen' });
+          filtered.setScreenFit(rung.when === 'before' ? 'whole' : 'fill');
           /**
            * WARM UP BEFORE MEASURING ANYTHING.
            *

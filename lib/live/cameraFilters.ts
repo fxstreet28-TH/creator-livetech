@@ -35,16 +35,19 @@ import {
   DEFAULT_CHART_PAN,
   DEFAULT_COMPOSITE_LAYOUT,
   DEFAULT_PIP_CORNER,
+  DEFAULT_SCREEN_FIT,
   chartPanAnchor,
+  clampSourceRect,
   containRect,
   coverSourceRect,
   fullFrame,
-  isChartLayout,
   isChartPan,
   isCompositeLayout,
   isPipCorner,
+  isScreenFit,
   layoutRects,
   pipMetrics,
+  screenSlotFit,
 } from './compositeCanvas';
 import type {
   ChartPan,
@@ -52,6 +55,7 @@ import type {
   CompositeSize,
   PipCorner,
   Rect,
+  ScreenFit,
   SlotFit,
 } from './compositeCanvas';
 
@@ -550,6 +554,34 @@ export interface FilteredStream {
    */
   setChartPan: (pan: ChartPan) => void;
   /**
+   * เต็มช่อง or เห็นทั้งกราฟ: does a shared screen FILL its slot, or fit inside it?
+   *
+   * Free in exactly the way setCompositeLayout is — one variable the paint
+   * loop reads, so the next frame is drawn with a different rule against the
+   * same decoded source. No resize, no replaceTrack, no renegotiation.
+   *
+   * Orthogonal to the preset, deliberately: every layout draws a screen into
+   * its top slot and every one of them faces the same question. See ScreenFit.
+   * Ignored while the second source is a CAMERA, which is `cover` always.
+   */
+  setScreenFit: (fit: ScreenFit) => void;
+  /**
+   * Stop drawing the top slot until its source reports a new size.
+   *
+   * THE ONE THING A CALLER CAN DO ABOUT A TRACK THAT IS BEING RECONFIGURED.
+   * `applyConstraints` on a live display capture stops frames for a second or
+   * two and then resumes at a different size, and in between the `<video>`
+   * still reports the OLD dimensions — so a paint in that window reads a
+   * source rect that describes pixels the decoder no longer has.
+   *
+   * F1 makes that survivable (every rect is clamped, every paint is caught),
+   * and this makes it invisible: the slot goes black for the reconfigure and
+   * comes back on the element's own `resize`, which is the browser saying the
+   * new frame is real. Self-clearing — there is no matching `resume`, because
+   * a hold that needed one could be left on by a caller that threw.
+   */
+  holdSecondSlot: () => void;
+  /**
    * What the pipeline is actually doing, for the ?debug=camera chip.
    *
    * `lookMode` says which of the two look implementations this stream picked,
@@ -601,8 +633,30 @@ export interface FilteredStream {
     /** The creator's chosen arrangement. Only meaningful while compositing. */
     layout: CompositeLayout;
     pipCorner: PipCorner;
-    /** Where the กราฟเต็ม crop window sits. Only meaningful in that preset. */
+    /** Where the chart's crop window sits. Meaningful wherever the fit is cover. */
     chartPan: ChartPan;
+    /** The creator's เต็มช่อง/เห็นทั้งกราฟ choice. Only applies to a screen. */
+    screenFit: ScreenFit;
+    /**
+     * How many frames this pipeline has SKIPPED because painting them threw.
+     *
+     * Zero for the whole of a healthy broadcast, and the number that says the
+     * loop survived rather than died when it is not — see paintAllTargets. It
+     * is here rather than only in a log line because "the loop kept ticking
+     * after the throw" is an assertion the bench has to be able to make.
+     */
+    paintErrors: number;
+    /**
+     * Frames painted since this pipeline opened. Monotonic, never reset.
+     *
+     * THE ONE UNAMBIGUOUS ANSWER TO "IS THE LOOP STILL RUNNING?". `fps` cannot
+     * give it: it is computed over a one-second window and simply KEEPS its
+     * last value when the loop stops, so a frozen broadcast reports 24fps
+     * forever. A counter that stops advancing is a loop that stopped, and a
+     * bench can watch it across a source resize or a forced exception and say
+     * so rather than infer it.
+     */
+    paintedFrames: number;
     /**
      * True while a shared SCREEN is being composited in — โหมดกราฟ.
      *
@@ -840,8 +894,80 @@ export async function createFilteredStream(
    * own rule stands everywhere else, which is what keeps ครึ่ง-ครึ่ง, จอลอย
    * and เฉพาะหน้าจอ pixel-for-pixel what they were.
    */
+  /**
+   * เต็มช่อง or เห็นทั้งกราฟ, for a shared SCREEN. See ScreenFit.
+   *
+   * Read fresh in the paint loop like every other arrangement variable, and
+   * per-BROADCAST rather than per-share for the same reason the layout is: a
+   * creator who flipped to เห็นทั้งกราฟ, stopped a share and started another
+   * did not ask to be put back.
+   */
+  let currentScreenFit: ScreenFit = DEFAULT_SCREEN_FIT;
+
+  /**
+   * HOW THE TOP SLOT IS FITTED, once the creator has had their say.
+   *
+   * `secondFit` is what the CALLER said the source is, and it is still the
+   * answer for a back camera — a phone's rear camera is a subject, `cover`,
+   * and there is nothing to choose. For a shared SCREEN the answer is now the
+   * creator's, and it defaults to filling the slot: see ScreenFit for the
+   * arithmetic that made `contain` the wrong silent default in a 9:16 frame.
+   *
+   * NOTE WHAT NO LONGER APPEARS HERE: the LAYOUT. Until PR #68 the preset
+   * decided the fit — กราฟเต็ม cropped and the other three contained — which
+   * meant a creator who wanted the whole chart had to leave the arrangement
+   * they wanted to get it. The two questions are independent and are now asked
+   * independently.
+   */
   const effectiveSecondFit = (): SlotFit =>
-    isChartLayout(currentLayout) ? 'cover' : secondFit;
+    secondKind === 'camera' ? secondFit : screenSlotFit('screen', currentScreenFit);
+
+  /**
+   * Is the top slot being CROPPED to fill? Then the pan means something.
+   *
+   * The pan moves a crop window, so it applies wherever there is one — which
+   * since the fit became a choice is every layout, not just กราฟเต็ม. A back
+   * camera is excluded: it is `cover` too, but its crop is a framing decision
+   * the creator makes by moving the phone, and a chart's price-axis anchor has
+   * nothing to say about it.
+   */
+  const screenIsCropped = (): boolean =>
+    secondKind === 'screen' && effectiveSecondFit() === 'cover';
+
+  /**
+   * Held over a source reconfigure. See holdSecondSlot.
+   *
+   * Cleared by the element's own `resize`, which is the browser saying a frame
+   * at the new size has actually been decoded — the only signal that is not a
+   * guess about how long `applyConstraints` takes.
+   */
+  let secondHeld = false;
+  let secondHoldTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const releaseSecondHold = () => {
+    secondHeld = false;
+    if (secondHoldTimer !== null) {
+      clearTimeout(secondHoldTimer);
+      secondHoldTimer = null;
+    }
+  };
+
+  /**
+   * A HOLD ALWAYS ENDS, EVEN IF THE EVENT NEVER COMES.
+   *
+   * `resize` fires when the decoded size CHANGES, and a reconfigure that lands
+   * on the size the source already had produces no event at all — as does one
+   * the browser quietly refused. Without a deadline the slot would then be
+   * black for the rest of the broadcast, which is a worse bug than the one the
+   * hold exists to hide.
+   *
+   * A second and a half is longer than the reconfigure gap Chrome actually
+   * produces on a display capture and short enough that a creator reads it as
+   * a flicker rather than as a failure. After it, the slot draws again from
+   * whatever the element reports — which F1's clamping makes safe whatever
+   * that turns out to be.
+   */
+  const SECOND_HOLD_MAX_MS = 1_500;
   let running = true;
   let rafId: number | null = null;
   let frameCallbackId: number | null = null;
@@ -891,6 +1017,8 @@ export async function createFilteredStream(
   let framesThisWindow = 0;
   let windowStartedAt = now();
   let measuredFps = 0;
+  /** Every paint this pipeline has completed. See getStats().paintedFrames. */
+  let paintedFrames = 0;
 
   /**
    * ==================================================================
@@ -947,6 +1075,63 @@ export async function createFilteredStream(
     const sorted = [...paintSamples].sort((a, b) => a - b);
     const index = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
     return Math.round(sorted[index] * 10) / 10;
+  };
+
+  /**
+   * ==================================================================
+   * A BAD FRAME IS A BAD FRAME. IT IS NOT THE END OF THE BROADCAST.
+   * ==================================================================
+   *
+   * This is the single most important guarantee in this file, and it was
+   * missing. `paintAllTargets` had a `finally` that released the re-entrancy
+   * guard and then let the exception through — and every one of the three
+   * things that call it treats a throw as fatal in a different way:
+   *
+   *   rVFC: `onVideoFrame` paints and THEN re-arms the chain. A throw skips
+   *         the re-arm, so the chain is never scheduled again and the canvas
+   *         is never painted again — for the rest of the broadcast. The
+   *         published track is a canvas capture, so a canvas that stops being
+   *         painted is a track that stops emitting: the audience gets a
+   *         photograph. This is the freeze, and it is permanent.
+   *   worker ticker: the interval survives, but every subsequent tick throws
+   *         at the same line, so the picture is frozen for exactly as long as
+   *         the condition lasts — which, when the condition is a source rect
+   *         computed from dimensions that no longer match the decoder, is
+   *         forever.
+   *   the startup paint: throws out of `createFilteredStream` and takes the
+   *         broadcast down before it starts.
+   *
+   * And `drawImage` has real, reachable ways to throw: a source rect that has
+   * gone out of bounds because the source changed size under it, a canvas
+   * whose GPU context was lost, a `<video>` detached mid-paint. None of those
+   * is worth a broadcast.
+   *
+   * So: catch per TARGET (a preview that fails must not cost the publish
+   * canvas its frame), count it, log at most one line every five seconds, and
+   * paint the next frame. A creator sees at worst a black slot for a moment.
+   */
+  const PAINT_ERROR_LOG_INTERVAL_MS = 5_000;
+  let paintErrors = 0;
+  let paintErrorsSinceLog = 0;
+  let paintErrorLoggedAt = 0;
+
+  const reportPaintError = (err: unknown) => {
+    paintErrors += 1;
+    paintErrorsSinceLog += 1;
+    const at = now();
+    // Rate-limited rather than sampled: the first one is logged immediately,
+    // because the first one is the one that says WHAT threw, and after that a
+    // per-frame console call at 24fps would be its own source of jank and
+    // would bury the line anyone is reading.
+    if (paintErrorLoggedAt !== 0 && at - paintErrorLoggedAt < PAINT_ERROR_LOG_INTERVAL_MS) return;
+    paintErrorLoggedAt = at;
+    const skipped = paintErrorsSinceLog;
+    paintErrorsSinceLog = 0;
+    console.warn(
+      `[composite] paint error — ${skipped} frame${skipped === 1 ? '' : 's'} skipped, ` +
+        `${paintErrors} since this pipeline opened; the loop is still running`,
+      err,
+    );
   };
 
   console.info(`[camera] look mode: ${lookMode}`);
@@ -1060,6 +1245,17 @@ export async function createFilteredStream(
       const sh = video.videoHeight / zoom;
       src = { x: (video.videoWidth - sw) / 2, y: (video.videoHeight - sh) / 2, width: sw, height: sh };
     }
+    /*
+      CLAMPED TO THE FRAME THAT IS ACTUALLY DECODED, in the same tick it was
+      read in.
+
+      `videoWidth`/`videoHeight` are read a few lines above and are read again
+      here rather than cached, which is the whole of F1's second rule: a camera
+      that changed mode mid-broadcast (a phone rotating, a front/back flip) or
+      a rounding that pushed the rect a fraction past the edge must produce a
+      smaller draw, never a `drawImage` the browser is entitled to refuse.
+    */
+    src = clampSourceRect(src, video.videoWidth, video.videoHeight);
 
     // save/restore around the whole paint: both the filter and the transform
     // are drawing state, and a flip that leaked into the next frame would
@@ -1186,7 +1382,23 @@ export async function createFilteredStream(
       neither can reach the face's half of the frame.
     */
     const second = secondVideo;
-    if (second && second.videoWidth > 0 && second.videoHeight > 0) {
+    /*
+      READ THE SOURCE'S SIZE HERE, EVERY FRAME, AND NOWHERE ELSE.
+
+      A display capture is the one source in this pipeline whose dimensions
+      change while it is running: a shared window is resized, a shared tab
+      changes zoom level, an `applyConstraints` moves a 2560x1440 surface to
+      1920x1080. Every rectangle below is derived from these two numbers, read
+      in the tick that draws them, so there is no moment at which the geometry
+      describes a frame the decoder no longer has.
+
+      `secondHeld` is the deliberate black: a caller that knows the track is
+      being reconfigured says so (see holdSecondSlot) and the slot stays empty
+      until the element's own `resize` says a frame at the new size is real.
+    */
+    const sourceWidth = second?.videoWidth ?? 0;
+    const sourceHeight = second?.videoHeight ?? 0;
+    if (second && !secondHeld && sourceWidth > 0 && sourceHeight > 0) {
       const slot = rects.screen;
       /*
         THE ONE PLACE THE CANVAS DEFAULT IS NOT GOOD ENOUGH.
@@ -1225,15 +1437,11 @@ export async function createFilteredStream(
           back camera), so nothing but กราฟเต็ม can see it. In กราฟเต็ม it
           defaults to the RIGHT, where the price axis lives.
         */
-        const anchorX = isChartLayout(currentLayout)
-          ? chartPanAnchor(currentChartPan)
-          : 0.5;
-        const src = coverSourceRect(
-          second.videoWidth,
-          second.videoHeight,
-          slot,
-          1,
-          anchorX,
+        const anchorX = screenIsCropped() ? chartPanAnchor(currentChartPan) : 0.5;
+        const src = clampSourceRect(
+          coverSourceRect(sourceWidth, sourceHeight, slot, 1, anchorX),
+          sourceWidth,
+          sourceHeight,
         );
         if (src.width > 0 && src.height > 0) {
           ctx.drawImage(
@@ -1249,7 +1457,7 @@ export async function createFilteredStream(
           );
         }
       } else {
-        const box = containRect(second.videoWidth, second.videoHeight, slot);
+        const box = containRect(sourceWidth, sourceHeight, slot);
         if (box.width > 0 && box.height > 0) {
           ctx.drawImage(second, box.x, box.y, box.width, box.height);
         }
@@ -1268,8 +1476,16 @@ export async function createFilteredStream(
       picture sideways.
     */
     const face = rects.face;
-    if (face && video.videoWidth > 0 && video.videoHeight > 0) {
-      const src = coverSourceRect(video.videoWidth, video.videoHeight, face, currentZoom);
+    // The camera's own dimensions, read in this tick for the same reason the
+    // screen's are — a phone rotating or a front/back flip changes them.
+    const faceSourceWidth = video.videoWidth;
+    const faceSourceHeight = video.videoHeight;
+    if (face && faceSourceWidth > 0 && faceSourceHeight > 0) {
+      const src = clampSourceRect(
+        coverSourceRect(faceSourceWidth, faceSourceHeight, face, currentZoom),
+        faceSourceWidth,
+        faceSourceHeight,
+      );
 
       ctx.save();
       ctx.beginPath();
@@ -1333,7 +1549,16 @@ export async function createFilteredStream(
       // composite mode the screen's <video> is read in the same tick, so the two
       // sources in a published frame are never a frame apart from each other.
       const paint = compositing ? paintComposite : paintFrame;
-      for (const target of targets) paint(target);
+      for (const target of targets) {
+        // PER TARGET, not around the loop: a preview canvas whose context was
+        // lost must not cost the PUBLISH canvas its frame. The audience is
+        // watching one of these two.
+        try {
+          paint(target);
+        } catch (err) {
+          reportPaintError(err);
+        }
+      }
     } finally {
       // In a finally so a throw from one target — a canvas whose context was
       // lost, a drawImage on a video that just went away — cannot wedge the
@@ -1353,6 +1578,7 @@ export async function createFilteredStream(
      */
     paintSamples.push(lastPaintAt - startedAt);
     if (paintSamples.length > PAINT_SAMPLE_LIMIT) paintSamples.shift();
+    paintedFrames += 1;
     framesThisWindow += 1;
     const at = lastPaintAt;
     if (at - windowStartedAt >= 1000) {
@@ -1422,11 +1648,24 @@ export async function createFilteredStream(
     frameCallbackId = null;
     rafId = null;
     if (!running) return;
-    // Camera-only: every decoded frame, exactly as before. Compositing: the
-    // worker is painting and this chain stays armed but silent — see
-    // tickerOwnsClock — or, with no worker, `dueForPaint` throttles it to 24.
-    if (!tickerOwnsClock() && dueForPaint()) paintAllTargets();
-    scheduleVideoFrame();
+    try {
+      // Camera-only: every decoded frame, exactly as before. Compositing: the
+      // worker is painting and this chain stays armed but silent — see
+      // tickerOwnsClock — or, with no worker, `dueForPaint` throttles it to 24.
+      if (!tickerOwnsClock() && dueForPaint()) paintAllTargets();
+    } catch (err) {
+      // Belt to paintAllTargets' braces. `paintAllTargets` no longer throws,
+      // and the re-arm below is in a `finally` besides — but this chain is
+      // THE clock on any browser that could not build a worker, and a loop
+      // whose survival depends on two other pieces of code staying correct is
+      // not a loop that survives.
+      reportPaintError(err);
+    } finally {
+      // THE LINE THE FREEZE WAS MISSING. A frame-callback chain re-arms
+      // itself or it stops for good, so the re-arm cannot sit downstream of
+      // anything that can throw.
+      scheduleVideoFrame();
+    }
   };
 
   function scheduleVideoFrame() {
@@ -1544,12 +1783,19 @@ export async function createFilteredStream(
         // Compositing: this IS the clock, at 41.7ms, hidden or not. rVFC is
         // standing down (see tickerOwnsClock) so there is nobody to defer to
         // and nothing to de-duplicate against.
-        if (tickerOwnsClock()) {
+        try {
+          if (tickerOwnsClock()) {
+            paintAllTargets();
+            return;
+          }
+          if (!documentHidden() && now() - lastPaintAt < 2 * paintIntervalMs) return;
           paintAllTargets();
-          return;
+        } catch (err) {
+          // The interval survives an uncaught handler error, so this does not
+          // save the loop — it saves the CONSOLE, which is where the evidence
+          // is. Twenty-four uncaught errors a second bury every other line.
+          reportPaintError(err);
         }
-        if (!documentHidden() && now() - lastPaintAt < 2 * paintIntervalMs) return;
-        paintAllTargets();
       };
     } catch (err) {
       // A CSP without `worker-src blob:` lands here. Degrade to the old
@@ -1662,7 +1908,14 @@ export async function createFilteredStream(
   }
 
   startTicker();
-  paintAllTargets();
+  // The first frame must not be able to take the pipeline down with it: a
+  // camera that has not decoded anything yet is normal, and `createFilteredStream`
+  // throwing here would be a broadcast that never starts.
+  try {
+    paintAllTargets();
+  } catch (err) {
+    reportPaintError(err);
+  }
   scheduleVideoFrame();
 
   const previewStream = preview.canvas.captureStream(frameRate);
@@ -1773,8 +2026,11 @@ export async function createFilteredStream(
       layout: currentLayout,
       pipCorner: currentPipCorner,
       chartPan: currentChartPan,
+      screenFit: currentScreenFit,
+      paintErrors,
+      paintedFrames,
       // Follows the CONTENT, not the preset: a shared screen is a chart in
-      // every arrangement. See isChartLayout's note on the difference.
+      // every arrangement, at every fit.
       chartMode: compositing && secondKind === 'screen',
       publishContentHint: publishContentHint,
     }),
@@ -1795,8 +2051,29 @@ export async function createFilteredStream(
       console.info(
         `[composite] layout: ${currentLayout}` +
           (currentLayout === 'pip' ? ` (${currentPipCorner})` : '') +
-          (isChartLayout(currentLayout) ? ` (pan ${currentChartPan})` : ''),
+          (screenIsCropped() ? ` (pan ${currentChartPan})` : ''),
       );
+    },
+    setScreenFit: (fit) => {
+      const next = isScreenFit(fit) ? fit : DEFAULT_SCREEN_FIT;
+      if (next === currentScreenFit) return;
+      currentScreenFit = next;
+      // Logged for the same reason the layout is: this changes the PUBLISHED
+      // frame, and the only other record of it is a viewer's screen.
+      console.info(
+        `[composite] screen fit: ${currentScreenFit} (${effectiveSecondFit()})`,
+      );
+    },
+    holdSecondSlot: () => {
+      if (!compositing || secondHeld) return;
+      secondHeld = true;
+      secondHoldTimer = setTimeout(() => {
+        secondHoldTimer = null;
+        if (!secondHeld) return;
+        secondHeld = false;
+        console.info('[composite] top slot resumed without a resize (deadline)');
+      }, SECOND_HOLD_MAX_MS);
+      console.info('[composite] top slot held — waiting for the source to resize');
     },
     setChartPan: (pan) => {
       const next = isChartPan(pan) ? pan : DEFAULT_CHART_PAN;
@@ -1813,6 +2090,10 @@ export async function createFilteredStream(
         // resizes the canvas to the camera and draws it, so the picture is
         // already correct before anything below has run.
         compositing = false;
+        // A hold belongs to the source that was being reconfigured, and that
+        // source is going away. Left set, it would black out the top slot of
+        // the NEXT share until that one happened to resize.
+        releaseSecondHold();
         // Back to the camera's own rate, and back to rVFC as the painter. The
         // camera-only path is 30fps in every respect the moment this lands.
         setPaintRate(frameRate);
@@ -1861,7 +2142,33 @@ export async function createFilteredStream(
         secondVideo = document.createElement('video');
         secondVideo.muted = true;
         secondVideo.playsInline = true;
+        /*
+          THE SIGNAL THAT A RECONFIGURED SOURCE IS REAL AGAIN.
+
+          `resize` fires on a <video> when the decoded frame's dimensions
+          change, which is precisely the event `applyConstraints` on a display
+          capture eventually produces and precisely the event a creator
+          resizing a shared window produces. Nothing else can say "the frames
+          you are about to read are the new size" — a timer is a guess, and
+          `videoWidth` alone cannot distinguish "resized" from "has not
+          updated yet".
+
+          Registered on the element rather than per mount: the element is kept
+          across a stop/start cycle (see the null branch above) and a listener
+          added per mount would accumulate one per share.
+        */
+        secondVideo.addEventListener('resize', () => {
+          if (!secondHeld) return;
+          releaseSecondHold();
+          console.info(
+            `[composite] top slot resumed at ${secondVideo?.videoWidth ?? '?'}x` +
+              `${secondVideo?.videoHeight ?? '?'}`,
+          );
+        });
       }
+      // A new source is a new size by definition; anything held for the old
+      // one is stale.
+      releaseSecondHold();
       secondVideo.srcObject = new MediaStream([secondTrack]);
       // Awaited, not fired and forgotten: a paused element decodes nothing, so
       // flipping `compositing` before this resolved would publish a frame with
@@ -1936,6 +2243,7 @@ export async function createFilteredStream(
       // ever knowing its own toggle had moved.
       compositing = false;
       secondKind = null;
+      releaseSecondHold();
       if (secondVideo) {
         secondVideo.pause();
         secondVideo.srcObject = null;

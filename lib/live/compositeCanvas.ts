@@ -54,16 +54,21 @@ import type { BroadcastQuality } from './types';
 /**
  * How a source is placed inside its slot.
  *
- * TWO RULES, AND WHICH ONE APPLIES IS A PROPERTY OF THE SOURCE, not of the
- * slot. A shared screen is `contain`: it is information laid out to its own
- * edges, and cropping a trading chart to fill a slot cuts the price axis off
- * one side and the time axis off the other. A camera is `cover`: it is a
- * subject in the middle of a frame, and black bars around a person are the
- * thing this whole layout exists to avoid.
+ * `contain` fits the whole source inside the slot and leaves bars where the
+ * ratios disagree. `cover` crops the source to the slot's ratio and fills it
+ * edge to edge. Both are here because both are right somewhere.
  *
- * The top slot takes either, because since the mobile dual-camera path it
- * holds either — a shared screen on a desktop, a BACK CAMERA on a phone. See
- * `setSecondSource` in ./cameraFilters, which is where the choice is made.
+ * A CAMERA IS `cover`, ALWAYS. It is a subject in the middle of a frame, and
+ * black bars around a person are the thing this whole layout exists to avoid.
+ * That is true of a webcam in the face slot and of a phone's back camera in
+ * the top one, and there is nothing for a creator to choose about it.
+ *
+ * A SHARED SCREEN USED TO BE `contain`, and that is the decision this file
+ * reversed — see ScreenFit for the arithmetic. Short version: the rule was
+ * written for a slot roughly the source's own shape, the slots here are 9:16,
+ * and a 16:9 chart contained in one is a strip of picture in a field of black.
+ * `cover` anchored at the price axis is the default now, and `contain` is a
+ * control the creator can reach rather than a default they cannot see.
  */
 export type SlotFit = 'contain' | 'cover';
 
@@ -398,11 +403,126 @@ export function isCompositeLayout(value: unknown): value is CompositeLayout {
  * matters. `maintain-resolution`, `contentHint: 'detail'` and the raised
  * ceiling follow the CONTENT — they apply whenever a shared SCREEN is being
  * composited in, because a chart in a ครึ่ง-ครึ่ง box is still a chart and
- * still loses its wicks to a silent downscale. This predicate follows the
- * LAYOUT, and only decides geometry.
+ * still loses its wicks to a silent downscale.
+ *
+ * IT NO LONGER DECIDES THE FIT EITHER. It did — กราฟเต็ม was the one preset
+ * that cropped — and that is exactly what made the other three unusable: a
+ * creator who wanted ครึ่ง-ครึ่ง got a postage stamp and had no way to say
+ * otherwise. The fit is `screenSlotFit` now, orthogonal to the preset. What
+ * is left here is the 65/35 preset's IDENTITY, for a log line and a label.
  */
 export function isChartLayout(layout: CompositeLayout): boolean {
   return layout === 'chartfull';
+}
+
+/**
+ * ==========================================================================
+ * HOW A SHARED SCREEN IS FITTED INTO ITS SLOT — AND WHY IT IS NOW A CHOICE.
+ * ==========================================================================
+ *
+ * `contain` was the silent default for three of the four presets, on the
+ * reasoning written on SlotFit: a screen share is information laid out to its
+ * own edges, so cropping it cuts the price axis off one side. That reasoning
+ * is sound about a slot that has roughly the source's own shape. It is
+ * catastrophic about a 9:16 one.
+ *
+ * The arithmetic, at 1080p, which is what Por screenshotted: a 16:9 share
+ * `contain`ed in เฉพาะหน้าจอ's 1080x1920 frame lands 1080x608 — and on a
+ * preview a third of the way down a laptop screen that is the ~420x237 strip
+ * of chart in a field of black he sent. ครึ่ง-ครึ่ง's 1080x960 slot gives it
+ * 1080x608 as well; จอลอย the same. Three of the four presets were therefore
+ * publishing a postage stamp, and the one that was not — กราฟเต็ม — was the
+ * one PR #68 had already converted to `cover`.
+ *
+ * So `cover` is the default EVERYWHERE a screen is drawn, with the same
+ * right-anchor and the same ซ้าย/กลาง/ขวา pan that กราฟเต็ม proved, and
+ * `contain` becomes a control the creator can reach: เห็นทั้งกราฟ, for the
+ * creator who genuinely wants the whole chart with its bars.
+ *
+ * IT IS A PROPERTY OF THE SHARE, NOT OF THE PRESET. Baking `cover` into three
+ * presets and `contain` into a fourth is what produced the situation this
+ * replaces — a creator who wanted the whole chart had to know which preset
+ * silently stopped cropping, and lost the layout they wanted to get it. One
+ * toggle, orthogonal to the four presets, is the smaller thing to explain and
+ * the smaller thing to get wrong.
+ */
+export type ScreenFit = 'fill' | 'whole';
+
+export const SCREEN_FIT_ORDER: ScreenFit[] = ['fill', 'whole'];
+
+export const SCREEN_FIT_LABELS: Record<ScreenFit, string> = {
+  fill: 'เต็มช่อง',
+  whole: 'เห็นทั้งกราฟ',
+};
+
+/** Fill the slot. What every screen layout does unless the creator says otherwise. */
+export const DEFAULT_SCREEN_FIT: ScreenFit = 'fill';
+
+export function isScreenFit(value: unknown): value is ScreenFit {
+  return value === 'fill' || value === 'whole';
+}
+
+/**
+ * The fit a slot's source is actually drawn with.
+ *
+ * TWO INPUTS, AND ONLY ONE OF THEM IS THE CREATOR'S. What the source IS
+ * decides the shape of the question: a back camera on a phone is a subject in
+ * the middle of a frame and is `cover`, always, because black bars down both
+ * sides of a person are the thing this layout exists to avoid and no creator
+ * ever wants them. A shared SCREEN is the case where both answers are
+ * defensible, and so it is the case that gets a control.
+ *
+ * Pure, and separate from `layoutRects`, because it is orthogonal to it: every
+ * preset asks this same question about its top slot, and the answer is the
+ * same in all four.
+ */
+export function screenSlotFit(
+  /** 'screen' for a shared surface, 'camera' for a phone's back camera. */
+  kind: 'screen' | 'camera',
+  preference: ScreenFit = DEFAULT_SCREEN_FIT,
+): SlotFit {
+  if (kind !== 'screen') return 'cover';
+  return preference === 'whole' ? 'contain' : 'cover';
+}
+
+/**
+ * A source rectangle, forced inside the source that is actually decoded RIGHT
+ * NOW.
+ *
+ * THE ONE THING THAT MUST NEVER BE ASSUMED IS THE SIZE OF THE SOURCE. A
+ * display capture changes its dimensions under the composite's feet — a shared
+ * window is resized, a shared tab changes zoom, an `applyConstraints` moves a
+ * 2560x1440 surface to 1920x1080 — and a rectangle computed from what the
+ * `<video>` said a moment ago is then a rectangle describing pixels that no
+ * longer exist. `drawImage` is entitled to refuse that, and a refusal inside a
+ * paint callback is what stops a broadcast.
+ *
+ * So every source rect passes through here on its way to `drawImage`, computed
+ * from the dimensions read in the SAME frame, and clamped to them. A rect that
+ * clamps to nothing comes back zero-sized, which every caller already reads as
+ * "draw nothing for this slot" — black, for one frame, and the loop carries on.
+ */
+export function clampSourceRect(rect: Rect, sourceWidth: number, sourceHeight: number): Rect {
+  if (!(sourceWidth > 0) || !(sourceHeight > 0)) {
+    return { x: 0, y: 0, width: 0, height: 0 };
+  }
+  if (
+    !Number.isFinite(rect.x) ||
+    !Number.isFinite(rect.y) ||
+    !Number.isFinite(rect.width) ||
+    !Number.isFinite(rect.height)
+  ) {
+    return { x: 0, y: 0, width: 0, height: 0 };
+  }
+
+  const x = Math.min(Math.max(0, rect.x), sourceWidth);
+  const y = Math.min(Math.max(0, rect.y), sourceHeight);
+  // The far edge is clamped rather than the width, so a rect that starts
+  // inside the source and runs off it keeps the part that is really there.
+  const right = Math.min(Math.max(x, rect.x + rect.width), sourceWidth);
+  const bottom = Math.min(Math.max(y, rect.y + rect.height), sourceHeight);
+
+  return { x, y, width: right - x, height: bottom - y };
 }
 
 export function isPipCorner(value: unknown): value is PipCorner {
@@ -502,10 +622,11 @@ export function layoutRects(
   }
 
   if (layout === 'pip') {
-    // The share gets the whole frame and is CONTAINED in it, so a 16:9 tab
-    // lands 720x406 (405 rounded up to even) centred vertically, with the
-    // frame's own black above and below — which is exactly the space the
-    // floating face then sits in. At 1080p that is 1080x608, the same picture.
+    // The share gets the whole frame, and at the default fit it COVERS it —
+    // a 16:9 tab cropped to the 9:16 frame, anchored at the price axis, edge
+    // to edge. The floating face is then genuinely floating over the picture
+    // rather than sitting in the band of black a `contain` used to leave.
+    // เห็นทั้งกราฟ puts that band back for a creator who wants it.
     const pip = pipMetrics(size);
     const right = size.width - pip.width - pip.inset;
     const bottom = size.height - pip.height - pip.inset;
@@ -555,11 +676,15 @@ export function layoutRects(
 /**
  * Fit a source INSIDE a slot, whole, centred. `object-fit: contain`.
  *
- * This is the screen share's rule, and it is the rule because a screen share
- * is information. A 16:9 chart in the 720x640 top slot lands at 720x406 with
- * black above and below it inside the slot; cropping it to fill would cut
- * the price axis off one side and the time axis off the other, which on a
- * trading chart is most of what the viewer came for.
+ * เห็นทั้งกราฟ, and only that: this is what a creator gets when they ask to
+ * see the whole of what they shared, bars and all. A 16:9 chart in the
+ * 720x640 top slot lands at 720x406 with black above and below it inside the
+ * slot — every candle present, every axis present, and small.
+ *
+ * It was the screen share's silent DEFAULT until ScreenFit, on the reasoning
+ * that a chart cropped to fill loses its price axis. `coverSourceRect`'s pan
+ * is the answer to that objection — the axis is kept because the crop is
+ * anchored to it — which is what made the default swappable.
  *
  * The bars are INSIDE the slot only. The published frame is still 9:16
  * edge to edge, so a phone viewer sees no letterbox around the broadcast —
