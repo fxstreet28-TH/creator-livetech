@@ -68,13 +68,16 @@ rtc:
   # that never properly validated expires, at the 30s the RFC mandates — the
   # disconnect.
   #
-  # WHY THE OBVIOUS KNOBS DID NOT WORK. Neither `use_external_ip: false` nor
-  # `node_ip` filters the candidate list: the first chooses whether to STUN for
-  # a mapped address, the second names this node for the server's own peering.
-  # `interfaces.includes: [eth0]` does filter, and still could not help here —
-  # on a DigitalOcean droplet the anchor address 10.15.0.6 is configured ON eth0
-  # alongside the public address, so no interface-level filter can separate
-  # them. `rtc.ips` is the only lever that operates on the addresses themselves.
+  # WHY THE OBVIOUS KNOBS DID NOT WORK ON THEIR OWN. `use_external_ip: false`
+  # only chooses whether to STUN for a mapped address. `node_ip` does more than
+  # name the node — with `use_external_ip: false` it also becomes the NAT1To1
+  # host mapping, so every host candidate is rewritten to it — but the rewrite
+  # happens AFTER gathering, so four interfaces still gather four candidates and
+  # the phone still has four pairs to work through. `interfaces.includes: [eth0]`
+  # filters at gather time and still cannot help here: on a DigitalOcean droplet
+  # the anchor address 10.15.0.6 is configured ON eth0 alongside the public
+  # address, so no interface-level filter separates them. `rtc.ips` is the only
+  # lever that filters on the addresses themselves, which is what this needs.
   #
   # WHY AN ALLOWLIST rather than excluding the three private ranges: an exclude
   # list is a standing bet that no future address falls outside the patterns
@@ -82,13 +85,39 @@ rtc:
   # reach, so naming it is both shorter and closed by construction — a new
   # interface, a second VPC, another container bridge all change nothing.
   #
-  # VERIFY, don't assume — the startup log prints what it settled on:
-  #   docker compose -f /opt/aurum-livekit/docker-compose.yml logs livekit \
-  #     2>&1 | grep "using external IPs" | tail -3
-  # Exactly one entry, 157.245.158.189, or the block has not taken effect.
+  # ======================================================================
+  # THE `/32` IS MANDATORY. IT IS NOT DECORATION. DO NOT DROP IT.
+  # ======================================================================
+  # These entries are parsed with Go's `net.ParseCIDR`, which REQUIRES a prefix
+  # length and returns `invalid CIDR address` for a bare address. LiveKit turns
+  # that error into a startup failure, and v1.7.2's main() prints the error
+  # WITHOUT calling os.Exit(1) — so the process exits 0 and Docker reports the
+  # container as `Restarting (0)`, which reads like a clean shutdown loop rather
+  # than the config rejection it actually is. This exact omission took the
+  # container down twice on 2026-09-10. Upstream asserts the behaviour in its
+  # own test suite (mediatransportutil pkg/rtcconfig, Test_IPFilterFromConf:
+  # a bare `192.168.128.1` in `includes` is `require.Error`).
+  #
+  # A /32 is one host, so this stays an exact allowlist of the public address.
+  #
+  # VERIFY, don't assume. Note that `grep "using external IPs"` does NOT work
+  # here: LiveKit only logs that line on the `use_external_ip: true` path, which
+  # this config deliberately does not take, so it will never appear and its
+  # absence means nothing. Check these instead:
+  #   1. the container stays up, which is what the old config could not do:
+  #        docker compose -f /opt/aurum-livekit/docker-compose.yml ps livekit
+  #      STATUS must read `Up`, never `Restarting`.
+  #   2. the node address LiveKit settled on:
+  #        docker compose -f /opt/aurum-livekit/docker-compose.yml logs livekit \
+  #          2>&1 | grep "starting LiveKit server" | tail -1
+  #      must carry `nodeIP 157.245.158.189`.
+  #   3. the actual candidate list, which is the only real proof and comes from
+  #      the viewer side: `remoteCandidates` in lib/live/iceDiagnostics.ts must
+  #      hold exactly one address, the public one. Four addresses means this
+  #      block did not take effect no matter what the logs say.
   ips:
     includes:
-      - 157.245.158.189
+      - 157.245.158.189/32
 
 redis:
   # Loopback, and Redis is bound to 127.0.0.1 on its side too: it holds room

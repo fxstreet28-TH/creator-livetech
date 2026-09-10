@@ -63,7 +63,101 @@ merits — fewer candidates, faster gathering, a simpler firewall — but it is 
 **separate** change from this one and should not ride along with the A/B test
 below. One variable at a time.
 
+## Why the first two attempts took the container down
+
+Both attempts on 2026-09-10 put `aurum-livekit` into a `Restarting (0)` loop
+and both were rolled back before anyone captured the container's own output, so
+two outages produced no diagnostic. The cause is in the config that was applied,
+and it is one missing suffix.
+
+**`rtc.ips.includes` entries are CIDR blocks, not addresses.** LiveKit parses
+each one with Go's `net.ParseCIDR`, which requires a prefix length and returns
+`invalid CIDR address: 157.245.158.189` for a bare address. That error fails
+`NewWebRTCConfig`, which fails startup. Both attempts wrote the bare address.
+The fix is `157.245.158.189/32` — one host, so it stays an exact allowlist.
+
+Upstream asserts this in its own tests, which is the shortest proof available
+(`mediatransportutil/pkg/rtcconfig`, `Test_IPFilterFromConf`): a bare
+`192.168.128.1` under `Includes` is `require.Error`. LiveKit's own dev-mode
+path appends `/24` to bind addresses before putting them in `IPs.Includes` for
+the same reason.
+
+**`Restarting (0)` was the misleading part.** Exit status 0 reads like a clean
+shutdown, so the loop looked like a crash or an OOM rather than a rejected
+config. It is neither. LiveKit v1.7.2's `cmd/server/main.go` ends with
+
+```go
+if err := app.Run(os.Args); err != nil {
+    fmt.Println(err)
+}
+```
+
+— no `os.Exit(1)`. Every startup error is printed and then returns through a
+`main` that exits 0. So on this version the exit code carries no information
+about whether the server started: a bad config, missing keys and a clean
+shutdown all exit 0, and **only the log distinguishes them**. Anything that
+concludes from a status line without reading the log will misdiagnose this
+container. A real panic is the one exception — the deferred recover in `main`
+does `os.Exit(1)`, so a non-zero code here means a crash, not a config problem.
+
+**The second fault, which had not been reached yet.** This directory's config
+ships no `keys:` block on purpose (the header explains why) and expects
+`LIVEKIT_KEYS` in the environment. `ValidateKeys` runs *before* the WebRTC
+config is built and returns `one of key-file or keys must be provided` when
+neither is set — exiting 0 again, indistinguishable at the status line. So
+copying this file onto a droplet whose compose file has no `LIVEKIT_KEYS`
+fails, and fails first, masking the CIDR error underneath it. Either supply the
+environment variable (the full path below) or keep the box's existing inline
+keys (the minimal path, or the script, which does it for you).
+
+### What was ruled out, so it is not re-litigated
+
+Every key in `config.yaml` was checked against v1.7.2's config structs — the
+decoder runs with `KnownFields(true)`, so one unrecognised key is also a
+startup failure. All 22 key paths resolve. In particular none of these is the
+problem:
+
+- **`ips.includes` being unsupported in v1.7.2.** It is supported, and it does
+  filter: `NewWebRTCConfig` calls `SetIPFilter` from it. Issue #3012 concerns
+  `excludes`; issue #3508 is this same CIDR error, misreported as a
+  string-versus-list problem.
+- **Needing a LiveKit upgrade** (v1.9.x/v1.10.x). Nothing here is fixed by a
+  newer version, and `net.ParseCIDR` behaves identically in all of them. An
+  upgrade is a fine thing to schedule on its own merits; it is not this fix, and
+  bundling it would put an untested version and an untested config into the
+  same change.
+- **Needing `--node-ip` as a command-line flag.** Issue #4049 is specifically
+  about the flag being ignored when `use_external_ip: true`. This config sets
+  it false, and on that path `node_ip` from the file is honoured and becomes the
+  NAT1To1 host mapping.
+- **Needing bridge networking.** Host mode was never implicated — the container
+  exited before it gathered a single candidate. The costs are in the section
+  above.
+
 ## Applying the fix
+
+### Preferred — the script
+
+`apply-config.sh` in this directory does the whole sequence: it validates the
+config *before* touching the container (rejecting a missing `/32` and a
+`bind_addresses` narrowed off loopback), carries the box's existing inline
+`keys:` block across without printing it, backs up, recreates, then **writes
+the container's log to `/tmp/livekit-apply-<timestamp>.log` before deciding
+anything** and rolls back if startup failed, leaving that log behind to read.
+The log-before-rollback ordering is the whole point: it is the step both hand
+-applied attempts skipped, which is why two outages taught us nothing.
+
+```bash
+cd /opt/aurum-livekit                      # config.yaml + apply-config.sh copied here
+sudo bash apply-config.sh --dry-run        # validate and diff, change nothing
+sudo bash apply-config.sh                  # apply, verify, roll back on failure
+```
+
+It recreates the container rather than `restart`ing it, because a plain restart
+re-reads the mounted config but ignores changes to `docker-compose.yml` — so a
+run that also touched compose would quietly verify the old settings.
+
+### By hand
 
 SSH from Git Bash on Windows, not PowerShell — PowerShell mangles heredocs.
 Bracketed paste breaks multi-line pastes, so keep one session open and paste
@@ -92,7 +186,7 @@ if 'ips:' in s:
     raise SystemExit('an ips: block already exists — edit it by hand instead')
 s = s.replace(
     '  node_ip: 157.245.158.189\n',
-    '  node_ip: 157.245.158.189\n  ips:\n    includes:\n      - 157.245.158.189\n',
+    '  node_ip: 157.245.158.189\n  ips:\n    includes:\n      - 157.245.158.189/32\n',
     1,
 )
 open(p, 'w').write(s)
@@ -142,21 +236,50 @@ docker compose logs livekit 2>&1 | grep -i "no keys\|invalid api key" | tail
 
 ## Verifying, before any device test
 
+**Do not grep for `using external IPs`.** That was the check written for the
+old config and it cannot work with this one. LiveKit logs that line only on the
+`use_external_ip: true` branch — the branch that STUNs out to discover its own
+address — and this config deliberately takes the other one. The line will never
+appear, so its absence is not evidence of anything and waiting for it reads as
+a failure that is not happening. (It is also where the four-address log in the
+bug report came from, which is why it looks like the right thing to grep.)
+
+Three checks, in order of what they actually prove:
+
 ```bash
+# 1. It is up, which is the thing the broken config could not manage.
+docker compose -f /opt/aurum-livekit/docker-compose.yml ps livekit
+```
+
+`STATUS` must read `Up`. `Restarting` — with any exit code, `(0)` included —
+means the config was rejected; read the log before touching anything else.
+
+```bash
+# 2. The address it settled on.
 docker compose -f /opt/aurum-livekit/docker-compose.yml logs livekit \
-  2>&1 | grep "using external IPs" | tail -3
+  2>&1 | grep "starting LiveKit server" | tail -1
 ```
 
-Expected — exactly one address:
+Must carry `nodeIP 157.245.158.189`.
 
-```
-"ips":["157.245.158.189/157.245.158.189"]
+```bash
+# 3. Nothing was rejected on the way up.
+docker compose -f /opt/aurum-livekit/docker-compose.yml logs livekit \
+  2>&1 | grep -iE "error|invalid|could not|refus" | tail
 ```
 
-Four addresses means the block did not take effect: check indentation (`ips:`
-is a child of `rtc:`, two spaces), confirm the container actually restarted
-(`docker compose ps` — look at the uptime, not the status), and re-read the log
-from the *current* startup rather than a scrollback of the previous one.
+Empty. `invalid CIDR address` here means a `/32` went missing again.
+
+None of those three actually observes the candidate list — the server never
+logs it on this path. **The candidate list is verified from the viewer**, with
+the query at the end of the A/B test section: `remoteCandidates` must hold
+exactly one address. Until that query has run, the ICE fix is untested no
+matter how clean the server log looks.
+
+If four addresses do still appear there: check indentation (`ips:` is a child
+of `rtc:`, two spaces), confirm the container actually restarted (`docker
+compose ps` — look at the uptime, not the status), and re-read the log from the
+*current* startup rather than a scrollback of the previous one.
 
 Also confirm the reverse proxy still works, since the config touches
 `bind_addresses`' neighbourhood:
