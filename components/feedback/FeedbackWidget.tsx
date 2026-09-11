@@ -22,17 +22,39 @@
  * Failures are not toasted from here: the modal stays open on every one of
  * them and reports the reason inline, beside the message it refers to. This
  * component only raises the confirmation, which has no modal left to live in.
+ *
+ * ONE EXCEPTION TO "every screen": a live session on a phone. There the page
+ * is a full-bleed video with its own fixed chrome, and this button lands in
+ * the middle of it — over the creator's picture-in-picture in chart mode, over
+ * the chart itself in camera mode. It is hidden below `md` on those routes;
+ * see `isLiveScreen`. Hidden rather than unmounted, and only below `md`,
+ * because the desktop live page is a normal padded layout where the button has
+ * always sat clear of the video and nothing is asking for it to move.
  */
 
 import { useCallback, useRef, useState } from 'react';
+import { usePathname } from 'next/navigation';
 import { AnimatePresence } from 'framer-motion';
 import { MessageCircle } from 'lucide-react';
 import { useDashboardUser } from '@/lib/hooks/useDashboardUser';
 import { FeedbackModal } from './FeedbackModal';
 import { FeedbackToast, type FeedbackToastState } from './FeedbackToast';
 
+/**
+ * Whether a path is a running live rather than a page that merely mentions one.
+ *
+ * `/live` itself is the (still ComingSoon) index and keeps the button; only
+ * `/live/<sessionId>` is the viewer. `/creator/live` is the broadcaster, which
+ * is the same full-bleed layout seen from the other side.
+ */
+function isLiveScreen(pathname: string | null): boolean {
+  if (!pathname) return false;
+  return pathname.startsWith('/live/') || pathname === '/creator/live';
+}
+
 export function FeedbackWidget() {
   const { user, loading } = useDashboardUser();
+  const onLiveScreen = isLiveScreen(usePathname());
   const [open, setOpen] = useState(false);
   const [toast, setToast] = useState<FeedbackToastState | null>(null);
   const toastKey = useRef(0);
@@ -75,7 +97,7 @@ export function FeedbackWidget() {
         aria-label="แชร์ความคิดเห็น"
         aria-haspopup="dialog"
         aria-expanded={open}
-        className="group fixed z-30 grid h-14 w-14 place-items-center rounded-full text-[#1A1614] transition-transform duration-200 hover:scale-105 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#C9A961] md:h-16 md:w-16 right-[calc(1rem+env(safe-area-inset-right))] md:right-[calc(1.5rem+env(safe-area-inset-right))] bottom-[calc(5rem+env(safe-area-inset-bottom))] md:bottom-6"
+        className={`group fixed z-30 ${onLiveScreen ? 'hidden md:grid' : 'grid'} h-14 w-14 place-items-center rounded-full text-[#1A1614] transition-transform duration-200 hover:scale-105 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#C9A961] md:h-16 md:w-16 right-[calc(1rem+env(safe-area-inset-right))] md:right-[calc(1.5rem+env(safe-area-inset-right))] bottom-[calc(5rem+env(safe-area-inset-bottom))] md:bottom-6`}
         style={{
           background: 'linear-gradient(135deg, #C9A961 0%, #A47E1B 100%)',
           boxShadow: '0 4px 12px rgba(74,55,20,0.15), 0 2px 4px rgba(74,55,20,0.1)',

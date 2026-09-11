@@ -16,8 +16,9 @@
  * whose audience is ~70% phones, and against competitors who all put the
  * broadcast edge to edge. So the video fills the viewport and everything else
  * becomes a translucent layer over it: the creator and the way out at the top,
- * sharing down the right, gifts and chat up the left, the composer along the
- * bottom with the reaction emoji on the line directly above it.
+ * gifts and chat up the left, the composer along the bottom with the reaction
+ * emoji — and the share button — on the line directly above it. Nothing floats
+ * over the middle or the right edge of the frame.
  *
  * Every one of those layers is an EXISTING component with a second
  * presentation — the same players, the same GiftOverlay and GiftDrawer, the
@@ -36,8 +37,10 @@
  *  3. NOTHING MAY COVER THE CREATOR'S FACE. That is the centre of the frame,
  *     and it is why the gift stage is anchored to the bottom left instead of
  *     being centred behind a dim, why the tray sits above the chat rather than
- *     in the corner, and why both the right rail and the gift stage are
- *     required to finish above 45% of the viewport. The stage's height is
+ *     in the corner, and why the gift stage is required to finish above 45% of
+ *     the viewport. It is also why the share button is no longer floated over
+ *     the right edge: in chart mode that edge is where the creator's
+ *     picture-in-picture sits. The stage's height is
  *     MEASURED against what is actually on screen — the chat column, and the
  *     tray when it has rows — rather than reserved; see `giftAnchor`.
  *
@@ -366,18 +369,6 @@ export function LiveViewerMobile({ sessionId, state }: LiveViewerMobileProps) {
         </div>
       </div>
 
-      {/* ------------------------------------------------------- share button */}
-      {/* What is LEFT of the old right-edge rail. The reaction buttons moved
-          down into the bottom bar (see `beforeComposer` below) because a
-          column of emoji floating over the middle of the video is in the way
-          of the thing a viewer came to watch; sharing is a once-per-visit
-          action that nobody complained about, and it stays where it is. */}
-      {!ended && (
-        <div className={styles.rail}>
-          <LiveShareButton title={title} />
-        </div>
-      )}
-
       {/* Mounted only while the chat is expanded, so it cannot eat the taps
           meant for the player's own play and unmute buttons. */}
       {chatExpanded && (
@@ -401,11 +392,19 @@ export function LiveViewerMobile({ sessionId, state }: LiveViewerMobileProps) {
             onExpandedChange={setChatExpanded}
             className={styles.composer}
             listClassName={styles.chat}
-            /* ❤️ 🔥 👏 😂, in the bottom bar on the line directly above the
-               message input. The same four the right-edge rail used to send,
-               the same sender, the same throttle, the same long-press repeat —
-               only where they render changed. Inside the bottom stack, so they
-               ride the keyboard with the composer. */
+            /* ❤️ 🔥 👏 😂 and ↗, in the bottom bar on the line directly above
+               the message input. The same four the right-edge rail used to
+               send, the same sender, the same throttle, the same long-press
+               repeat — only where they render changed. Inside the bottom
+               stack, so they ride the keyboard with the composer.
+
+               The share button is the last circle on that line, which is what
+               emptied the right-edge rail completely: it was the one thing
+               left floating over the video, and on a phone it landed on the
+               creator's picture-in-picture in chart mode. Here it is right
+               above the gift and stars buttons — the same corner the thumb is
+               already in — and it is the row's own flex-end that puts it
+               there, not an offset to keep in sync with them. */
             beforeComposer={
               <div className={styles.reactions}>
                 <EmojiReactionButton
@@ -413,6 +412,7 @@ export function LiveViewerMobile({ sessionId, state }: LiveViewerMobileProps) {
                   enabled={channel.connected}
                   limit={4}
                 />
+                <LiveShareButton title={title} />
               </div>
             }
             action={

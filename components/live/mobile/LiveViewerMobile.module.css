@@ -2,9 +2,10 @@
  * The full-bleed phone watch layout — "Design C".
  *
  * Everything a viewer touches floats over a video that fills the viewport, in
- * the TikTok LIVE arrangement: the creator and the exit at the top, sharing
- * down the right edge, gifts and chat up the left, the composer along the
- * bottom with the reaction emoji on the line above it. The old stacked layout
+ * the TikTok LIVE arrangement: the creator and the exit at the top, gifts and
+ * chat up the left, the composer along the bottom with the reaction emoji —
+ * and sharing — on the line above it. Nothing floats over the right edge any
+ * more; see `.reactions`. The old stacked layout
  * — a 16:9 strip, a creator card, a boxed chat — is what ≥768px still renders,
  * unchanged.
  *
@@ -21,9 +22,10 @@
  *     `visualViewport` (see useMobileViewport.ts) because iOS Safari does not
  *     resize the layout viewport when the keyboard opens — `bottom: 0` there
  *     means "behind the keyboard".
- *  3. The right rail's vertical position is a clamp against two ceilings at
- *     once, and the reaction row is anchored against the composer's own
- *     height. Neither is expressible as a utility class.
+ *  3. The chat column's two ceilings are each the smaller of a viewport
+ *     fraction and a clearance measured against another layer, and the
+ *     reaction row is anchored against the composer's own height. Neither is
+ *     expressible as a utility class.
  */
 
 /*
@@ -116,36 +118,6 @@
 }
 
 /*
- * What is left of the right-edge rail: the share button, on its own.
- *
- * IT USED TO BE FIVE CIRCLES. Four reaction emoji and the share button ran
- * down the right edge, TikTok style, and the arithmetic below reconciled two
- * ceilings: clear the top bar's two rows, and finish above 45dvh, because
- * below that is where a fullscreen gift and its caption are drawn. The
- * reactions have moved into the bottom bar (see `.reactions`), so the column
- * is 40px tall instead of 240 and the gift-stage ceiling can no longer bind —
- * a single button at 150px from the top is nowhere near 45dvh on any phone.
- *
- * The clamp is kept for the LOWER bound, which still does something: on a very
- * short viewport — a phone in landscape, a small webview — it is what stops
- * the button landing on the top bar. The upper bound is the design's 150px.
- */
-.rail {
-  position: absolute;
-  right: calc(var(--live-safe-right) + 12px);
-  top: clamp(
-    calc(var(--live-safe-top) + 92px),
-    calc(45dvh - 40px),
-    calc(var(--live-safe-top) + 150px)
-  );
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-}
-
-/*
  * The chat column and the composer, as one stack anchored to the bottom.
  *
  * Together rather than separately because the chat's position is defined
@@ -174,9 +146,9 @@
 /*
  * The chat column: a strip up the left, never more than 70% of the width.
  *
- * The right 30% belongs to the share button and, on the line above the
- * composer, to the reaction row; the cap in px stops a tablet-ish 767px
- * viewport from running one message across the whole frame.
+ * The right 30% is left clear for the gift stage's captions; the cap in px
+ * stops a tablet-ish 767px viewport from running one message across the whole
+ * frame.
  */
 .chat {
   width: min(70vw, 262px);
@@ -239,9 +211,11 @@
  * line above it is the same bottom cluster, the same thumb, and no such
  * arithmetic.
  *
- * RIGHT-ALIGNED, over the gift and emoji buttons rather than over the chat
- * bubbles beside them — the four circles are 200px of a 390px screen, and the
- * messages are a left column (see `.chat`).
+ * RIGHT-ALIGNED, over the gift and stars buttons rather than over the chat
+ * bubbles beside them — the five circles are 252px of a 390px screen, and the
+ * messages are a left column (see `.chat`). The fifth is the share button,
+ * which lands directly above the stars link: the same corner, one line up, and
+ * off the video it used to float over.
  *
  * The 6px is the gap above; the 8px below is the composer form's own `mt-2`.
  * Those 50px come OUT OF THE CHAT COLUMN — see `--live-chat-max`, which is
@@ -255,7 +229,14 @@
  */
 .reactions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  /* The same 8px the composer's own row uses between its round buttons, so the
+     five circles on this line read as one strip with the gift and stars
+     buttons directly under them. Four 44px emoji plus the share button and
+     their gaps is 252px — inside the 366px a 390px phone leaves here, so the
+     emoji component's own wrap never has to fire. */
+  gap: 8px;
   margin-top: 6px;
   padding-left: calc(var(--live-safe-left) + 12px);
   padding-right: calc(var(--live-safe-right) + 12px);
@@ -267,7 +248,7 @@
  *
  * Only mounted while the chat IS expanded — an always-present tap-catcher over
  * the video would eat the taps meant for the play and unmute buttons. Above
- * the gift overlay (14) and below the chrome (20), so the composer, the rail
+ * the gift overlay (14) and below the chrome (20), so the composer, the top bar
  * and the exit all stay live underneath the viewer's finger.
  */
 .collapseCatcher {
