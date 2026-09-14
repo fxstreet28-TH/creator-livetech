@@ -60,3 +60,19 @@ functions only. The functions that price sessions and record storage bytes — t
 ones where a type error costs money — are not type-checked by anything. Adding
 them needs network access to the remote imports (`esm.sh`, `deno.land`) at check
 time, which is presumably why they were left out.
+
+## A repaired row's bytes land in the month of the repair
+
+`content-bunny-webhook` posts the quota delta against `month_key = now`, which
+is what it has always done and is right for a live delivery — the upload and the
+callback are seconds apart. It is wrong for a repair: the 22.21 MB recovered on
+2026-09-14 for a video uploaded on 2026-08-31 landed in the creator's **2026-09**
+row, not 2026-08.
+
+`total_storage_gb` sits beside `videos_uploaded_count` and
+`total_video_minutes_uploaded`, both of which are plainly per-month flows, so the
+honest attribution is the upload's month. The re-derivation SQL that
+`scripts/backfill-feed-post-file-sizes.mjs` prints buckets by `feed_posts
+.created_at` and would move it. Not run: it is 0.02 GB on one test upload, and
+restating a month somebody may have already read is CEO Por's call, not a side
+effect of a repair.
