@@ -110,3 +110,17 @@ fell through to `llhls` and were charged the full LiveKit egress line (2.14 and
 Same class as the refund already done by hand for
 `9595d27e-fc6d-47d0-990f-f521c95fcc0b`. Left alone for the same audit-trail
 reason as the entry above; noted so the two are restated together if either is.
+
+## Three more functions still carry the pre-stamp `_shared/live.ts`
+
+`live-create-session`, `live-get-playback-url` and `live-bunny-probe` all import
+`_shared/live.ts`, and the repo rule (see `supabase/functions/README.md`) is to
+redeploy **every** importer when shared code changes. Only `live-end-session`
+and `live-watchdog` were redeployed on 2026-09-14, because they are the two that
+price sessions.
+
+The skew is behaviourally nil: the change to that module was the addition of one
+exported constant (`LIVE_COST_MODEL`), which none of the three reads. But "nil
+today" is exactly what the 2026-09-07 skew looked like on 2026-09-08, so they
+should be brought up on the next deploy of any of them rather than left to
+accumulate a second difference.
