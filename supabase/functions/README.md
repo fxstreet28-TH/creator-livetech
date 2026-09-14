@@ -39,6 +39,7 @@ still serving.
 | `buyback-request/` | Star cashout at a flat 3.00 THB/star. Deducts now, pays by hand later. |
 | `wallet-pricing/` | Returns the live `star_pricing_config` row to the buy screen. Selects `retail_thb_per_star` and `label` only — `internal_thb_per_star` is the creator-payout basis and must never reach a browser. |
 | `send-transactional-email/` | Wallet receipts. Called only by the Postgres triggers in `20260829_email_notifications.sql`, over pg_net, on the service key — never by a browser. Reads the row back, renders one of `templates/`, sends via Resend, records the attempt in `email_log`. |
+| `content-bunny-webhook/` | Bunny Stream's status callbacks for creator video uploads. Writes `feed_posts.video_status`, and on a finished encode reads the video back from Bunny for `file_size_bytes` — the platform's only record of how much storage a creator occupies. **Deploy with `--no-verify-jwt`.** |
 
 All three keep the request/response shapes, error codes and HTTP statuses of
 the Next.js routes they replace byte-for-byte — `components/auth/steps/` maps
@@ -109,6 +110,26 @@ GitHub-integrated, so nothing deploys to it as a side effect of merging a PR.
 The trade is that a merged PR does not ship the function — you have to run the
 deploy yourself, and that step is easy to forget. When a PR changes anything
 under `supabase/functions/`, deploying is part of merging it.
+
+### How to tell what a deployed function is actually carrying
+
+Neither of the two incidents below was found by reading code, because the code
+in this repo was right in both cases. What was wrong was the BUNDLE, and the
+only way to see that is to fetch it:
+
+```bash
+supabase functions download <name> --project-ref hknvooaqgpufrbdxtzxf
+diff -ru supabase/functions/<name> <the download>
+```
+
+Do that for every function in the table above after any change to `_shared/`,
+and after any dashboard edit. A clean diff is the only evidence that a merged
+PR is in production; a function's version number rising is not — it rises for a
+dashboard edit that rolled `_shared/` BACKWARDS just as readily.
+
+The two functions whose bundles decide money are `live-end-session` and
+`live-watchdog` (they price sessions through `_shared/live.ts`) and
+`content-bunny-webhook` (it records storage bytes). Check those first.
 
 ### `_shared/` is copied per function, so edits in the dashboard roll it back
 
