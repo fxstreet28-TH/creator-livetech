@@ -131,6 +131,29 @@ The two functions whose bundles decide money are `live-end-session` and
 `live-watchdog` (they price sessions through `_shared/live.ts`) and
 `content-bunny-webhook` (it records storage bytes). Check those first.
 
+### The cost model stamps itself onto every session it prices
+
+`metadata.cost_breakdown_thb` now carries `model`, `quality` and `delivery`
+alongside the two figures, from `LIVE_COST_MODEL` in `_shared/live.ts`. That is
+there because the outputs alone cannot be audited: two sessions of the same
+length and audience can legitimately differ on three axes, and a row recording
+only `livekit` and `bunny_cdn` cannot tell any of them apart from a stale
+bundle.
+
+So the drift that cost a week is now one query rather than an archaeology
+exercise:
+
+```sql
+-- priced by a bundle from before 2026-09-14
+select id, ended_at, metadata->'cost_breakdown_thb'
+from live_sessions
+where status = 'ended' and metadata->'cost_breakdown_thb' ? 'model' = false;
+```
+
+Bump the constant whenever the arithmetic changes — a rung's Mbps, the USD
+rate, the per-GB price, which lines a mode pays — and NOT for a refactor that
+prices identically. A stamp that changes for cosmetic reasons is worth nothing.
+
 ### `_shared/` is copied per function, so edits in the dashboard roll it back
 
 Every deploy bundles a **snapshot** of the `_shared/` files a function imports.

@@ -27,6 +27,7 @@ import {
   bunnyDeleteLiveStream,
   bunnyGetLiveStream,
   estimateLiveCost,
+  LIVE_COST_MODEL,
   stopEgress,
   storedDeliveryMode,
 } from './live.ts';
@@ -275,9 +276,30 @@ export async function closeLiveSession(
       metadata: {
         ...(session.metadata && typeof session.metadata === 'object' ? session.metadata : {}),
         ...(bunnyFinal ? { bunny_final: bunnyFinal } : {}),
+        /**
+         * The two lines, plus THE THREE INPUTS THAT DECIDED THEM.
+         *
+         * `livekit` and `bunny_cdn` alone cannot be audited. Two sessions with
+         * the same duration and audience can carry different bills for three
+         * legitimate reasons — the rung, the pipeline, and which vintage of the
+         * cost model the closing function happened to be running — and a row
+         * recording only the outputs cannot tell any of them apart from a bug.
+         *
+         * That is not hypothetical. `live-watchdog` spent 2026-09-07 to
+         * 2026-09-14 pricing at a flat 3 Mbps with no rung and no
+         * `livekit_selfhost`, because its bundle predated three merged PRs, and
+         * every row it wrote looked exactly like a correct one. See
+         * LIVE_COST_MODEL in ./live.ts.
+         *
+         * Additive: `livekit` and `bunny_cdn` keep their names, their units and
+         * their rounding, so anything already reading this object is unaffected.
+         */
         cost_breakdown_thb: {
           livekit: Math.round(cost.livekitThb * 100) / 100,
           bunny_cdn: Math.round(cost.bunnyThb * 100) / 100,
+          model: LIVE_COST_MODEL,
+          quality,
+          delivery,
         },
         closed_by: closedBy,
         ...(closedBy === 'watchdog'
