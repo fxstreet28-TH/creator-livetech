@@ -76,3 +76,51 @@ honest attribution is the upload's month. The re-derivation SQL that
 .created_at` and would move it. Not run: it is 0.02 GB on one test upload, and
 restating a month somebody may have already read is CEO Por's call, not a side
 effect of a repair.
+
+## Historical `metadata.cost_breakdown_thb` is still on the old pricing
+
+Sessions closed by `live-watchdog` between 2026-09-07 and 2026-09-14 were priced
+by a bundle carrying the 2026-09-07 vintage of `_shared/live.ts`: a flat 3 Mbps
+Bunny constant, no per-rung `quality`, no `livekit_selfhost` mode, and the old
+`origin_room_id ? 'origin' : 'llhls'` derivation. Their `estimated_cost_thb` and
+the `platform_budget_state` totals they posted understate the CDN line by ~2x at
+720p and ~3x at 1080p.
+
+**Not rewritten**, deliberately. Those rows are an audit trail that has already
+been read, and the quota and budget totals they fed cannot be recomputed from
+the rows alone. Restating them is CEO Por's call as a separate, explicit
+operation — not a side effect of a fix.
+
+The blast radius is one row: `b4df2bb6-f452-4560-afe1-78ad82974260` (720p,
+1 minute, 1 viewer, `cost_breakdown_thb.bunny_cdn = 0` where the current formula
+gives 0.01). Understated by ~0.004 THB. It is the mechanism that mattered here,
+not this bill.
+
+Rows priced from 2026-09-14 onward carry `cost_breakdown_thb.model`, so the
+query that finds the affected ones is now simply: no `model` key.
+
+## Sessions from 2026-09-10 14:11–14:36 UTC were priced as `llhls`
+
+`32691f96-9876-43c7-a5a2-d068d69434e7` and `4131f4b6-7b74-4c8d-876a-d1dfe3b60448`
+have no `metadata.delivery_mode` — that field is written only by
+`live-create-session` v8, deployed 14:51 UTC — and no `origin_room_id`, so they
+fell through to `llhls` and were charged the full LiveKit egress line (2.14 and
+2.86 THB) for sessions that were actually on the self-hosted LiveKit.
+
+Same class as the refund already done by hand for
+`9595d27e-fc6d-47d0-990f-f521c95fcc0b`. Left alone for the same audit-trail
+reason as the entry above; noted so the two are restated together if either is.
+
+## Three more functions still carry the pre-stamp `_shared/live.ts`
+
+`live-create-session`, `live-get-playback-url` and `live-bunny-probe` all import
+`_shared/live.ts`, and the repo rule (see `supabase/functions/README.md`) is to
+redeploy **every** importer when shared code changes. Only `live-end-session`
+and `live-watchdog` were redeployed on 2026-09-14, because they are the two that
+price sessions.
+
+The skew is behaviourally nil: the change to that module was the addition of one
+exported constant (`LIVE_COST_MODEL`), which none of the three reads. But "nil
+today" is exactly what the 2026-09-07 skew looked like on 2026-09-08, so they
+should be brought up on the next deploy of any of them rather than left to
+accumulate a second difference.

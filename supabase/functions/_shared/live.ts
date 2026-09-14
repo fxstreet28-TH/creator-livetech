@@ -125,6 +125,32 @@ export function bunnyThbPerViewerMinute(quality: BroadcastQuality = '720p'): num
 /** The 720p rate, which is what a caller naming no rung is priced at. */
 export const BUNNY_LIVE_THB_PER_VIEWER_MINUTE = bunnyThbPerViewerMinute('720p');
 
+/**
+ * WHICH FORMULA PRICED A ROW, stamped into `metadata.cost_breakdown_thb`.
+ *
+ * WHY A STRING IN THE DATA AND NOT JUST A GIT TAG. Every deploy bundles a
+ * SNAPSHOT of this file (see ../README.md), so "what does the cost model say"
+ * and "what did the function that priced this session actually run" are
+ * different questions, and only the second one decides the bill. On 2026-09-14
+ * `live-watchdog` was found still carrying the 2026-09-07 vintage of this
+ * module — a flat 3 Mbps Bunny constant, no per-rung `quality`, no
+ * `livekit_selfhost` — three merged PRs after that stopped being true. Nothing
+ * in the database could say so. Every row looked the same as every other row.
+ *
+ * With this stamped on the row, it can: a breakdown carrying no `model` key was
+ * priced by a bundle from before 2026-09-14, and one carrying an older string
+ * than this constant was priced by a bundle that has since been superseded.
+ * That is a query, runnable by anyone, instead of an archaeology exercise
+ * across `supabase functions download`.
+ *
+ * BUMP IT whenever the arithmetic changes — a rung's Mbps, the USD rate, the
+ * per-GB price, which lines a delivery mode pays. Do NOT bump it for a comment
+ * or a refactor that prices identically: a changed string means "these rows are
+ * not comparable to those rows", and it is worth nothing if it changes for
+ * reasons that do not.
+ */
+export const LIVE_COST_MODEL = 'per-rung-2026-09-09';
+
 export interface LiveCostBreakdown {
   livekitThb: number;
   bunnyThb: number;

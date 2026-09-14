@@ -22,7 +22,9 @@
 import {
   bunnyThbPerViewerMinute,
   estimateLiveCost,
+  LIVE_COST_MODEL,
   LIVEKIT_THB_PER_STREAM_MINUTE,
+  PUBLISH_MBPS_BY_QUALITY,
   storedDeliveryMode,
 } from './live.ts';
 
@@ -62,6 +64,61 @@ Deno.test('storedDeliveryMode: null for anything it cannot vouch for', () => {
   // a laxer guard.
   assertEquals(storedDeliveryMode(['livekit']), null, 'array');
   assertEquals(storedDeliveryMode('livekit'), null, 'bare string metadata');
+});
+
+// ---------------------------------------------------------------------------
+// The rates themselves
+// ---------------------------------------------------------------------------
+//
+// EVERY OTHER TEST IN THIS FILE IS SELF-REFERENTIAL, and that turned out to
+// matter. They assert things like `cost.bunnyThb === 10 * 3 *
+// bunnyThbPerViewerMinute('720p')` — which compares the function against
+// itself, so if PUBLISH_MBPS_BY_QUALITY were reverted to the pre-2026-09-09
+// flat 3 Mbps, every single one of them would still pass. The relationships
+// would all hold. Only the bill would be half.
+//
+// That is exactly the vintage `live-watchdog` was found running on 2026-09-14,
+// a week after the ceiling doubled. So these pin the ABSOLUTE numbers: a rate
+// that changes has to change here too, deliberately, in the same commit.
+
+Deno.test('PUBLISH_MBPS_BY_QUALITY: the ladder is exactly these four rungs', () => {
+  assertEquals(PUBLISH_MBPS_BY_QUALITY, { '360p': 1.6, '480p': 3, '720p': 6, '1080p': 9 });
+});
+
+Deno.test('bunnyThbPerViewerMinute: the absolute THB/viewer-minute per rung', () => {
+  // (mbps × 60s ÷ 8 bits ÷ 1024) GB/min × $0.005/GB × 35 THB/USD.
+  assertEquals(bunnyThbPerViewerMinute('360p'), 0.00205078125);
+  assertEquals(bunnyThbPerViewerMinute('480p'), 0.00384521484375);
+  assertEquals(bunnyThbPerViewerMinute('720p'), 0.0076904296875);
+  assertEquals(bunnyThbPerViewerMinute('1080p'), 0.01153564453125);
+});
+
+Deno.test('bunnyThbPerViewerMinute: 720p is NOT the old flat 3 Mbps rate', () => {
+  // The regression this section exists for, named outright. 3 Mbps at 720p is
+  // what the 2026-09-07 vintage of live.ts charged, and it understates the CDN
+  // line by exactly 2x — the 480p rate, which is why the number below is worth
+  // spelling out rather than trusting the rung table alone to be right.
+  const preSeptember9Rate = ((3 * 60) / 8 / 1024) * 0.005 * 35;
+  assert(
+    bunnyThbPerViewerMinute('720p') === preSeptember9Rate * 2,
+    `720p must be 2x the old 3 Mbps rate, got ${bunnyThbPerViewerMinute('720p')}`,
+  );
+});
+
+Deno.test('LIVEKIT_THB_PER_STREAM_MINUTE: the absolute per-stream-minute rate', () => {
+  // $0.015 egress + 2 × $0.0005 participants, at 35 THB/USD.
+  assertEquals(LIVEKIT_THB_PER_STREAM_MINUTE, 0.56);
+});
+
+Deno.test('LIVE_COST_MODEL: is a non-empty stamp', () => {
+  // Not pinned to a value — bumping it is the POINT, and a test that had to be
+  // edited alongside would just be edited alongside. What must not happen is it
+  // becoming empty or undefined, which would write a meaningless stamp onto
+  // every row and quietly make the audit trail useless.
+  assert(
+    typeof LIVE_COST_MODEL === 'string' && LIVE_COST_MODEL.length > 0,
+    `LIVE_COST_MODEL must be a non-empty string, got ${JSON.stringify(LIVE_COST_MODEL)}`,
+  );
 });
 
 // ---------------------------------------------------------------------------
